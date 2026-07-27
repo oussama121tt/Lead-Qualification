@@ -27,7 +27,10 @@ import export as exportmod
 import pipeline as pipelinemod
 
 
-DB_PATH = os.getenv("DB_PATH", dbmod.DB_PATH_DEFAULT)
+if os.getenv("VERCEL"):
+    DB_PATH = "/tmp/leads.db"
+else:
+    DB_PATH = os.getenv("DB_PATH", dbmod.DB_PATH_DEFAULT)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "lead-qualification-engine")
