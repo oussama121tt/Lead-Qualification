@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analyse en cours — Lead Qualification Engine</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="shell">
+    <div class="progress-page">
+      <!-- Loader / spinner -->
+      <div class="progress-glow" id="progressGlow"></div>
+
+      <!-- Titre principal -->
+      <h1 class="progress-title" id="progressTitle">
+        <span class="progress-icon" id="progressIcon">&#x1F504;</span>
+        <span>Analyse en cours...</span>
+      </h1>
+
+      <!-- Barre de progression -->
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+      </div>
+
+      <!-- Stats en direct -->
+      <div class="progress-stats" id="progressStats">
+        <div class="stat-card">
+          <span class="stat-label">Lead</span>
+          <strong class="stat-value" id="leadIndex">&mdash; / &mdash;</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Entreprise</span>
+          <strong class="stat-value" id="companyName">&mdash;</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Etape</span>
+          <strong class="stat-value" id="currentStep">Initialisation</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Temps ecoule</span>
+          <strong class="stat-value" id="elapsedTime">0:00</strong>
+        </div>
+      </div>
+
+      <!-- Message de statut -->
+      <p class="progress-message" id="progressMessage">
+        Le pipeline d'analyse est en cours d'execution. Les resultats s'afficheront automatiquement.
+      </p>
+
+      <!-- Banniere de completion / echec -->
+      <div class="progress-complete hidden" id="progressComplete">
+        <div class="complete-icon" id="completeIcon">&#x2705;</div>
+        <h2 id="completeTitle">Analyse terminee !</h2>
+        <p id="completeDetails">Tous les leads ont ete traites.</p>
+        <a class="btn btn-primary btn-lg" href="{{ url_for('dashboard', session_id=session_id) }}" id="viewResultsBtn">
+          Voir les resultats
+        </a>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function() {
+  const sessionId = {{ session_id }};
+  const PROGRESS_URL = "{{ url_for('progress_stream', session_id=session_id) }}";
+  const DASHBOARD_URL = "{{ url_for('dashboard', session_id=session_id) }}";
+
+  const elements = {
+    progressGlow: document.getElementById('progressGlow'),
+    title: document.getElementById('progressTitle'),
+    icon: document.getElementById('progressIcon'),
+    barFill: document.getElementById('progressBarFill'),
+    leadIndex: document.getElementById('leadIndex'),
+    companyName: document.getElementById('companyName'),
+    currentStep: document.getElementById('currentStep'),
+    elapsedTime: document.getElementById('elapsedTime'),
+    message: document.getElementById('progressMessage'),
+    complete: document.getElementById('progressComplete'),
+    completeIcon: document.getElementById('completeIcon'),
+    completeTitle: document.getElementById('completeTitle'),
+    completeDetails: document.getElementById('completeDetails'),
+    viewBtn: document.getElementById('viewResultsBtn'),
+  };
+
+  let startTime = Date.now();
+  let timerInterval = null;
+  let completed = false;
+
+  /** Formate un nombre de secondes en mm:ss */
+  function formatElapsed(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m + ':' + s.toString().padStart(2, '0');
+  }
+
+  /** Met a jour le timer d'ecoulement */
+  function updateTimer() {
+    if (completed) return;
+    const elapsed = (Date.now() - startTime) / 1000;
+    elements.elapsedTime.textContent = formatElapsed(elapsed);
+  }
+
+  /** Traduit l'etape (anglais du backend) en francais lisible */
+  function translateStep(step) {
+    const map = {
+      'scraping': 'Scraping du site web...',
+      'scraping_done': 'Site web analyse',
+      'scoring': 'Scoring IA en cours...',
+      'done': 'Termine',
+      'waiting': 'En attente...',
+    };
+    return map[step] || step || '--';
+  }
+
+  /** Traduit le statut en message lisible */
+  function translateStatus(status) {
+    const map = {
+      'FETCH_FAILED': 'Echec du scraping',
+      'FETCH_PARTIAL': 'Scraping partiel',
+      'PARSED': 'Contenu parse',
+      'SCORE_FAILED': 'Echec du scoring',
+      'LOW_CONFIDENCE': 'Confiance faible',
+      'SCORED': 'Score',
+    };
+    return map[status] || status || '--';
+  }
+
+  /** Traite une mise a jour de progression */
+  function handleProgress(data) {
+    if (data.status === 'waiting') {
+      elements.currentStep.textContent = 'Demarrage du pipeline...';
+      return;
+    }
+
+    const index = data.index || 0;
+    const total = data.total || 1;
+    const pct = Math.round((index / total) * 100);
+
+    // Barre
+    elements.barFill.style.width = Math.min(pct, 100) + '%';
+
+    // Metriques
+    elements.leadIndex.textContent = index + ' / ' + total;
+    elements.companyName.textContent = data.company_name || '--';
+
+    // Etape
+    const step = data.step || '';
+    const status = data.status || '';
+    if (step === 'scraping') {
+      elements.currentStep.textContent = 'Scraping : ' + (data.company_name || '--');
+    } else if (step === 'scraping_done') {
+      elements.currentStep.textContent = translateStatus(status);
+    } else if (step === 'scoring') {
+      elements.currentStep.textContent = 'Scoring IA : ' + (data.company_name || '--');
+    } else if (step === 'done') {
+      elements.currentStep.textContent = (data.company_name || '--') + ' score';
+    } else {
+      elements.currentStep.textContent = translateStep(step);
+    }
+
+    // Message d'erreur si present
+    if (data.error) {
+      elements.message.textContent = (data.company_name || '') + ': ' + data.error;
+      elements.message.style.color = 'var(--warning)';
+    }
+
+    // Timer -- utilise le started_at du backend si dispo, sinon le local
+    if (data.ts && data.started_at) {
+      const elapsed = data.ts - data.started_at;
+      elements.elapsedTime.textContent = formatElapsed(elapsed);
+    }
+  }
+
+  /** Affiche l'ecran de completion */
+  function showCompletion(data) {
+    completed = true;
+    if (timerInterval) clearInterval(timerInterval);
+
+    const success = data.status === 'completed';
+    elements.icon.textContent = success ? '\u2705' : '\u274C';
+    elements.title.innerHTML = '<span>' + (success ? 'Analyse terminee' : 'Analyse interrompue') + ' !</span>';
+
+    // Barre a 100%
+    elements.barFill.style.width = '100%';
+    elements.barFill.style.background = success
+      ? 'linear-gradient(90deg, #22c55e, #16a34a)'
+      : 'linear-gradient(90deg, #ef4444, #dc2626)';
+
+    // Stats finales
+    const processed = data.processed || 0;
+    const total = data.total || processed;
+    elements.leadIndex.textContent = processed + ' / ' + total;
+    elements.currentStep.textContent = success ? 'Termine' : 'Interrompu';
+
+    // Duree totale
+    if (data.completed_ts && data.started_at) {
+      const dur = data.completed_ts - data.started_at;
+      elements.elapsedTime.textContent = formatElapsed(dur);
+    }
+
+    // Message
+    if (success) {
+      elements.completeIcon.textContent = '\u2705';
+      elements.completeTitle.textContent = 'Analyse terminee !';
+      elements.completeDetails.textContent = processed + ' lead(s) traite(s) en ' + elements.elapsedTime.textContent + '.';
+    } else {
+      elements.completeIcon.textContent = '\u274C';
+      elements.completeTitle.textContent = 'Analyse interrompue';
+      elements.completeDetails.textContent = data.error
+        ? 'Erreur : ' + data.error
+        : processed + ' lead(s) traites avant l\'interruption.';
+    }
+
+    // Cacher le message temporaire, montrer la banniere
+    elements.message.classList.add('hidden');
+    elements.complete.classList.remove('hidden');
+
+    // Redirection automatique apres 5s
+    setTimeout(function() {
+      window.location.href = DASHBOARD_URL;
+    }, 5000);
+  }
+
+  /** Connecte le flux SSE */
+  function connectSSE() {
+    const source = new EventSource(PROGRESS_URL);
+
+    source.onmessage = function(event) {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.status === 'waiting') {
+          handleProgress(data);
+          return;
+        }
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          showCompletion(data);
+          source.close();
+          return;
+        }
+
+        // Running
+        handleProgress(data);
+      } catch (e) {
+        console.error('SSE parse error:', e, event.data);
+      }
+    };
+
+    source.onerror = function() {
+      // Tenter de se reconnecter apres 3s
+      source.close();
+      setTimeout(connectSSE, 3000);
+    };
+  }
+
+  // Demarrer le timer local
+  timerInterval = setInterval(updateTimer, 1000);
+
+  // Connecter le flux SSE
+  connectSSE();
+})();
+</script>
+</body>
+</html>
+

@@ -1,0 +1,6 @@
+pandas
+rapidfuzz
+firecrawl-py
+groq
+python-dotenv
+flask
