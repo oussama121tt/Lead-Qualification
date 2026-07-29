@@ -1,14 +1,15 @@
 """
-Étape 3 — Fetch + parsing du site web (Firecrawl)
-Étape 3bis — Extraction des signaux techniques déterministes (DOM/CSS/meta/git)
-Étape 4 — Recherche web ciblée (Firecrawl search)
+Fetch et parsing du site web via Firecrawl.
 
-Principe (issu de la veille sur les détecteurs "AI slop"/vibe-coding) :
-tout ce qui est vérifiable par une règle (police, couleur, meta tag, commit git...)
-est calculé ICI, sans appel LLM. Le LLM (étape 5) ne reçoit que le texte +
-ces signaux déjà calculés en JSON — jamais du HTML brut à interpréter lui-même.
+Étapes :
+1. Scraping du site (Firecrawl API) : homepage + jusqu'à 4 pages clés
+   (about, pricing, careers, product).
+2. Extraction de signaux techniques déterministes (DOM/CSS/meta/git) :
+   fingerprint de builder IA, polices tendance, patterns visuels,
+   langage "vibe-coding", analyse des commits GitHub.
 
-streamlit run app.py
+Tous les signaux calculables par règle sont calculés ici, sans appel LLM.
+Le LLM (scorer.py) ne reçoit que le texte + ces signaux en JSON.
 """
 
 import hashlib
@@ -21,13 +22,11 @@ from dotenv import load_dotenv
 from firecrawl import Firecrawl
 
 load_dotenv()
-_app = None  # client Firecrawl, initialisé au premier appel
-
 KEYWORDS = {
     "about": ["about", "a-propos", "team", "equipe"],
     "pricing": ["pricing", "tarif", "plans", "price"],
     "careers": ["careers", "jobs", "recrutement", "emploi"],
-    "product": ["product", "services", "produit", "solutions"],
+    "product": ["product", "services", "produit", "solutions", "features"],
 }
 
 # Fallback quand la découverte par liens (homepage -> result.links) ne
@@ -39,7 +38,7 @@ COMMON_PATH_CANDIDATES = {
     "about": ["/about", "/about-us", "/team", "/company"],
     "pricing": ["/pricing", "/plans"],
     "careers": ["/careers", "/jobs"],
-    "product": ["/product", "/products", "/services", "/solutions"],
+    "product": ["/product", "/products", "/services", "/solutions", "/features"],
 }
 
 MAX_CONTENT_CHARS_PER_PAGE = 32000  # ~8000 tokens, garde-fou tier gratuit
@@ -242,11 +241,78 @@ def _format_signal_as_text(label: str, signal: dict) -> str:
     return "\n".join(lines)
 
 
-def _get_client() -> Firecrawl:
-    global _app
-    if _app is None:
-        _app = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
-    return _app
+def _get_clients() -> list[Firecrawl]:
+    """Crée un client Firecrawl par clé API configurée dans .env.
+
+    Retourne une liste de clients ordonnée (clé 1, clé 2, ...).
+    Utile pour round-robin ou fallback : si un client rate-limit, on passe
+    au suivant sans attendre.
+    """
+    keys = []
+    for k in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_KEY_2", "FIRECRAWL_API_KEY_3", "FIRECRAWL_API_KEY_4", "FIRECRAWL_API_KEY_5"):
+        val = os.getenv(k)
+        if val:
+            keys.append(val)
+    return [Firecrawl(api_key=key, timeout=120) for key in keys]
+
+
+def _parse_retry_after(error_msg: str) -> float | None:
+    """Extrait le delai `retry after Ns` du message d'erreur Firecrawl.
+
+    Ex: "... please retry after 14s, resets at ..." -> 14.0
+    Retourne None si introuvable.
+    """
+    m = re.search(r"retry after\s+([\d.]+)\s*s", error_msg, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) + 1.0  # petite marge de securite
+    return None
+
+
+def _firecrawl_scrape(url: str, *args, **kwargs):
+    """Wrapper autour de `app.scrape()` avec retry sur rate-limit et bascule
+    automatique entre plusieurs clés API Firecrawl.
+
+    Free tier = 10 req/min par clé. Si la clé courante rate-limit, on
+    essaie la clé suivante immédiatement (pas d'attente). Si TOUTES les clés
+    rate-limit, on attend le délai le plus court et on retente (max 2 rounds).
+
+    Config : ajoute FIRECRAWL_API_KEY_2, _3, ... dans .env.
+    """
+    clients = _get_clients()
+    if not clients:
+        raise RuntimeError("Aucune clé API Firecrawl configurée dans .env")
+
+    max_rounds = 2  # deux tours complets sur toutes les clés
+    last_exc = None
+
+    for attempt_round in range(max_rounds):
+        for idx, client in enumerate(clients):
+            try:
+                return client.scrape(url, *args, **kwargs)
+            except Exception as e:
+                last_exc = e
+                msg = str(e)
+                if "rate limit" in msg.lower() or "rate_limit" in msg.lower():
+                    delay = _parse_retry_after(msg)
+                    if delay:
+                        print(f"[scraper] Clé {idx+1} rate-limitée pour {url}, "
+                              f"bascule clé {idx+2 if idx+2 <= len(clients) else 1} "
+                              f"(attente {delay:.0f}s si toutes épuisées)")
+                    continue
+                # Erreur non-rate-limit : remonte immédiatement
+                raise
+
+        # Toutes les clés ont rate-limité : attendre avant de retenter
+        delay = _parse_retry_after(str(last_exc)) or 15.0
+        print(f"[scraper] Toutes les clés rate-limitées pour {url}, "
+              f"attente {delay:.0f}s avant retour {attempt_round+2}/{max_rounds}")
+        remaining = delay
+        while remaining > 0:
+            chunk = min(remaining, 0.5)
+            time.sleep(chunk)
+            remaining -= chunk
+
+    raise last_exc
 
 
 def _normalize_domain(url: str) -> str:
@@ -325,7 +391,7 @@ def _looks_broken(markdown: str) -> bool:
     Détecte une page qui a techniquement répondu mais n'est pas exploitable :
     crash de rendu côté client, page d'erreur/404, ou contenu quasi vide.
     Ne juge rien sur le fond du site — filtre uniquement le "bruit technique"
-    avant que ça n'arrive au scoring (étape 5).
+    avant que ça n'arrive au scoring LLM.
 
     Vérifie à la fois les marqueurs littéraux (rapide, cas standards) et les
     patterns regex (couvre les 404 "éclatées" sur plusieurs lignes/tournures,
@@ -351,15 +417,20 @@ def _content_fingerprint(markdown: str) -> str:
     Firecrawl. Normaliser les espaces évite de rater un doublon à cause d'une
     différence triviale d'espacement/retours à la ligne.
     """
-    normalized = re.sub(r"\s+", " ", (markdown or "").strip().lower())
+    text = markdown or ""
+    # Supprime le bruit qui diffère entre deux pages d'une même SPA :
+    # URLs d'images, liens, base64, sans perdre le texte réel.
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'<Base64-Image-Removed>', '', text)
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _find_key_pages(homepage_url: str):
-    app = _get_client()
     # rawHtml en plus de markdown/links : nécessaire pour l'extraction de
-    # signaux déterministes (étape 3bis), le markdown seul ne suffit pas.
-    result = app.scrape(homepage_url, formats=["markdown", "rawHtml", "links"])
+    # signaux déterministes, le markdown seul ne suffit pas.
+    result = _firecrawl_scrape(homepage_url, formats=["markdown", "rawHtml", "links"], timeout=10000)
     all_links = [
         link for link in (result.links or [])
         if _is_real_subpage(link, homepage_url)
@@ -398,6 +469,18 @@ def _find_key_pages(homepage_url: str):
                 found_pages[category] = candidate_url
                 break
 
+    # Catch-all pour "product" uniquement : si la catégorie est encore vide
+    # après keywords + chemins standards (ex: Linear qui utilise /intake, /plan,
+    # /build au lieu de /product), on prend le premier lien non assigné.
+    # On ne fait ça que pour product (pas about/careers/pricing) car c'est la
+    # seule catégorie suffisamment vague pour avoir mille noms différents.
+    if "product" not in found_pages:
+        assigned = set(found_pages.values())
+        for link in same_domain_links:
+            if link not in assigned and link != homepage_url:
+                found_pages["product"] = link
+                break
+
     # all_links (toutes origines confondues) reste retourné tel quel pour
     # extract_technical_signals, qui a besoin de pouvoir trouver un lien
     # GitHub externe — ce n'est QUE le matching de pages clés qui doit être
@@ -413,7 +496,7 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
     """
     Étape 3bis. Calcule uniquement des signaux déterministes (aucun LLM).
     Retourne un dict prêt à être injecté tel quel dans le prompt de scoring
-    (champ `technical_signals` du schéma de l'étape 5), avec l'evidence brute
+    (champ `technical_signals` du verdict LLM), avec l'evidence brute
     associée à chaque signal déclenché — jamais un verdict déjà interprété.
 
     NB : on ne passe pas par `result.metadata` de Firecrawl (c'est un objet
@@ -478,7 +561,7 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
         disclosure for disclosure in AI_AUTHORSHIP_DISCLOSURES if disclosure in lowered_text
     ]
 
-    # Lien GitHub public, pour le check git (étape 3ter). Volontairement PAS
+    # Lien GitHub public, pour le check git. Volontairement PAS
     # restreint au même domaine : un lead peut légitimement linker vers un
     # repo GitHub externe (org GitHub différente du domaine du site).
     for link in all_links or []:
@@ -495,7 +578,7 @@ def check_github_repo_pattern(repo_url: str) -> dict:
     Vérifie le pattern "un seul commit massif / message générique" via
     l'API publique GitHub (non authentifiée, 60 req/h — throttler si utilisé
     sur beaucoup de leads). Ne juge rien : renvoie les faits bruts, le
-    jugement ("vibe-codé ou non") reste au scoring (étape 5).
+    jugement ("vibe-codé ou non") reste au scoring LLM.
     """
     import requests
 
@@ -546,21 +629,20 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     try:
         pages, homepage_result, all_links = _find_key_pages(homepage_url)
     except Exception as e:
+        err = str(e)
+        print(f"[scraper] _find_key_pages a échoué pour {homepage_url}: {err}")
         return {
             "status": "FETCH_FAILED",
             "rows": [],
             "technical_signals": None,
             "github_check": None,
-            "error": str(e),
+            "error": err,
         }
 
     homepage_markdown = homepage_result.markdown or ""
 
     if _looks_broken(homepage_markdown):
-        # Homepage cassée (crash de rendu JS, page d'erreur, contenu vide) :
-        # on s'arrête ici plutôt que d'envoyer ce texte au scoring comme si
-        # c'était le vrai site. rows=[] déclenche automatiquement le verdict
-        # "no_content_scraped" côté scorer.py (needs_human_review=True).
+        print(f"[scraper] Homepage cassée/vide pour {homepage_url} ({len(homepage_markdown)} chars)")
         return {
             "status": "FETCH_FAILED",
             "rows": [],
@@ -570,9 +652,6 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
         }
 
     rows = [("homepage", homepage_url, homepage_markdown[:MAX_CONTENT_CHARS_PER_PAGE])]
-    # Fingerprints de contenu déjà retenus, pour détecter les doublons SPA
-    # (une URL différente qui sert malgré tout le même shell que la homepage
-    # ou qu'une autre page déjà acceptée).
     seen_fingerprints = {_content_fingerprint(homepage_markdown)}
 
     technical_signals = extract_technical_signals(
@@ -585,27 +664,20 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     if technical_signals.get("github_repo_url"):
         github_check = check_github_repo_pattern(technical_signals["github_repo_url"])
 
-    app = _get_client()
     failures = 0
     duplicates = 0
     other_pages = {k: v for k, v in pages.items() if k != "homepage"}
 
     for category, url in other_pages.items():
-        time.sleep(throttle_seconds)  # max 1 req/sec/domaine, tier gratuit oblige
+        time.sleep(throttle_seconds)
         try:
-            r = app.scrape(url, formats=["markdown"], only_main_content=True)
+            r = _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
             raw_content = (r.markdown or "")[:MAX_CONTENT_CHARS_PER_PAGE]
             if _looks_broken(raw_content):
                 failures += 1
                 print(f"Page ignorée (rendu cassé/vide) sur {category} ({url})")
                 continue
 
-            # Fix bug #3 : rejette le contenu identique à une page déjà
-            # retenue (typiquement le shell d'une SPA servi sur toutes les
-            # routes). On compare le hash normalisé, pas juste la longueur,
-            # pour ne pas dépendre d'une coïncidence de taille. Toujours fait
-            # sur le contenu BRUT (avant compaction careers/pricing ci-dessous),
-            # sinon un shell SPA dupliqué sur /careers ne serait plus détecté.
             fingerprint = _content_fingerprint(raw_content)
             if fingerprint in seen_fingerprints:
                 duplicates += 1
@@ -616,12 +688,6 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
                 continue
             seen_fingerprints.add(fingerprint)
 
-            # Fix bug confirmé (section 3 du plan) : extract_careers_signal
-            # et extract_pricing_signal existaient mais n'étaient jamais
-            # appelées. Sans ça, careers/pricing partaient en texte brut
-            # complet (3-8K caractères de boilerplate) vers le scoring LLM
-            # — exactement ce que ce design voulait éviter. On remplace donc
-            # ici le contenu par le signal compact déterministe.
             if category == "careers":
                 content = _format_signal_as_text("Careers", extract_careers_signal(raw_content))
             elif category == "pricing":
@@ -658,17 +724,22 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Étape 4 — Recherche web ciblée (escalade, uniquement si confiance basse
-# après le scoring passage 1). Jamais de scraping via session connectée :
-# uniquement des résultats publics indexés via l'endpoint `search` Firecrawl.
+# Étape 4 — Recherche web ciblée (escalade).
+# Utilise ScrapeGraphAI Search API (POST /api/search).
+# Les résultats sont bruts (url, title, content) — le jugement reste dans
+# le scoring LLM. Uniquement déclenché après le scoring passage 1 pour les
+# leads à confiance basse ou needs_human_review.
 # ---------------------------------------------------------------------------
 
-SEARCH_QUERY_TEMPLATES = {
-    "linkedin": '"{company}" site:linkedin.com/in OR site:linkedin.com/company',
+_SGAI_BASE_URL = "https://v2-api.scrapegraphai.com/api"
+_SGAI_API_KEY = os.getenv("SGAI_API_KEY") or ""
+
+SEARCH_QUERY_TEMPLATES: dict[str, str] = {
+    "linkedin":     '"{company}" site:linkedin.com/in OR site:linkedin.com/company',
     "product_hunt": '"{company}" site:producthunt.com',
-    "twitter": '"{company}" (site:twitter.com OR site:x.com) (vibe coded OR built with AI OR built in a weekend)',
-    "github": '"{company}" site:github.com',
-    "interviews": '"{founder}" OR "{company}" interview (vibe coding OR built with AI OR built with Cursor OR built with v0)',
+    "twitter":      '"{company}" (site:twitter.com OR site:x.com) (vibe coded OR built with AI OR built in a weekend)',
+    "github":       '"{company}" site:github.com',
+    "interviews":   '"{founder}" OR "{company}" interview (vibe coding OR built with AI OR built with Cursor OR built with v0)',
 }
 
 
@@ -679,35 +750,103 @@ def search_additional_evidence(
     throttle_seconds: float = 1.0,
 ) -> dict:
     """
-    Étape 4. Interroge Firecrawl `search` pour chaque source ciblée et
-    renvoie les résultats bruts (url, titre, extrait) — pas de jugement ici,
-    ce sont des preuves candidates que le scoring (étape 5) devra citer
-    verbatim dans `evidence_quotes` s'il les retient.
+    Interroge ScrapeGraphAI Search pour chaque source ciblée (LinkedIn,
+    Product Hunt, Twitter/X, GitHub, interviews). Renvoie les résultats bruts
+    avec contenu inline : le LLM de scoring pourra citer des passages
+    verbatim dans evidence_quotes.
 
-    NB : vérifier la signature exacte de `Firecrawl.search()` dans la doc
-    Firecrawl au moment de coder — le SDK peut différer selon la version
-    installée (paramètres `limit`, `sources`, format de retour).
+    Chaque source = une requête distincte, avec 1s de throttle entre elles
+    pour respecter les quotas SGAI gratuits.
+
+    Retourne :
+        {
+            "linkedin": [{ "url": "...", "title": "...", "content": "..." }],
+            "product_hunt": ... | {"error": "..."},
+            ...
+        }
     """
-    app = _get_client()
+    if not _SGAI_API_KEY:
+        return {"_error": "SGAI_API_KEY not configured in .env"}
+
+    import requests
+
     founder_name = founder_name or ""
     results_by_source: dict = {}
 
     for source, template in SEARCH_QUERY_TEMPLATES.items():
         if "{founder}" in template and not founder_name:
-            continue  # pas de nom de fondateur connu → on saute cette requête
+            continue
         query = template.format(company=company_name, founder=founder_name)
         time.sleep(throttle_seconds)
+
         try:
-            resp = app.search(query, limit=limit_per_query)
-            hits = getattr(resp, "web", None) or getattr(resp, "data", None) or []
+            resp = requests.post(
+                f"{_SGAI_BASE_URL}/search",
+                headers={
+                    "SGAI-APIKEY": _SGAI_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={"query": query, "numResults": limit_per_query},
+                timeout=35,
+            )
+            if resp.status_code != 200:
+                results_by_source[source] = {"error": f"SGAI HTTP {resp.status_code}: {resp.text[:200]}"}
+                continue
+
+            data = resp.json()
+            raw_results = data.get("results") or []
             results_by_source[source] = [
                 {
-                    "url": getattr(hit, "url", None) or hit.get("url"),
-                    "title": getattr(hit, "title", None) or hit.get("title"),
-                    "snippet": getattr(hit, "description", None) or hit.get("description"),
+                    "url": r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "content": r.get("content", ""),
                 }
-                for hit in hits
+                for r in raw_results
+                if r.get("url")
             ]
+
+            # Pour LinkedIn uniquement : scrape complet de la meilleure URL
+            # trouvée (page entreprise, pas profil perso). Le search renvoie
+            # un extrait JSON structuré, mais on veut le markdown intégral.
+            if source == "linkedin" and results_by_source["linkedin"]:
+                best = None
+                for hit in results_by_source["linkedin"]:
+                    u = hit.get("url", "").lower()
+                    if "/company/" in u or "/company/" in hit.get("content", "").lower():
+                        best = hit
+                        break
+                if not best:
+                    best = results_by_source["linkedin"][0]
+                lk_url = best["url"]
+                time.sleep(throttle_seconds)
+                try:
+                    scrape_resp = requests.post(
+                        f"{_SGAI_BASE_URL}/scrape",
+                        headers={
+                            "SGAI-APIKEY": _SGAI_API_KEY,
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "url": lk_url,
+                            "formats": [{"type": "markdown"}, {"type": "json", "prompt": "Extract company name, description, headquarters, industry, company size, number of employees, specialties, website, and founders"}],
+                        },
+                        timeout=45,
+                    )
+                    if scrape_resp.status_code == 200:
+                        sd = scrape_resp.json()
+                        results_data = sd.get("results") or {}
+                        md_parts = results_data.get("markdown", {}).get("data") or []
+                        json_part = results_data.get("json", {}).get("data")
+                        full = "\n\n".join(md_parts) if md_parts else ""
+                        if json_part:
+                            import json as _json
+                            full += "\n\n--- Structured ---\n" + _json.dumps(json_part, ensure_ascii=False)
+                        if full:
+                            best["content"] = full
+                            best["title"] = f"{best['title']} (scrapé complet)"
+                except Exception as scrape_err:
+                    print(f"[scraper] Échec scrape complet LinkedIn {lk_url}: {scrape_err}")
+                    # On garde le contenu du search, c'est déjà pas mal
         except Exception as e:
             results_by_source[source] = {"error": str(e)}
 

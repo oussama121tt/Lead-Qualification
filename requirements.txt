@@ -1,6 +1,6 @@
 pandas
 rapidfuzz
 firecrawl-py
-groq
+openai
 python-dotenv
 flask

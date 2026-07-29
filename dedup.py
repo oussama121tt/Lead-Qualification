@@ -1,5 +1,5 @@
 """
-Déduplication (étape 2) — jamais de suppression, uniquement un flag `is_duplicate`.
+Déduplication — jamais de suppression, uniquement un flag `is_duplicate`.
 
 3 niveaux, dans cet ordre :
 1. Email exact
@@ -75,8 +75,7 @@ def run_dedup(conn, fuzzy_threshold: int = 90, session_id: int | None = None) ->
 def check_against_export_history(conn, exported_domains: set) -> int:
     """
     Vérification inter-batch (dédup contre tous les exports passés).
-    `exported_domains` = ensemble des domaines déjà exportés (à charger depuis
-    un fichier/table d'historique d'export — branché à l'étape 8, pas encore ici).
+    `exported_domains` = ensemble des domaines déjà exportés.
     Retourne le nombre de leads nouvellement flaggés.
     """
     leads = dbmod.get_leads(conn, include_duplicates=False)
@@ -87,3 +86,12 @@ def check_against_export_history(conn, exported_domains: set) -> int:
             dbmod.mark_duplicate(conn, lead["id"], None, "already_exported_previous_batch")
             flagged += 1
     return flagged
+
+
+def run_export_dedup(conn, session_id: int | None = None) -> int:
+    """
+    Déduplication inter-batch : marque comme doublon tout lead dont le domaine
+    a déjà été exporté lors d'une session précédente.
+    """
+    exported_domains = dbmod.get_exported_domains(conn)
+    return check_against_export_history(conn, exported_domains)

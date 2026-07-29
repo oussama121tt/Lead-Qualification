@@ -1,11 +1,7 @@
-# Environment variables
 .env
-
-# Python
 __pycache__/
 *.pyc
+*.db
+*.csv
 .venv/
 venv/
-
-# Database
-*.db

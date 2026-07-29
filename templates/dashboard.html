@@ -60,7 +60,7 @@
     </header>
 
     {% if api_key_missing %}
-      <div class="alert alert-warning shadow-sm">Clés manquantes : {{ api_key_missing | join(', ') }}. L’import reste possible, mais le scraping/scoring nécessitent ces variables d’environnement.</div>
+      <div class="alert alert-warning shadow-sm mt-4">Clés manquantes : {{ api_key_missing | join(', ') }}. L'import reste possible, mais le scraping/scoring nécessitent ces variables d'environnement.</div>
     {% endif %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -73,11 +73,11 @@
       {% endif %}
     {% endwith %}
 
-    <section class="grid-2">
+    <section class="grid-2 mt-4">
       <div class="card block" id="ingestion">
         <div class="card-body">
           <h2>Ingestion</h2>
-          <p class="section-hint">Importer le premier CSV Apollo, puis lancer l’analyse complète ou seulement une étape.</p>
+          <p class="section-hint">Importer un CSV Apollo, puis lancer l'analyse complète ou une étape indépendante.</p>
           <form class="stack" action="{{ url_for('start_analysis') }}" method="post" enctype="multipart/form-data">
             <label class="form-label">CSV Apollo</label>
             <input class="form-control form-control-lg" type="file" name="csv_file" accept=".csv" required>
@@ -88,19 +88,13 @@
               </div>
               <div>
                 <label class="form-label">Pause entre leads (s)</label>
-                <input class="form-control" type="number" min="0.5" step="0.5" value="2.5" name="throttle_seconds">
+                <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
               </div>
             </div>
             <div class="button-row">
-              <button class="btn btn-primary btn-lg" type="submit">Commencer l’analyse complète</button>
+              <button class="btn btn-primary btn-lg" type="submit">Commencer l'analyse complète</button>
             </div>
           </form>
-          <div class="mini-actions">
-            <form action="{{ url_for('ingest_only') }}" method="post" enctype="multipart/form-data">
-              <input type="hidden" name="csrf" value="1">
-              <input type="file" name="csv_file" accept=".csv" required hidden>
-            </form>
-          </div>
         </div>
       </div>
 
@@ -110,7 +104,6 @@
           <p class="section-hint">Lance chaque étape indépendamment si tu veux contrôler le flux.</p>
           <div class="stack">
             <form action="{{ url_for('dedup_only', session_id=selected_session_id or '') }}" method="post">
-              <input type="hidden" name="session_id" value="{{ selected_session_id or '' }}">
               <div class="form-row">
                 <div>
                   <label class="form-label">Seuil fuzzy</label>
@@ -120,18 +113,18 @@
               <button class="btn btn-outline-primary mt-3" type="submit">Lancer la déduplication</button>
             </form>
             <form action="{{ url_for('pipeline_only', session_id=selected_session_id or '') }}" method="post">
-              <input type="hidden" name="session_id" value="{{ selected_session_id or '' }}">
               <div class="form-row">
                 <div>
                   <label class="form-label">Pause entre leads (s)</label>
-                  <input class="form-control" type="number" min="0.5" step="0.5" value="2.5" name="throttle_seconds">
+                  <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
                 </div>
               </div>
               <button class="btn btn-outline-warning mt-3" type="submit">Lancer le scraping + scoring</button>
             </form>
             <div class="download-row">
-              <a class="btn btn-dark" href="{{ url_for('download_scraping_csv', session_id=selected_session_id or '') }}">Télécharger le CSV de scraping</a>
-              <a class="btn btn-dark" href="{{ url_for('download_scores_csv', session_id=selected_session_id or '') }}">Télécharger le CSV de scoring</a>
+              <a class="btn btn-dark" href="{{ url_for('download_scraping_csv', session_id=selected_session_id or '') }}">CSV scraping</a>
+              <a class="btn btn-dark" href="{{ url_for('download_scores_csv', session_id=selected_session_id or '') }}">CSV scoring</a>
+              <a class="btn btn-dark" href="{{ url_for('download_search_csv', session_id=selected_session_id or '') }}">CSV recherche web</a>
             </div>
           </div>
         </div>
@@ -183,12 +176,24 @@
       <div class="card block">
         <div class="card-body">
           <h2>Statuts</h2>
-          <ul class="status-list">
-            <li><span>FETCH_FAILED</span><strong>{{ summary.fetch_failed }}</strong></li>
-            <li><span>SCORE_FAILED</span><strong>{{ summary.score_failed }}</strong></li>
-            <li><span>LOW_CONFIDENCE</span><strong>{{ summary.low_confidence }}</strong></li>
-            <li><span>Needs review</span><strong>{{ summary.needs_review }}</strong></li>
-          </ul>
+          <div class="status-grid">
+            <div class="stat-badge stat-bad">
+              <span class="stat-badge-label">FETCH_FAILED</span>
+              <span class="stat-badge-value">{{ summary.fetch_failed }}</span>
+            </div>
+            <div class="stat-badge stat-bad">
+              <span class="stat-badge-label">SCORE_FAILED</span>
+              <span class="stat-badge-value">{{ summary.score_failed }}</span>
+            </div>
+            <div class="stat-badge stat-warn">
+              <span class="stat-badge-label">LOW_CONFIDENCE</span>
+              <span class="stat-badge-value">{{ summary.low_confidence }}</span>
+            </div>
+            <div class="stat-badge stat-warn">
+              <span class="stat-badge-label">Needs review</span>
+              <span class="stat-badge-value">{{ summary.needs_review }}</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -196,32 +201,78 @@
         <div class="card-body">
           <h2>Détail du lead</h2>
           {% if lead_detail %}
-            <p class="mb-1"><strong>{{ lead_detail.company_name }}</strong></p>
-            <p class="section-hint">{{ lead_detail.website_url }}</p>
-            <div class="detail-grid">
-              <div><span>Segment</span><strong>{{ lead_detail.segment }}</strong></div>
-              <div><span>Confiance</span><strong>{{ lead_detail.confidence }}</strong></div>
-              <div><span>Offre</span><strong>{{ lead_detail.recommended_offer }}</strong></div>
-              <div><span>Statut</span><strong>{{ lead_detail.status }}</strong></div>
+            <div class="lead-header">
+              <strong class="lead-name">{{ lead_detail.company_name }}</strong>
+              <a class="lead-url" href="{{ lead_detail.website_url }}" target="_blank">{{ lead_detail.website_url }}</a>
             </div>
-            {% if lead_detail.evidence_quotes %}
-              <h3>Evidence quotes</h3>
-              <ul class="quote-list">
-                {% for quote in lead_detail.evidence_quotes if quote %}
-                  <li>{{ quote }}</li>
-                {% endfor %}
-              </ul>
+            <div class="meta-grid">
+              <div class="meta-item">
+                <span class="meta-label">Segment</span>
+                <span class="meta-value badge-segment tag-{{ lead_detail.segment }}">{{ lead_detail.segment or '—' }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Confiance</span>
+                <span class="meta-value {% if lead_detail.confidence is number and lead_detail.confidence < 0.7 %}text-warning{% endif %}">{{ lead_detail.confidence or '—' }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Offre</span>
+                <span class="meta-value">{{ lead_detail.recommended_offer or '—' }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Statut</span>
+                <span class="meta-value {% if lead_detail.status in ('SCORE_FAILED', 'FETCH_FAILED') %}text-danger{% elif lead_detail.status == 'LOW_CONFIDENCE' %}text-warning{% endif %}">{{ lead_detail.status }}</span>
+              </div>
+            </div>
+
+            {% if lead_detail.evidence_quotes and lead_detail.evidence_quotes is not string and lead_detail.evidence_quotes|length > 0 %}
+              <details class="detail-section" open>
+                <summary class="detail-summary">Evidence quotes ({{ lead_detail.evidence_quotes|length }})</summary>
+                <ul class="quote-list">
+                  {% for quote in lead_detail.evidence_quotes if quote %}
+                    <li>{{ quote }}</li>
+                  {% endfor %}
+                </ul>
+              </details>
             {% endif %}
-            {% if lead_detail.personalization_hooks %}
-              <h3>Personalization hooks</h3>
-              <ul class="quote-list">
-                {% for hook in lead_detail.personalization_hooks if hook %}
-                  <li>{{ hook }}</li>
-                {% endfor %}
-              </ul>
+
+            {% if lead_detail.personalization_hooks and lead_detail.personalization_hooks is not string and lead_detail.personalization_hooks|length > 0 %}
+              <details class="detail-section" open>
+                <summary class="detail-summary">Personalization hooks</summary>
+                <ul class="quote-list">
+                  {% for hook in lead_detail.personalization_hooks if hook %}
+                    <li>{{ hook }}</li>
+                  {% endfor %}
+                </ul>
+              </details>
             {% endif %}
+
+            {% if lead_detail.web_search_evidence and lead_detail.web_search_evidence|length > 0 %}
+              <details class="detail-section">
+                <summary class="detail-summary">Web search ({{ lead_detail.web_search_evidence|length }} sources)</summary>
+                {% for ev in lead_detail.web_search_evidence %}
+                  <div class="search-source">
+                    <strong>{{ ev.source }}</strong>
+                    {% if ev.results is mapping and ev.results.get('error') %}
+                      <span class="text-warning">{{ ev.results.error }}</span>
+                    {% elif ev.results and ev.results is iterable and ev.results is not string and ev.results|length > 0 %}
+                      <ul class="quote-list">
+                        {% for hit in ev.results if hit.url %}
+                          <li><a href="{{ hit.url }}" target="_blank" rel="noopener">{{ hit.title }}</a></li>
+                        {% endfor %}
+                      </ul>
+                    {% else %}
+                      <span class="text-muted">Aucun résultat</span>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </details>
+            {% endif %}
+
             {% if lead_detail.disqualify_reason %}
-              <div class="alert alert-secondary">{{ lead_detail.disqualify_reason }}</div>
+              <details class="detail-section">
+                <summary class="detail-summary text-danger">Raison</summary>
+                <div class="error-block">{{ lead_detail.disqualify_reason }}</div>
+              </details>
             {% endif %}
           {% else %}
             <div class="empty-state">Sélectionne un lead scoré pour afficher le détail.</div>

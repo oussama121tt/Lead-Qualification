@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Revue d'import — Lead Qualification Engine</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .criteria-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .criteria-card {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.02);
+      cursor: pointer;
+      transition: all 0.2s;
+      user-select: none;
+    }
+    .criteria-card:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(94, 234, 212, 0.3);
+    }
+    .criteria-card.selected {
+      border-color: var(--accent);
+      background: rgba(94, 234, 212, 0.06);
+      box-shadow: 0 0 20px rgba(94, 234, 212, 0.08);
+    }
+    .criteria-card input { display: none; }
+    .criteria-card strong { display: block; margin-bottom: 4px; color: var(--text); }
+    .criteria-card small { color: var(--muted); font-size: 0.82rem; }
+    .criteria-card .check { float: right; font-size: 1.2rem; opacity: 0.3; }
+    .criteria-card.selected .check { opacity: 1; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hero" style="grid-template-columns:1fr;">
+      <div class="hero-copy">
+        <p class="eyebrow">Etape 2/4 — Revue d'import</p>
+        <h1>Verifier les leads importes</h1>
+        <p class="lead">{{ keepers|length }} leads conserves, {{ duplicates|length }} doublons identifies. Selectionne les criteres de scoring avant de lancer l'analyse.</p>
+      </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack mt-3">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category == 'error' else category }} shadow-sm">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Keepers table (dans le formulaire pour pouvoir selectionner les leads) -->
+    <section class="card block mt-4">
+      <div class="card-body">
+        <h2>Leads conserves ({{ keepers|length }})</h2>
+        <p class="section-hint">Coche les leads a analyser, ou laisse tous coches par defaut.</p>
+        <form id="analysisForm" action="{{ url_for('start_pipeline_from_review', session_id=session_id) }}" method="post" onsubmit="return validateForm()">
+          <div class="table-wrap">
+            <table class="table table-hover table-striped align-middle">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="selectAllKeepers" onchange="toggleAllKeepers(this)" checked></th>
+                  <th>ID</th>
+                  <th>Societe</th>
+                  <th>Site web</th>
+                  <th>Email</th>
+                  <th>Contact</th>
+                  <th>Statut</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for lead in keepers %}
+                  <tr>
+                    <td><input type="checkbox" name="lead_ids" value="{{ lead.id }}" checked></td>
+                    <td>{{ lead.id }}</td>
+                    <td>{{ lead.company_name or '--' }}</td>
+                    <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);">{{ lead.website_url[:50] }}{% if lead.website_url and lead.website_url|length > 50 %}...{% endif %}</a></td>
+                    <td>{{ lead.email or '--' }}</td>
+                    <td>{{ lead.first_name or '' }} {{ lead.last_name or '' }}</td>
+                    <td><span class="badge bg-info">{{ lead.status }}</span></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <p class="text-muted" style="font-size:0.85rem;" id="keepersSelectedCount">{{ keepers|length }} selectionne(s)</p>
+
+    <!-- Duplicates table -->
+    {% if duplicates %}
+    <section class="card block mt-4">
+      <div class="card-body">
+        <h2>Doublons ignores ({{ duplicates|length }})</h2>
+        <p class="section-hint">Coche les doublons a inclure tout de meme dans l'analyse.</p>
+        <div class="table-wrap">
+          <table class="table table-hover table-striped align-middle">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="selectAllDups" onchange="toggleAllDups(this)"></th>
+                <th>ID</th>
+                <th>Societe</th>
+                <th>Raison</th>
+                <th>Duplicata de</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for lead in duplicates %}
+                <tr>
+                  <td><input type="checkbox" name="dup_ids" value="{{ lead.id }}"></td>
+                  <td>{{ lead.id }}</td>
+                  <td>{{ lead.company_name or '--' }}</td>
+                  <td><span class="text-warning">{{ lead.duplicate_reason or '--' }}</span></td>
+                  <td>#{{ lead.duplicate_of_id or '--' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    <!-- Scoring criteria (dans le meme formulaire) -->
+    <section class="card block mt-4">
+      <div class="card-body">
+        <h2>Critères de scoring</h2>
+        <p class="section-hint">Selectionne les profils que tu souhaites detecter en priorite. Le modele IA adaptera son analyse en consequence.</p>
+        <div class="criteria-grid">
+          {% for opt in criteria_options %}
+            <label class="criteria-card selected" id="card-{{ opt.key }}" onclick="toggleCriteria('{{ opt.key }}')">
+              <input type="checkbox" name="criteria" value="{{ opt.key }}" checked>
+              <span class="check">&#10003;</span>
+              <strong>{{ opt.label }}</strong>
+              <small>{{ opt.desc }}</small>
+            </label>
+          {% endfor %}
+        </div>
+
+        <div class="mt-3">
+          <label class="form-label" for="custom_criteria">Critère personnalisé (optionnel)</label>
+          <textarea class="form-control" id="custom_criteria" name="custom_criteria" rows="2" placeholder="Ex: Détecter les entreprises qui utilisent Python/Django, ou qui ont une page carrières..." style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;">{{ custom_criteria or '' }}</textarea>
+        </div>
+
+        <div class="form-row mt-3">
+          <div>
+            <label class="form-label">Pause entre leads (s)</label>
+            <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-lg mt-4" type="submit">
+          Lancer l'analyse <span id="submitCount">{{ keepers|length }}</span> lead(s)
+        </button>
+        <a class="btn btn-outline-light btn-lg mt-4 ms-2" href="{{ url_for('home') }}">Annuler</a>
+      </div>
+    </section>
+    </form><!-- fin du formulaire analysisForm -->
+  </div>
+  <script>
+    function toggleCriteria(key) {
+      var card = document.getElementById('card-' + key);
+      var checkbox = card.querySelector('input[type="checkbox"]');
+      checkbox.checked = !checkbox.checked;
+      if (checkbox.checked) {
+        card.classList.add('selected');
+      } else {
+        card.classList.remove('selected');
+      }
+    }
+    function toggleAllDups(master) {
+      var checkboxes = document.querySelectorAll('input[name="dup_ids"]');
+      for (var i = 0; i < checkboxes.length; i++) {
+        checkboxes[i].checked = master.checked;
+      }
+    }
+    function toggleAllKeepers(master) {
+      var checkboxes = document.querySelectorAll('input[name="lead_ids"]');
+      for (var i = 0; i < checkboxes.length; i++) {
+        checkboxes[i].checked = master.checked;
+      }
+      updateKeeperCount();
+    }
+    function updateKeeperCount() {
+      var checkboxes = document.querySelectorAll('input[name="lead_ids"]');
+      var count = 0;
+      for (var i = 0; i < checkboxes.length; i++) {
+        if (checkboxes[i].checked) count++;
+      }
+      var el = document.getElementById('keepersSelectedCount');
+      if (el) el.textContent = count + ' selectionne(s)';
+      var submitEl = document.getElementById('submitCount');
+      if (submitEl) submitEl.textContent = count;
+    }
+    function validateForm() {
+      var leadCbs = document.querySelectorAll('input[name="lead_ids"]');
+      var leadChecked = false;
+      for (var i = 0; i < leadCbs.length; i++) {
+        if (leadCbs[i].checked) { leadChecked = true; break; }
+      }
+      if (!leadChecked) {
+        alert('Selectionne au moins un lead a analyser.');
+        return false;
+      }
+      var critCbs = document.querySelectorAll('input[name="criteria"]');
+      var critChecked = false;
+      for (var i = 0; i < critCbs.length; i++) {
+        if (critCbs[i].checked) { critChecked = true; break; }
+      }
+      if (!critChecked) {
+        alert('Selectionne au moins un critere de scoring.');
+        return false;
+      }
+      return true;
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+      var cbs = document.querySelectorAll('input[name="lead_ids"]');
+      for (var i = 0; i < cbs.length; i++) {
+        cbs[i].addEventListener('change', updateKeeperCount);
+      }
+      updateKeeperCount();
+    });
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

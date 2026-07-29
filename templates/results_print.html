@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Resultats Session #{{ session.id }} — Lead Qualification Engine</title>
+  <style>
+    @page { size: landscape; margin: 12mm; }
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #222; }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    h2 { font-size: 14px; margin: 20px 0 6px; border-bottom: 2px solid #333; padding-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 10px; }
+    th, td { padding: 4px 6px; border: 1px solid #999; text-align: left; }
+    th { background: #e0e0e0; font-weight: 700; }
+    .cat-label { font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+    .footer { margin-top: 20px; font-size: 9px; color: #888; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>Results Session #{{ session.id }}</h1>
+  <p>Label: {{ session.label or 'Sans titre' }} | {{ session.created_at[:10] if session.created_at else '--' }}</p>
+
+  <h2>Validees ({{ categories.validees|length }})</h2>
+  {% if categories.validees %}
+  <table>
+    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Confiance</th><th>Offre</th><th>Stage</th></tr></thead>
+    <tbody>
+      {% for lead in categories.validees %}
+      <tr>
+        <td>{{ lead.company_name or '--' }}</td>
+        <td>{{ lead.website_url or '--' }}</td>
+        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
+        <td>{{ lead.recommended_offer or '--' }}</td>
+        <td>{{ lead.company_stage or '--' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Aucun lead valide.</p>{% endif %}
+
+  <h2>Proches ({{ categories.proches|length }})</h2>
+  {% if categories.proches %}
+  <table>
+    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Confiance</th><th>Offre</th><th>Raison</th></tr></thead>
+    <tbody>
+      {% for lead in categories.proches %}
+      <tr>
+        <td>{{ lead.company_name or '--' }}</td>
+        <td>{{ lead.website_url or '--' }}</td>
+        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
+        <td>{{ lead.recommended_offer or '--' }}</td>
+        <td>{{ lead.disqualify_reason or lead.status or '--' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Aucun lead proche.</p>{% endif %}
+
+  <h2>Tres loin ({{ categories.tres_loin|length }})</h2>
+  {% if categories.tres_loin %}
+  <table>
+    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Raison</th></tr></thead>
+    <tbody>
+      {% for lead in categories.tres_loin %}
+      <tr>
+        <td>{{ lead.company_name or '--' }}</td>
+        <td>{{ lead.website_url or '--' }}</td>
+        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ lead.disqualify_reason or '--' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Aucun lead disqualifie.</p>{% endif %}
+
+  <h2>Non validees ({{ categories.non_validees|length }})</h2>
+  {% if categories.non_validees %}
+  <table>
+    <thead><tr><th>Societe</th><th>Site</th><th>Statut</th><th>Erreur</th></tr></thead>
+    <tbody>
+      {% for lead in categories.non_validees %}
+      <tr>
+        <td>{{ lead.company_name or '--' }}</td>
+        <td>{{ lead.website_url or '--' }}</td>
+        <td>{{ lead.status or '--' }}</td>
+        <td>{{ lead.last_error or lead.disqualify_reason or '--' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Aucune erreur.</p>{% endif %}
+
+  <div class="footer">Genere le {{ session.created_at or '--' }} par Lead Qualification Engine</div>
+</body>
+</html>

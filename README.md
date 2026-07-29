@@ -1,15 +1,12 @@
-# Lead Qualification & Scoring Engine — brique 1
+# Lead Qualification & Scoring Engine
 
-Implémente les étapes 1, 2, 3 et 5 du pipeline décrit dans le récap projet :
-**Ingestion → Déduplication → Scraping (Firecrawl) → Scoring IA (Groq)**,
-avec une interface web Flask.
+Pipeline complet : **Ingestion → Déduplication → Scraping (Firecrawl) → Scoring IA (Groq)**, avec interface web Flask.
 
 ## Installation
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env
-# puis remplir FIRECRAWL_API_KEY et GROQ_API_KEY dans .env
+# Créer .env avec FIRECRAWL_API_KEY et GROQ_API_KEY
 ```
 
 ## Lancer l'interface
@@ -18,49 +15,47 @@ cp .env.example .env
 python app.py
 ```
 
-Une base SQLite `leads.db` est créée automatiquement à côté de `app.py`.
-Chaque import crée une session d'analyse séparée, consultable ensuite depuis le sélecteur d'historique dans l'interface.
+Une base SQLite `leads.db` est créée automatiquement. Chaque import crée une session d'analyse séparée.
 
-## Ce que fait l'interface
+## Fonctionnalités de l'interface
 
-L'interface est une page web complète avec :
-
-1. **Upload CSV** — import d'un CSV Apollo dans SQLite.
-2. **Boutons d'action** — déduplication, scraping + scoring, ou analyse complète en une fois.
-3. **Tableaux** — vue des leads bruts et vue des leads scorés avec filtres.
-4. **Téléchargements** — CSV de scraping et CSV de scoring directement depuis le navigateur.
-5. **Détail lead** — affiche `evidence_quotes`, `personalization_hooks` et la raison de disqualification.
-6. **Historique** — sélection d'anciennes analyses pour revoir leurs tableaux et relancer les exports.
+1. **Upload CSV** — import d'un CSV Apollo dans SQLite (columns: first_name, last_name, title, company_name, email, website_url).
+2. **Analyse complète** — ingestion + dédup + scraping Firecrawl + scoring Claude, en un clic.
+3. **Actions indépendantes** — import seul, dédup seule, pipeline seul.
+4. **Tableaux** — vue des leads bruts et vue des leads scorés avec filtres par segment.
+5. **Review humaine** — approuver/rejeter un lead, modifier son segment.
+6. **Téléchargements** — CSV de scraping brut et CSV de scoring.
+7. **Détail lead** — evidence_quotes, personalization_hooks, disqualify_reason.
+8. **Historique** — sélection d'anciennes sessions pour revoir leurs résultats.
 
 ## Fichiers
 
 | Fichier | Rôle |
 |---|---|
-| `db.py` | Schéma SQLite (`leads`, `lead_content`, `lead_scores`) + helpers CRUD |
-| `dedup.py` | Déduplication 3 niveaux (RapidFuzz) |
-| `scraper.py` | Reprise de `scrap.py`, en fonction réutilisable `scrape_website()` |
-| `scorer.py` | Reprise de `evaluate_pass1.py`, en fonction réutilisable `score_content()` |
+| `db.py` | Schéma SQLite + helpers CRUD (leads, sessions, scores, exports) |
+| `dedup.py` | Déduplication 3 niveaux (email exact, domaine, fuzzy name via RapidFuzz) |
+| `scraper.py` | Scraping Firecrawl + extraction de signaux techniques déterministes |
+| `scorer.py` | Scoring Claude : évalue chaque lead et produit un verdict JSON structuré |
 | `pipeline.py` | Orchestrateur : enchaîne scraping + scoring lead par lead, isole les échecs |
+| `export.py` | Export CSV : scraping brut, scores, et format lisible pour review humaine |
 | `app.py` | Interface Flask complète |
 
-## Statuts possibles d'un lead (`leads.status`)
+## Segments de scoring
 
-`NEW` → `PARSED` / `FETCH_PARTIAL` / `FETCH_FAILED` → `SCORED` / `LOW_CONFIDENCE` / `SCORE_FAILED`
+| Segment | Description | Offre recommandée |
+|---|---|---|
+| `ai_solo_founder` | Solo founder / micro-équipe, produit vibe-codé | `ai_audit` |
+| `technical_founder` | Fondateur technique, petite équipe | `general_audit` |
+| `small_agency_scaling` | Agence / studio de développement | `pipeline` |
+| `too_big` | Entreprise produit établie avec équipe technique | `none` |
+| `wrong_field` | Secteur sans rapport | `none` |
+| `unclear` | Impossible à déterminer | `none` |
 
-## Pas encore fait (suite logique)
+## Statuts d'un lead
 
-- Interface de review humaine avec actions Approve/Reject/Change segment (étape 6)
-- Escalade agentique conditionnelle (`confidence < 0.75` → 2e passage avec outils
-  de recherche web, budget 3 itérations)
-- Personnalisation (étape 7) et export final Instantly/Smartlead (étape 8)
-- Table d'historique des exports pour la dédup inter-batch (`check_against_export_history`
-  existe déjà dans `dedup.py` mais n'est pas encore branchée sur une vraie source
-  d'historique)
-- Logging coût/statut par batch (critère d'acceptation MVP #5)
+`NEW` → `PARSED` / `FETCH_PARTIAL` / `FETCH_FAILED` → `SCORED` / `LOW_CONFIDENCE` / `SCORE_FAILED` → `APPROVED` / `REJECTED`
 
-## Notes tier gratuit
+## Notes sur les tiers
 
-- Groq : ~30 req/min → pause par défaut de 2.5s entre chaque lead dans le pipeline.
-- Firecrawl : ~500-1000 crédits gratuits, 1 crédit = 1 page scrapée. Le cap de
-  contenu par page est fixé à ~32000 caractères (`MAX_CONTENT_CHARS_PER_PAGE`
-  dans `scraper.py`) — à réduire si le quota tokens/minute de Groq pose souci.
+- **Groq** : modèle `llama-3.3-70b-versatile`. Free tier = 100K tokens/jour (~16 leads). Pour 500 leads, prévoir le Dev Tier ($5+/mo) ou passer à Claude.
+- **Firecrawl** : 500 crédits/mois gratuits, 10 req/min. Chaque page = 1 crédit. Pour 500 leads (~5 pages/lead = 2500 pages), prévoir Hobby ($16/mo, 5000 crédits) ou Standard ($83/mo, illimité).

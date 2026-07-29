@@ -16,7 +16,8 @@
       <!-- Titre principal -->
       <h1 class="progress-title" id="progressTitle">
         <span class="progress-icon" id="progressIcon">&#x1F504;</span>
-        <span>Analyse en cours...</span>
+        <span id="progressCounter">&mdash; / &mdash; &#x1F504;</span>
+        <span id="progressCompany">Analyse en cours...</span>
       </h1>
 
       <!-- Barre de progression -->
@@ -49,14 +50,23 @@
         Le pipeline d'analyse est en cours d'execution. Les resultats s'afficheront automatiquement.
       </p>
 
+      <!-- Boutons d'action -->
+      <!-- <div class="d-flex gap-3 justify-content-center mb-4 flex-wrap">
+        <button class="btn btn-danger btn-lg" id="stopBtn" onclick="stopAnalysis()">
+          &#x2716; Arreter l'analyse
+        </button>
+      </div> -->
+
       <!-- Banniere de completion / echec -->
       <div class="progress-complete hidden" id="progressComplete">
         <div class="complete-icon" id="completeIcon">&#x2705;</div>
         <h2 id="completeTitle">Analyse terminee !</h2>
         <p id="completeDetails">Tous les leads ont ete traites.</p>
-        <a class="btn btn-primary btn-lg" href="{{ url_for('dashboard', session_id=session_id) }}" id="viewResultsBtn">
-          Voir les resultats
-        </a>
+        <div id="completedActions" class="d-flex gap-3 justify-content-center flex-wrap">
+          <a class="btn btn-primary btn-lg" href="{{ url_for('results_view', session_id=session_id) }}" id="viewResultsBtn">
+            Voir les resultats
+          </a>
+        </div>
       </div>
     </div>
   </div>
@@ -65,7 +75,7 @@
 (function() {
   const sessionId = {{ session_id }};
   const PROGRESS_URL = "{{ url_for('progress_stream', session_id=session_id) }}";
-  const DASHBOARD_URL = "{{ url_for('dashboard', session_id=session_id) }}";
+  const RESULTS_URL = "{{ url_for('results_view', session_id=session_id) }}";
 
   const elements = {
     progressGlow: document.getElementById('progressGlow'),
@@ -82,6 +92,8 @@
     completeTitle: document.getElementById('completeTitle'),
     completeDetails: document.getElementById('completeDetails'),
     viewBtn: document.getElementById('viewResultsBtn'),
+    progressCounter: document.getElementById('progressCounter'),
+    progressCompany: document.getElementById('progressCompany'),
   };
 
   let startTime = Date.now();
@@ -130,7 +142,17 @@
   /** Traite une mise a jour de progression */
   function handleProgress(data) {
     if (data.status === 'waiting') {
-      elements.currentStep.textContent = 'Demarrage du pipeline...';
+      const total = data.total || 0;
+      if (total > 0) {
+        // Etape 1 (ingestion/dedup) terminee : le nombre de leads a traiter
+        // est deja connu, meme si le scraping du lead 1 n'a pas encore
+        // demarre. On l'affiche tout de suite au lieu de laisser des tirets.
+        elements.leadIndex.textContent = '0 / ' + total;
+        elements.progressCounter.textContent = '0 / ' + total + ' \uD83D\uDD04';
+        elements.currentStep.textContent = total + ' lead(s) trouve(s) - preparation du scraping...';
+      } else {
+        elements.currentStep.textContent = 'Demarrage du pipeline...';
+      }
       return;
     }
 
@@ -144,6 +166,10 @@
     // Metriques
     elements.leadIndex.textContent = index + ' / ' + total;
     elements.companyName.textContent = data.company_name || '--';
+
+    // Titre : affiche "1/9 🔄 NomEntreprise"
+    elements.progressCounter.textContent = index + ' / ' + total + ' \uD83D\uDD04';
+    elements.progressCompany.textContent = data.company_name || 'Analyse en cours...';
 
     // Etape
     const step = data.step || '';
@@ -166,11 +192,10 @@
       elements.message.style.color = 'var(--warning)';
     }
 
-    // Timer -- utilise le started_at du backend si dispo, sinon le local
-    if (data.ts && data.started_at) {
-      const elapsed = data.ts - data.started_at;
-      elements.elapsedTime.textContent = formatElapsed(elapsed);
-    }
+    // Timer : seule la bascule locale (updateTimer) est utilisée en cours
+    // d'execution. Les timestamps serveur (ts/started_at) ne sont employés
+    // que dans showCompletion(), apres arret de updateTimer, car sinon le
+    // display saute a 0:00 au premier evenement SSE (ts - started_at ≈ 0).
   }
 
   /** Affiche l'ecran de completion */
@@ -178,48 +203,49 @@
     completed = true;
     if (timerInterval) clearInterval(timerInterval);
 
+    const isFailed = data.status === 'failed';
     const success = data.status === 'completed';
-    elements.icon.textContent = success ? '\u2705' : '\u274C';
-    elements.title.innerHTML = '<span>' + (success ? 'Analyse terminee' : 'Analyse interrompue') + ' !</span>';
 
-    // Barre a 100%
+    elements.icon.textContent = success ? '\u2705' : '\u274C';
+    elements.title.innerHTML = '<span>' + (success ? 'Analyse terminee' : 'Analyse echouee') + ' !</span>';
+
+    elements.progressCounter.style.display = 'none';
+    elements.progressCompany.style.display = 'none';
+
     elements.barFill.style.width = '100%';
     elements.barFill.style.background = success
       ? 'linear-gradient(90deg, #22c55e, #16a34a)'
       : 'linear-gradient(90deg, #ef4444, #dc2626)';
 
-    // Stats finales
     const processed = data.processed || 0;
     const total = data.total || processed;
     elements.leadIndex.textContent = processed + ' / ' + total;
-    elements.currentStep.textContent = success ? 'Termine' : 'Interrompu';
+    elements.currentStep.textContent = success ? 'Termine' : 'Echoue';
 
-    // Duree totale
     if (data.completed_ts && data.started_at) {
       const dur = data.completed_ts - data.started_at;
       elements.elapsedTime.textContent = formatElapsed(dur);
     }
 
-    // Message
     if (success) {
       elements.completeIcon.textContent = '\u2705';
       elements.completeTitle.textContent = 'Analyse terminee !';
       elements.completeDetails.textContent = processed + ' lead(s) traite(s) en ' + elements.elapsedTime.textContent + '.';
+      document.getElementById('completedActions').classList.remove('hidden');
     } else {
       elements.completeIcon.textContent = '\u274C';
-      elements.completeTitle.textContent = 'Analyse interrompue';
+      elements.completeTitle.textContent = 'Analyse echouee';
       elements.completeDetails.textContent = data.error
         ? 'Erreur : ' + data.error
-        : processed + ' lead(s) traites avant l\'interruption.';
+        : processed + ' lead(s) traites avant l\'echec.';
+      document.getElementById('completedActions').classList.remove('hidden');
     }
 
-    // Cacher le message temporaire, montrer la banniere
     elements.message.classList.add('hidden');
     elements.complete.classList.remove('hidden');
 
-    // Redirection automatique apres 5s
     setTimeout(function() {
-      window.location.href = DASHBOARD_URL;
+      window.location.href = RESULTS_URL;
     }, 5000);
   }
 
@@ -265,4 +291,3 @@
 </script>
 </body>
 </html>
-

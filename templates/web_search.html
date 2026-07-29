@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recherche web — Lead Qualification Engine</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .evidence-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .evidence-card h4 { margin: 0 0 8px 0; font-size: 1rem; }
+    .evidence-card .source-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: rgba(96,165,250,0.15);
+      color: #60a5fa;
+    }
+    .hit-item {
+      padding: 8px 12px;
+      margin: 6px 0;
+      border-left: 3px solid var(--accent);
+      background: rgba(255,255,255,0.02);
+      border-radius: 0 8px 8px 0;
+    }
+    .hit-item a { color: var(--accent); }
+    .hit-item .snippet {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero" style="grid-template-columns:1fr;">
+      <div class="hero-copy">
+        <p class="eyebrow">Recherche web</p>
+        <h1>Resultats de recherche web</h1>
+        <p class="lead">
+          Session #{{ session.id }} &middot; {{ session.label or 'Sans titre' }} &middot;
+          {{ leads|length }} lead(s) avec preuves
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-light" href="{{ url_for('results_view', session_id=session.id) }}">Retour aux resultats</a>
+          <a class="btn btn-outline-light" href="{{ url_for('download_search_csv', session_id=session.id) }}">CSV</a>
+        </div>
+      </div>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack mt-3">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category == 'error' else category }} shadow-sm">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% if leads %}
+      {% for item in leads %}
+        {% set lead = item.lead %}
+        {% set evidence_list = item.evidence %}
+        <div class="evidence-card">
+          <div class="d-flex align-items-center gap-3 mb-2">
+            <h4>{{ lead.company_name or '--' }}</h4>
+            <a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a>
+          </div>
+          {% for ev in evidence_list %}
+            <div class="mt-2">
+              <span class="source-badge">{{ ev.source }}</span>
+              <span class="text-muted" style="font-size:0.8rem;margin-left:8px;">{{ ev.query or '' }}</span>
+            </div>
+            {% set results = ev.results %}
+            {% if results is iterable and not results is mapping %}
+              {% for hit in results %}
+                <div class="hit-item">
+                  <a href="{{ hit.url }}" target="_blank" rel="noopener">{{ hit.title or hit.url }}</a>
+                  <div class="snippet">{{ hit.content[:300] if hit.content else '' }}{% if hit.content and hit.content|length > 300 %}...{% endif %}</div>
+                </div>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state mt-4">Aucun resultat de recherche web. Lance la Phase 2 pour effectuer une recherche.</div>
+    {% endif %}
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

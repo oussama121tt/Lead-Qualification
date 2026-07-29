@@ -1,10 +1,9 @@
 """
-Orchestrateur (étapes 3 + 5 enchaînées, lead par lead).
+Orchestrateur du pipeline scraping + scoring, lead par lead.
 
-`run_pipeline` est un générateur : il yield un dict de progression après chaque
-lead, pour pouvoir alimenter une barre de progression Streamlit sans bloquer
-l'UI jusqu'à la fin du batch. Une exception sur un lead ne casse jamais le
-batch entier (garde-fou "qualité, pas quantité" du projet : on isole les échecs).
+run_pipeline() est un générateur : il yield un dict de progression après
+chaque lead pour alimenter l'interface temps réel. Une exception sur un
+lead ne casse jamais le batch entier.
 """
 
 import time
@@ -12,7 +11,7 @@ import db as dbmod
 import scraper
 import scorer
 
-DEFAULT_THROTTLE_SECONDS = 2.5  # tier gratuit Groq (~30 req/min) + Firecrawl 1 req/sec/domaine
+DEFAULT_THROTTLE_SECONDS = 15  # Firecrawl free tier ~10 req/min
 
 
 def _now_ts() -> float:
@@ -20,7 +19,27 @@ def _now_ts() -> float:
     return time.monotonic()
 
 
-def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, session_id: int | None = None):
+# def _sleep_check(seconds: float, conn, session_id: int | None, cancellation_check=None):
+#     remaining = seconds
+#     while remaining > 0:
+#         if cancellation_check and cancellation_check():
+#             return
+#         if not cancellation_check and session_id and dbmod.is_session_cancelled(conn, session_id):
+#             return
+#         chunk = min(remaining, 0.5)
+#         time.sleep(chunk)
+#         remaining -= chunk
+
+def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=None):
+    """Dort le nombre de secondes demandé."""
+    time.sleep(seconds)
+
+
+def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, session_id: int | None = None, cancellation_check=None):
+    # Charger les critères de scoring sélectionnés par l'utilisateur
+    scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
+    scoring_criteria_custom = dbmod.get_scoring_criteria_custom(conn, session_id) if session_id else ""
+
     leads = dbmod.get_leads_to_process(conn, session_id=session_id)
     total = len(leads)
     started_at = _now_ts()
@@ -43,15 +62,22 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
         yield dict(progress)
 
         # --- Scraping ---
+        scrape_t0 = _now_ts()
         try:
             scrape_result = scraper.scrape_website(website, throttle_seconds=1.0)
         except Exception as e:
-            dbmod.update_lead_status(conn, lead_id, "FETCH_FAILED")
-            progress.update(step="scraping", status="FETCH_FAILED", error=str(e))
+            err_str = str(e)
+            scrape_elapsed = _now_ts() - scrape_t0
+            dbmod.update_lead_status(conn, lead_id, "FETCH_FAILED", error=err_str)
+            dbmod.record_lead_timing(conn, lead_id, scrape_seconds=scrape_elapsed)
+            progress.update(step="scraping", status="FETCH_FAILED", error=err_str, scrape_seconds=scrape_elapsed, ts=_now_ts())
             yield dict(progress)
             continue
 
-        dbmod.update_lead_status(conn, lead_id, scrape_result["status"])
+        scrape_elapsed = _now_ts() - scrape_t0
+
+        dbmod.record_lead_timing(conn, lead_id, scrape_seconds=scrape_elapsed)
+        dbmod.update_lead_status(conn, lead_id, scrape_result["status"], error=scrape_result.get("error"))
         if scrape_result["rows"]:
             dbmod.save_lead_content(conn, lead_id, scrape_result["rows"])
 
@@ -66,16 +92,15 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
                 scrape_result.get("github_check"),
             )
 
-        progress.update(step="scraping_done", status=scrape_result["status"], error=scrape_result["error"])
+        progress.update(step="scraping_done", status=scrape_result["status"], error=scrape_result["error"], ts=_now_ts())
         yield dict(progress)
 
-        if scrape_result["status"] == "FETCH_FAILED":
-            # On score quand même en LOW_CONFIDENCE via scorer (pas de contenu ->
-            # unclear/needs_human_review), pour ne pas bloquer le lead silencieusement.
-            pass
+        # Même si le scraping a échoué (FETCH_FAILED), on continue vers le
+        # scoring : scorer.py gère le cas rows=[] et renvoie un verdict
+        # unclear/needs_human_review, pour ne pas bloquer le lead silencieusement.
 
         # --- Scoring ---
-        progress["step"] = "scoring"
+        progress.update(step="scoring", ts=_now_ts())
         yield dict(progress)
 
         # Regroupe les signaux déterministes du scraper (technical_signals +
@@ -87,7 +112,9 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
             deterministic_signals["github_check"] = scrape_result.get("github_check")
 
         try:
-            verdict = scorer.score_content(scrape_result["rows"], deterministic_signals=deterministic_signals)
+            score_t0 = _now_ts()
+            verdict = scorer.score_content(scrape_result["rows"], deterministic_signals=deterministic_signals, scoring_criteria=scoring_criteria, scoring_criteria_custom=scoring_criteria_custom)
+            score_elapsed = _now_ts() - score_t0
 
             # Garde-fou domain_mismatch : si l'email et le site scrapé ne
             # partagent pas le même domaine, le verdict porte peut-être sur la
@@ -104,16 +131,20 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
                 verdict["disqualify_reason"] = f"{existing} | {warning}" if existing else warning
 
             dbmod.save_lead_score(conn, lead_id, verdict)
+            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
             new_status = "LOW_CONFIDENCE" if verdict.get("needs_human_review") else "SCORED"
-            dbmod.update_lead_status(conn, lead_id, new_status)
+            scrape_err = scrape_result.get("error") or progress.get("error")
+            dbmod.update_lead_status(conn, lead_id, new_status, error=scrape_err)
         except Exception as e:
-            dbmod.update_lead_status(conn, lead_id, "SCORE_FAILED")
-            progress.update(step="scoring", status="SCORE_FAILED", error=str(e))
+            score_elapsed = _now_ts() - score_t0
+            dbmod.update_lead_status(conn, lead_id, "SCORE_FAILED", error=str(e))
+            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
+            progress.update(step="scoring", status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed, ts=_now_ts())
             yield dict(progress)
-            time.sleep(throttle_seconds)
+            _sleep_check(throttle_seconds)
             continue
 
-        progress.update(step="done", status=new_status, error=None, verdict=verdict)
+        progress.update(step="done", status=new_status, error=None, verdict=verdict, ts=_now_ts())
         yield dict(progress)
 
-        time.sleep(throttle_seconds)  # respecter les quotas des tiers gratuits
+        _sleep_check(throttle_seconds)  # respecter les quotas
