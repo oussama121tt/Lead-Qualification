@@ -323,12 +323,9 @@ body {
 }
 
 /* Segment tag colors */
-.tag-ai_solo_founder { color: var(--accent); }
-.tag-technical_founder { color: var(--accent-2); }
-.tag-small_agency_scaling { color: var(--warning); }
-.tag-too_big { color: var(--danger); }
-.tag-wrong_field { color: var(--muted); }
-.tag-unclear { color: var(--muted); }
+.tag-vibe_coder { color: var(--accent); }
+.tag-technical_ai_user { color: var(--accent-2); }
+.tag-not_target { color: var(--muted); }
 
 .badge-segment {
   display: inline-block;

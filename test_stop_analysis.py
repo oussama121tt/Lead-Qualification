@@ -80,7 +80,7 @@ class TestSSEStream(unittest.TestCase):
 class TestPhase2Selection(unittest.TestCase):
     """Vérifie que la page de sélection Phase 2 exclut les SKIPPED."""
 
-    def _make_mock_lead(self, lead_id, status="SCORED", segment="ai_solo_founder",
+    def _make_mock_lead(self, lead_id, status="SCORED", segment="vibe_coder",
                         is_duplicate=0, disqualify_reason=None):
         return {
             "id": lead_id,
@@ -104,8 +104,8 @@ class TestPhase2Selection(unittest.TestCase):
         """Les leads SKIPPED ne doivent pas apparaître dans la sélection Phase 2."""
         scores_data = [
             self._make_mock_lead(1, status="SKIPPED"),
-            self._make_mock_lead(2, status="SCORED", segment="ai_solo_founder"),
-            self._make_mock_lead(3, status="SCORED", segment="small_agency_scaling"),
+            self._make_mock_lead(2, status="SCORED", segment="vibe_coder"),
+            self._make_mock_lead(3, status="SCORED", segment="technical_ai_user"),
         ]
 
         validees = []
@@ -121,7 +121,7 @@ class TestPhase2Selection(unittest.TestCase):
             is_scoring_error = "api_error" in disqualify.lower() or "no_content_scraped" in disqualify.lower()
             if is_scoring_error or status in ("FETCH_FAILED", "SCORE_FAILED", "NEW", "PARSED", "FETCH_PARTIAL"):
                 en_attente.append(lead)
-            elif segment in ("ai_solo_founder", "technical_founder", "small_agency_scaling"):
+            elif segment in ("vibe_coder", "technical_ai_user"):
                 validees.append(lead)
 
         self.assertEqual(len(validees), 2, "Les 2 leads SCORED doivent être dans validees")
@@ -131,7 +131,7 @@ class TestPhase2Selection(unittest.TestCase):
         """Les doublons ne doivent pas apparaître dans la sélection."""
         scores_data = [
             self._make_mock_lead(1, is_duplicate=1),
-            self._make_mock_lead(2, status="SCORED", segment="ai_solo_founder"),
+            self._make_mock_lead(2, status="SCORED", segment="vibe_coder"),
         ]
         validees = []
         for lead in scores_data:
@@ -145,7 +145,7 @@ class TestPhase2Selection(unittest.TestCase):
         scores_data = [
             self._make_mock_lead(1, status="FETCH_FAILED", disqualify_reason="api_error"),
             self._make_mock_lead(2, status="SCORE_FAILED"),
-            self._make_mock_lead(3, status="SCORED", segment="ai_solo_founder"),
+            self._make_mock_lead(3, status="SCORED", segment="vibe_coder"),
         ]
         validees = []
         en_attente = []
@@ -160,7 +160,7 @@ class TestPhase2Selection(unittest.TestCase):
             is_scoring_error = "api_error" in disqualify.lower() or "no_content_scraped" in disqualify.lower()
             if is_scoring_error or status in ("FETCH_FAILED", "SCORE_FAILED", "NEW", "PARSED", "FETCH_PARTIAL"):
                 en_attente.append(lead)
-            elif segment in ("ai_solo_founder", "technical_founder", "small_agency_scaling"):
+            elif segment in ("vibe_coder", "technical_ai_user"):
                 validees.append(lead)
 
         self.assertEqual(len(validees), 1)

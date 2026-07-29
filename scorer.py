@@ -28,14 +28,19 @@ RETRY_MAX_CONTENT_CHARS = 6000
 RETRY_MAX_OUTPUT_TOKENS = 1024
 
 SYSTEM_PROMPT = """Tu es un analyste senior qui évalue des leads B2B. Tu lis le contenu du site web
-et tu détermines si cette entreprise correspond à nos offres :
+et tu détermines si cette entreprise correspond à nos offres.
 
-1. Audit technique — pour les fondateurs solo ou techniques dont le produit a été
-   construit avec l'aide de l'IA, ou qui ont besoin d'un regard extérieur.
-2. Pipeline IA (lead-gen, $30K) — pour les agences qui scale.
+NOTRE CIBLE PRINCIPALE : les fondateurs non-techniques qui utilisent l'IA pour
+développer leur produit (vibe coding, Cursor, Bolt, Lovable, Replit, etc.).
+Ils ont besoin d'un audit technique car leur code manque de robustesse.
+
+Offre :
+- ai_audit — pour les fondateurs non-techniques qui ont construit avec l'IA
+- general_audit — pour les équipes techniques qui utilisent l'IA comme outil
+- none — pas notre cible
 
 Tu es intelligent : lis attentivement le contenu scrapé du site et décide du segment
-le plus approprié. Ne force pas de catégorie — si c'est ambigu, dis-le.
+le plus approprié. Ne force pas de catégorie — si c'est ambigu, mets not_target.
 
 RÈGLES :
 1. Chaque signal cité DOIT avoir une citation exacte dans evidence_quotes (sauf signaux
@@ -50,24 +55,25 @@ RÈGLES :
 7. Distingue : "le PRODUIT a des features IA" vs "l'ÉQUIPE a construit avec l'IA".
    Si le site vend un produit avec des fonctionnalités IA, ce n'est PAS un signal
    built_with_ai — sauf mention explicite d'outils comme Cursor, v0, Bolt, etc.
-8. Pour chaque lead, pose-toi ces questions :
-   - Est-ce une agence/studio qui vend des services ? → small_agency_scaling
-   - Est-ce un fondateur solo / micro-équipe avec des signaux IA ? → ai_solo_founder
-   - Est-ce une équipe technique classique (produit SaaS, équipe visible) ? → technical_founder
-   - Est-ce une grande organisation sans aucun signal IA ? → too_big
-   - Est-ce un secteur sans rapport ? → wrong_field
-   - Impossible à déterminer ? → unclear
+8. Pour chaque lead, pose-toi ces questions dans l'ordre :
+   a) Le fondateur/équipe est-il NON technique ET utilise-t-il l'IA pour
+      construire son produit ? (vibe coding, Cursor, Bolt, Lovable, Replit,
+      "built with AI", "no-code", fondateur solo non technique) → vibe_coder
+   b) L'équipe est-elle technique ET utilise-t-elle l'IA comme outil de
+      développement ? (ingénieurs, devs, CTO technique) → technical_ai_user
+   c) Dans tous les autres cas (agence, grande entreprise sans signal IA,
+      secteur sans rapport, ambigu) → not_target
 
 Réponds UNIQUEMENT en JSON respectant ce schéma :
 {
-  "segment": "ai_solo_founder | technical_founder | small_agency_scaling | too_big | wrong_field | unclear",
+  "segment": "vibe_coder | technical_ai_user | not_target",
   "confidence": 0.0,
   "company_stage": "pre-launch | early | scaling | established",
   "built_with_ai_signals": [],
   "technical_signals": [],
   "pain_signals": [],
   "evidence_quotes": [],
-  "recommended_offer": "ai_audit | general_audit | pipeline | none",
+  "recommended_offer": "ai_audit | general_audit | none",
   "personalization_hooks": [],
   "disqualify_reason": null,
   "needs_human_review": false
@@ -106,7 +112,7 @@ def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
 def _empty_verdict(disqualify_reason: str) -> dict:
     """Verdict vide pour les cas d'échec (pas de contenu, erreur API, etc.)."""
     return {
-        "segment": "unclear",
+        "segment": "not_target",
         "confidence": 0.0,
         "company_stage": None,
         "built_with_ai_signals": [],
@@ -224,12 +230,12 @@ def score_content(rows: list, deterministic_signals: dict | None = None, scoring
             content += "\n\n---\n\nCritères de scoring sélectionnés par l'utilisateur (accorde plus de poids à ces critères) :\n"
             if scoring_criteria:
                 criteria_desc = {
-                    "built_by_ai": "Détecter si le site a été développé PAR l'IA (vibe-codé, Cursor, Bolt, Lovable, fondateur solo).",
-                    "built_with_ai": "Détecter si le site a été développé AVEC l'aide de l'IA (équipe technique qui utilise l'IA comme outil).",
+                    "vibe_coder": "CIBLE PRINCIPALE : repérer les fondateurs non-techniques qui construisent avec l'IA (vibe coding, Cursor, Bolt, Lovable, Replit).",
+                    "technical_ai_user": "CIBLE SECONDAIRE : repérer les équipes techniques qui utilisent l'IA comme outil de développement.",
                     "solo_or_small": "Identifier les fondateurs solo ou micro-équipes (1-5 personnes).",
                     "agency_or_studio": "Identifier les agences / studios de services qui scale.",
                     "no_ai": "Identifier les entreprises établies sans signal de construction IA.",
-                    "wrong_field": "Identifier les secteurs d'activité sans rapport avec nos offres.",
+                    "not_target": "Identifier les leads qui ne sont pas notre cible (agence, hors secteur, trop gros, ambigu).",
                 }
                 for c in scoring_criteria:
                     desc = criteria_desc.get(c, c)
