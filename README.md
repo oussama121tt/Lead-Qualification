@@ -44,18 +44,10 @@ Une base SQLite `leads.db` est créée automatiquement. Chaque import crée une 
 
 | Segment | Description | Offre recommandée |
 |---|---|---|
-| `ai_solo_founder` | Solo founder / micro-équipe, produit vibe-codé | `ai_audit` |
-| `technical_founder` | Fondateur technique, petite équipe | `general_audit` |
-| `small_agency_scaling` | Agence / studio de développement | `pipeline` |
-| `too_big` | Entreprise produit établie avec équipe technique | `none` |
-| `wrong_field` | Secteur sans rapport | `none` |
-| `unclear` | Impossible à déterminer | `none` |
+| `vibe_coder` | Fondateur non-tech, construit avec l'IA (CIBLE PRINCIPALE) | `ai_audit` |
+| `technical_ai_user` | Équipe technique, utilise l'IA comme outil de dev | `general_audit` |
+| `not_target` | Agence, trop gros, hors secteur, indéterminé | `none` |
 
 ## Statuts d'un lead
 
 `NEW` → `PARSED` / `FETCH_PARTIAL` / `FETCH_FAILED` → `SCORED` / `LOW_CONFIDENCE` / `SCORE_FAILED` → `APPROVED` / `REJECTED`
-
-## Notes sur les tiers
-
-- **Groq** : modèle `llama-3.3-70b-versatile`. Free tier = 100K tokens/jour (~16 leads). Pour 500 leads, prévoir le Dev Tier ($5+/mo) ou passer à Claude.
-- **Firecrawl** : 500 crédits/mois gratuits, 10 req/min. Chaque page = 1 crédit. Pour 500 leads (~5 pages/lead = 2500 pages), prévoir Hobby ($16/mo, 5000 crédits) ou Standard ($83/mo, illimité).
