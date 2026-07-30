@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 *.db
+*.db-info
 *.csv
 .venv/
 venv/
+aa.py

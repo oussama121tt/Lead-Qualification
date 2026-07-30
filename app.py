@@ -24,7 +24,7 @@ from db import _now as _db_now
 import dedup as dedupmod
 import export as exportmod
 import pipeline as pipelinemod
-import pipeline_phase2 as pipelinemod2
+
 
 
 DB_PATH = os.getenv("DB_PATH", dbmod.DB_PATH_DEFAULT)
@@ -85,13 +85,13 @@ def _clear_progress(session_id: int):
 #     return check
 
 
-def _background_rescore_pipeline(conn, session_id: int, throttle_seconds: float, skip_web_search: bool = False, lead_status: str = "RESCORE_PENDING"):
-    """Exécute un rescore (web search optionnel, pas de scraping) dans un thread d'arrière-plan."""
+def _background_rescore_pipeline(conn, session_id: int, throttle_seconds: float, lead_status: str = "RESCORE_PENDING"):
+    """Exécute un rescore (pas de re-scraping ni recherche web) dans un thread d'arrière-plan."""
     # cancel_event = _register_cancellation(session_id)
     processed = 0
     try:
         # cancellation_check = _make_cancellation_check(session_id, conn)
-        for update in pipelinemod2.run_rescore_pipeline(conn, throttle_seconds=throttle_seconds, session_id=session_id, skip_web_search=skip_web_search, lead_status=lead_status):
+        for update in pipelinemod.run_rescore_pipeline(conn, throttle_seconds=throttle_seconds, session_id=session_id, lead_status=lead_status):
             # if update.get("step") != "cancelled":
             processed += 1
             _store_progress(session_id, {"pipeline_status": "running", **update})
@@ -634,9 +634,8 @@ def results_view(session_id: int):
 
 @app.route("/rescore/<int:session_id>", methods=["POST"])
 def rescore_leads(session_id: int):
-    """Relance le scoring + recherche web sur les leads selectionnes."""
+    """Relance le scoring sur les leads selectionnés (sans re-scraping ni recherche web)."""
     selected_ids = request.form.getlist("lead_ids")
-    do_web_search = request.form.get("web_search") == "1"
 
     with open_db() as conn:
         if selected_ids:
@@ -664,8 +663,6 @@ def rescore_leads(session_id: int):
         for lead_id in to_rescore:
             dbmod.update_lead_status(conn, lead_id, "RESCORE_PENDING")
             conn.execute("DELETE FROM lead_scores WHERE lead_id = ?", (lead_id,))
-            if do_web_search:
-                conn.execute("DELETE FROM lead_search_evidence WHERE lead_id = ?", (lead_id,))
         conn.commit()
         dbmod.update_analysis_session_status(conn, session_id, "running")
 
@@ -673,109 +670,13 @@ def rescore_leads(session_id: int):
     threading.Thread(
         target=_background_rescore_pipeline,
         args=(new_conn, session_id, 1.0),
-        kwargs={"skip_web_search": not do_web_search, "lead_status": "RESCORE_PENDING"},
+        kwargs={"lead_status": "RESCORE_PENDING"},
         daemon=True,
     ).start()
 
-    flash(f"{len(to_rescore)} lead(s) marques pour re-scoring" + (" + recherche web" if do_web_search else "") + ".", "info")
+    flash(f"{len(to_rescore)} lead(s) marques pour re-scoring.", "info")
     return redirect(url_for("progress_view", session_id=session_id))
 
-
-@app.route("/phase2-select/<int:session_id>", methods=["GET"])
-def phase2_select(session_id: int):
-    """Page de sélection des leads à passer en Phase 2 (recherche web + rescore)."""
-    with open_db() as conn:
-        session = dbmod.get_analysis_session(conn, session_id)
-        if session is None:
-            flash("Session introuvable.", "error")
-            return redirect(url_for("home"))
-
-        scores_data = dbmod.get_leads_with_scores(conn, session_id=session_id)
-
-        validees = []
-        tres_loin = []
-        proches = []
-        en_attente = []
-
-        for lead in scores_data:
-            if lead.get("is_duplicate"):
-                continue
-            segment = lead.get("segment")
-            status = lead.get("status", "NEW")
-            disqualify = lead.get("disqualify_reason") or ""
-
-            if status == "SKIPPED":
-                continue
-
-            is_scoring_error = "api_error" in disqualify.lower() or "no_content_scraped" in disqualify.lower()
-
-            if is_scoring_error or status in ("FETCH_FAILED", "SCORE_FAILED", "NEW", "PARSED", "FETCH_PARTIAL"):
-                en_attente.append(lead)
-            elif segment == "not_target":
-                tres_loin.append(lead)
-            elif status == "LOW_CONFIDENCE" or lead.get("needs_human_review"):
-                proches.append(lead)
-            elif segment in ("vibe_coder", "technical_ai_user"):
-                validees.append(lead)
-            else:
-                proches.append(lead)
-
-        total = len(validees) + len(proches) + len(tres_loin) + len(en_attente)
-        summary = {
-            "total": total,
-            "scored": len([l for l in scores_data if l.get("segment")]),
-            "validees": len(validees),
-            "proches": len(proches),
-            "tres_loin": len(tres_loin),
-            "en_attente": len(en_attente),
-        }
-
-    return render_template(
-        "phase2_select.html",
-        session=session,
-        summary=summary,
-        categories={
-            "validees": validees,
-            "proches": proches,
-            "tres_loin": tres_loin,
-            "en_attente": en_attente,
-        },
-    )
-
-
-@app.route("/rescore-phase2/<int:session_id>", methods=["POST"])
-def rescore_phase2(session_id: int):
-    """Phase 2 : web search + rescore uniquement (pas de scraping) sur les leads selectionnes."""
-    selected_ids = request.form.getlist("lead_ids")
-    with open_db() as conn:
-        if selected_ids:
-            to_rescore = [int(x) for x in selected_ids if x.isdigit()]
-        else:
-            flash("Selectionne des leads avant de lancer la Phase 2.", "warning")
-            return redirect(url_for("phase2_select", session_id=session_id))
-
-        if not to_rescore:
-            flash("Aucun lead valide selectionne.", "warning")
-            return redirect(url_for("phase2_select", session_id=session_id))
-
-        for lead_id in to_rescore:
-            dbmod.update_lead_status(conn, lead_id, "PHASE2_PENDING")
-            conn.execute("DELETE FROM lead_scores WHERE lead_id = ?", (lead_id,))
-            conn.execute("DELETE FROM lead_search_evidence WHERE lead_id = ?", (lead_id,))
-        conn.commit()
-
-        dbmod.update_analysis_session_status(conn, session_id, "running")
-
-    new_conn = dbmod.get_connection(DB_PATH)
-    threading.Thread(
-        target=_background_rescore_pipeline,
-        args=(new_conn, session_id, 1.0),
-        kwargs={"skip_web_search": False, "lead_status": "PHASE2_PENDING"},
-        daemon=True,
-    ).start()
-
-    flash(f"Phase 2 lancee : {len(to_rescore)} lead(s) — recherche web + nouveau score.", "info")
-    return redirect(url_for("progress_view", session_id=session_id))
 
 
 @app.route("/start-analysis", methods=["POST"])

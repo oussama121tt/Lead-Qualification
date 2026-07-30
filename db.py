@@ -1,5 +1,5 @@
 """
-Couche base de données (SQLite prototype).
+Couche base de données (Turso/libSQL).
 
 Tables :
 - analysis_sessions        : une ligne par analyse/relecture historique
@@ -9,12 +9,24 @@ Tables :
 - lead_scores              : verdict du scoring IA (1 ligne = 1 verdict)
 """
 
-import csv
-import json
+import os
 import sqlite3
-from datetime import datetime, timezone
+import libsql
+from dotenv import load_dotenv
 
-DB_PATH_DEFAULT = "leads.db"
+load_dotenv()
+
+TURSO_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+LOCAL_REPLICA_PATH = "leads-replica.db"
+DB_PATH_DEFAULT = LOCAL_REPLICA_PATH  # compatibilité ascendante
+
+
+def _is_duplicate_column(e: Exception) -> bool:
+    """Vrai si l'erreur signifie 'colonne déjà existante' (sqlite3 ou libsql)."""
+    msg = str(e)
+    return "duplicate column" in msg or "already exists" in msg
+
 
 COLUMN_ALIASES = {
     "first_name": ["first_name", "first name", "firstname"],
@@ -44,9 +56,80 @@ def _domains_related(a: str, b: str) -> bool:
     return a == b or a.endswith("." + b) or b.endswith("." + a)
 
 
-def get_connection(db_path: str = DB_PATH_DEFAULT) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+
+class _TursoConnection:
+    """Wrapper rendant une connexion libsql compatible sqlite3 (rows dict-like)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.row_factory = None  # géré automatiquement via description
+
+    def execute(self, sql, params=None):
+        if params is not None:
+            cur = self._conn.execute(sql, params)
+        else:
+            cur = self._conn.execute(sql)
+        colnames = [d[0] for d in cur.description] if cur.description else []
+        return _TursoCursor(cur, colnames)
+
+    def executemany(self, sql, seq):
+        self._conn.executemany(sql, seq)
+
+    def executescript(self, sql):
+        self._conn.executescript(sql)
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
+class _TursoCursor:
+    """Wrapper transformant les tuples libsql en dicts via .description."""
+
+    def __init__(self, cur, colnames):
+        self._cur = cur
+        self._colnames = colnames
+        self.description = cur.description
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is not None and self._colnames:
+            return _TursoRow(dict(zip(self._colnames, row)), self._colnames)
+        return row
+
+    def fetchall(self):
+        rows = self._cur.fetchall()
+        if rows and self._colnames:
+            return [_TursoRow(dict(zip(self._colnames, r)), self._colnames) for r in rows]
+        return rows
+
+
+class _TursoRow(dict):
+    """Compatible sqlite3.Row : accessible par clé ET par index, .keys() fonctionne."""
+
+    def __init__(self, mapping, colnames):
+        super().__init__(mapping)
+        self._colnames = colnames
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return super().__getitem__(key)
+        return self.get(self._colnames[key])
+
+    def keys(self):
+        return self._colnames
+
+
+def get_connection(db_path: str = LOCAL_REPLICA_PATH):
+    if TURSO_URL and TURSO_TOKEN:
+        raw = libsql.connect(db_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+        raw.sync()
+        conn = _TursoConnection(raw)
+    else:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
@@ -336,8 +419,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE analysis_sessions ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     # Colonnes de review humaine (APPROVED/REJECTED + override de segment)
     for col, coltype in [
@@ -347,8 +431,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     # Colonnes d'erreur et timing pour le diagnostic dans le dashboard
     for col, coltype in [
@@ -358,14 +443,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores"):
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN session_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     for col, coltype in [
         ("email_domain", "TEXT"),
@@ -374,8 +461,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     for col, coltype in [
         ("ai_style_phrases_found", "TEXT"),
@@ -384,8 +472,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE lead_technical_signals ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     # Migrer les donnees existantes sans session_id vers un session "legacy"
     unassigned_count = 0
@@ -393,8 +482,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         try:
             count = conn.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE session_id IS NULL").fetchone()["c"]
             unassigned_count += count
-        except sqlite3.OperationalError:
-            pass
+        except Exception as _e:
+            if not _is_duplicate_column(_e):
+                raise
 
     if unassigned_count > 0:
         legacy = conn.execute(

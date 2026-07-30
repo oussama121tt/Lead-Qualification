@@ -68,7 +68,6 @@
               <li><a class="dropdown-item" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV</a></li>
             </ul>
           </div>
-          <a class="btn btn-accent btn-lg" href="{{ url_for('phase2_select', session_id=session.id) }}">Phase 2 — Recherche web + nouveau score</a>
           {% if has_search_evidence %}
           <a class="btn btn-outline-light" href="{{ url_for('web_search_view', session_id=session.id) }}">Recherche web</a>
           {% endif %}
