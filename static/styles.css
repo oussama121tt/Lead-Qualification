@@ -177,7 +177,7 @@ body {
   font-weight: 700;
 }
 .btn-accent:hover {
-  opacity: 0.9;
+  background: var(--accent-2);
   color: #FFFFFF;
 }
 

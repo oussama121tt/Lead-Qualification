@@ -4,3 +4,4 @@ firecrawl-py
 openai
 python-dotenv
 flask
+requests

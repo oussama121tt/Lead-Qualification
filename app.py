@@ -463,6 +463,7 @@ def start_pipeline_from_review(session_id: int):
         if not to_process:
             flash("Aucun lead selectionne.", "warning")
             return redirect(url_for("import_review", session_id=session_id))
+        dbmod.update_analysis_session_status(conn, session_id, "running")
 
     threading.Thread(
         target=_background_pipeline,
@@ -495,6 +496,7 @@ def analyser_attente(session_id: int):
         if not to_process:
             flash("Aucun lead en attente.", "warning")
             return redirect(url_for("results_view", session_id=session_id))
+        dbmod.update_analysis_session_status(conn, session_id, "running")
 
     _clear_progress(session_id)
     threading.Thread(
@@ -959,11 +961,11 @@ def export_results(session_id: int, format: str):
             is_scoring_error = "api_error" in disqualify.lower() or "no_content_scraped" in disqualify.lower()
             if is_scoring_error or status in ("FETCH_FAILED", "SCORE_FAILED", "NEW", "PARSED", "FETCH_PARTIAL"):
                 en_attente.append(lead)
-            elif segment in ("wrong_field", "too_big"):
+            elif segment == "not_target":
                 tres_loin.append(lead)
-            elif status == "LOW_CONFIDENCE" or segment == "unclear" or lead.get("needs_human_review"):
+            elif status == "LOW_CONFIDENCE" or lead.get("needs_human_review"):
                 proches.append(lead)
-            elif segment in ("ai_solo_founder", "technical_founder", "small_agency_scaling"):
+            elif segment in ("vibe_coder", "technical_ai_user"):
                 validees.append(lead)
             else:
                 proches.append(lead)

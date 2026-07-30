@@ -67,7 +67,7 @@ def create_analysis_session(
         INSERT INTO analysis_sessions (label, source_filename, status, created_at, notes)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (label, source_filename, "running", now, notes),
+        (label, source_filename, "imported", now, notes),
     )
     conn.commit()
     return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
@@ -100,6 +100,11 @@ def delete_analysis_session(conn: sqlite3.Connection, session_id: int) -> None:
     conn.execute("DELETE FROM export_history WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
     conn.execute("DELETE FROM leads WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM analysis_sessions WHERE id = ?", (session_id,))
+    # Réinitialise les compteurs auto-incrément si les tables sont vides
+    for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores", "lead_search_evidence", "export_history", "analysis_sessions"):
+        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if count == 0:
+            conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
     conn.commit()
 
 
@@ -208,7 +213,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             label TEXT,
             source_filename TEXT,
-            status TEXT NOT NULL DEFAULT 'running',
+            status TEXT NOT NULL DEFAULT 'imported',
             created_at TEXT NOT NULL,
             completed_at TEXT,
             notes TEXT

@@ -128,7 +128,7 @@
                     <td>{{ session.label or 'Sans titre' }}</td>
                     <td>{{ session.source_filename or '--' }}</td>
                     <td>
-                      <span class="badge {% if session.status == 'completed' %}bg-success{% elif session.status == 'failed' %}bg-danger{% elif session.status == 'running' %}bg-warning{% else %}bg-secondary{% endif %}">
+                      <span class="badge {% if session.status == 'completed' %}bg-success{% elif session.status == 'failed' %}bg-danger{% elif session.status == 'running' %}bg-warning{% elif session.status == 'imported' %}bg-info{% else %}bg-secondary{% endif %}">
                         {{ session.status }}
                       </span>
                     </td>
