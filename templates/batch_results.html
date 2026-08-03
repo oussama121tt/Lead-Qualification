@@ -3,39 +3,64 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Resultats du lot — Lead Qualification Engine</title>
+  <title>Résultats du lot — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; margin-bottom: 20px; gap: 12px;
+    }
+    .topbar h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+    }
+    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--bg-soft); }
+    .topbar nav a.primary { background: var(--accent); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--accent-2); }
+    .topbar nav a:not(.primary) { color: var(--text); }
+
+    .badge-fw { display: inline-block; min-width: 92px; text-align: center; }
+    .btn-fw { min-width: 100px; text-align: center; }
     .segment-tag {
       display: inline-block; padding: 2px 10px; border-radius: 99px;
       font-size: 0.75rem; font-weight: 600;
-      background: rgba(255,255,255,0.06);
+      background: var(--bg-soft);
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <header class="hero" style="grid-template-columns:1fr;">
-      <div class="hero-copy">
-        <p class="eyebrow">Resultats du dernier lot</p>
-        <h1>Leaves analyses</h1>
-        <p class="lead">
-          Session #{{ session.id }} &middot; {{ session.label or 'Sans titre' }} &middot;
-          {{ leads|length }} lead(s) dans ce lot
-        </p>
-        <div class="hero-actions">
-          <a class="btn btn-light" href="{{ url_for('results_view', session_id=session.id) }}">Tous les resultats</a>
-          <a class="btn btn-outline-light" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV scraping</a>
-          <a class="btn btn-outline-light" href="{{ url_for('download_scores_csv', session_id=session.id) }}">CSV scores</a>
-          <a class="btn btn-outline-light" href="{{ url_for('download_search_csv', session_id=session.id) }}">CSV recherche web</a>
-        </div>
+
+    <div class="topbar">
+      <h1>Lead Qualification &amp; Scoring</h1>
+      <nav>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
+        <a href="{{ url_for('history') }}">Historique</a>
+
+      </nav>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:22px;background:var(--surface);padding:24px;margin-bottom:20px;">
+      <p style="text-transform:uppercase;letter-spacing:0.18em;color:var(--accent);font-size:0.78rem;margin-bottom:8px;">Résultats du dernier lot</p>
+      <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:1.5rem;margin:0 0 6px;letter-spacing:-0.02em;">Leads analysés</h1>
+      <p style="color:var(--muted);font-size:0.92rem;margin:0 0 16px;">
+        Session #{{ session.id }} &middot; {{ session.label or 'Sans titre' }} &middot;
+        {{ leads|length }} lead(s) dans ce lot
+      </p>
+      <div class="d-flex gap-2 flex-wrap">
+        <a class="btn btn-primary" href="{{ url_for('results_view', session_id=session.id) }}">Tous les résultats</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV scraping</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_scores_csv', session_id=session.id) }}">CSV scores</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_search_csv', session_id=session.id) }}">CSV recherche web</a>
       </div>
-    </header>
+    </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
-        <div class="flash-stack mt-3">
+        <div class="flash-stack">
           {% for category, message in messages %}
             <div class="alert alert-{{ 'danger' if category == 'error' else category }} shadow-sm">{{ message }}</div>
           {% endfor %}
@@ -44,11 +69,11 @@
     {% endwith %}
 
     {% if leads %}
-      <div class="table-wrap mt-4">
+      <div class="table-wrap">
         <table class="table table-hover table-striped align-middle">
           <thead>
             <tr>
-              <th>Societe</th>
+              <th>Société</th>
               <th>Site web</th>
               <th>Segment</th>
               <th>Confiance</th>
@@ -61,17 +86,17 @@
               <tr>
                 <td><strong>{{ lead.company_name or '--' }}</strong></td>
                 <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                <td><span class="segment-tag">{{ lead.segment or 'Non evalue' }}</span></td>
+                <td><span class="segment-tag tag-{{ lead.segment }}">{{ lead.segment|map_segment }}</span></td>
                 <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
-                <td>{{ lead.recommended_offer or '--' }}</td>
-                <td><span class="badge bg-{{ 'success' if lead.status == 'SCORED' else 'warning' if lead.status == 'LOW_CONFIDENCE' else 'secondary' }}">{{ lead.status }}</span></td>
+                <td>{{ lead.recommended_offer|map_offer }}</td>
+                <td><span class="badge badge-fw {{ lead.status|badge_class }}">{{ lead.status|map_status_label }}</span></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <div class="empty-state mt-4">Aucun lead dans ce lot.</div>
+      <div class="empty-state" style="margin-top:0;">Aucun lead dans ce lot.</div>
     {% endif %}
   </div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

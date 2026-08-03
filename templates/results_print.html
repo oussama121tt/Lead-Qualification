@@ -28,9 +28,9 @@
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
-        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ lead.segment|map_segment }}</td>
         <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
-        <td>{{ lead.recommended_offer or '--' }}</td>
+        <td>{{ lead.recommended_offer|map_offer }}</td>
         <td>{{ lead.company_stage or '--' }}</td>
       </tr>
       {% endfor %}
@@ -47,10 +47,10 @@
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
-        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ lead.segment|map_segment }}</td>
         <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
-        <td>{{ lead.recommended_offer or '--' }}</td>
-        <td>{{ lead.disqualify_reason or lead.status or '--' }}</td>
+        <td>{{ lead.recommended_offer|map_offer }}</td>
+        <td>{{ lead.disqualify_reason or lead.status|map_status_label or '--' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -66,7 +66,7 @@
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
-        <td>{{ lead.segment or '--' }}</td>
+        <td>{{ lead.segment|map_segment }}</td>
         <td>{{ lead.disqualify_reason or '--' }}</td>
       </tr>
       {% endfor %}
@@ -83,7 +83,7 @@
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
-        <td>{{ lead.status or '--' }}</td>
+        <td>{{ lead.status|map_status_label }}</td>
         <td>{{ lead.last_error or lead.disqualify_reason or '--' }}</td>
       </tr>
       {% endfor %}

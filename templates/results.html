@@ -3,276 +3,286 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Resultats — Lead Qualification Engine</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <title>Résultats — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
-    .category-section { margin-bottom: 32px; }
-    .category-header {
-      display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; margin-bottom: 20px; gap: 12px;
     }
-    .category-header h3 { margin: 0; font-family: Georgia, "Times New Roman", serif; }
-    .category-count {
+    .topbar h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+    }
+    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--bg-soft); }
+    .topbar nav a.primary { background: var(--accent); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--accent-2); }
+    .topbar nav a:not(.primary) { color: var(--text); }
+
+    .btn-outline {
+      font-size: 13px; padding: 7px 14px; border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--surface); color: var(--text);
+      text-decoration: none; display: inline-flex; align-items: center; gap: 4px;
+      cursor: pointer; transition: border-color 0.12s, color 0.12s;
+    }
+    .btn-outline:hover { border-color: var(--border-accent); color: var(--text-accent); }
+    .btn-small { font-size: 12px; padding: 6px 10px; }
+    .btn-primary {
+      font-size: 13px; font-weight: 600; padding: 9px 16px; border: none;
+      border-radius: var(--radius); background: var(--accent); color: #fff;
+      cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .btn-primary:hover { background: var(--accent-2); }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 2rem; }
+    .stat-card { background: var(--surface); border-radius: 12px; padding: 1rem 1.25rem; }
+    .stat-card .stat-label { font-size: 13px; color: var(--muted); margin: 0 0 4px; }
+    .stat-card .stat-value { font-size: 24px; font-weight: 500; margin: 0; color: var(--text); }
+    .stat-card.stat-success .stat-label, .stat-card.stat-success .stat-value { color: var(--text-success); }
+    .stat-card.stat-warning .stat-label, .stat-card.stat-warning .stat-value { color: var(--text-warning); }
+
+    .section-title { margin: 0 0 12px; }
+    .section-title.stat-success { color: var(--text-success); }
+    .section-title.stat-warning { color: var(--text-warning); }
+    .list-card { border: 0.5px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 2rem; background: var(--surface); }
+    .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+    .list-row + .list-row { border-top: 0.5px solid var(--border); }
+    .list-row-main { flex: 1; min-width: 0; }
+    .list-row-name { font-weight: 500; margin: 0; }
+    .list-row-sub { font-size: 13px; color: var(--text-muted); margin: 0; }
+    .list-row-sub a { color: var(--text-muted); text-decoration: none; }
+    .list-row-sub a:hover { color: var(--accent); }
+    .tag-pill {
+      font-size: 12px; padding: 3px 10px; border-radius: var(--radius);
+      background: var(--surface-1); color: var(--text-secondary); white-space: nowrap;
+    }
+    .conf-pct { font-size: 13px; font-weight: 500; min-width: 36px; text-align: right; }
+    .conf-success { color: var(--text-success); }
+    .conf-warning { color: var(--text-warning); }
+    .conf-danger { color: var(--text-danger); }
+    .conf-muted { color: var(--text-secondary); }
+    .offer-cell { font-size: 13px; color: var(--text-secondary); min-width: 100px; }
+    .reason-cell { font-size: 12px; color: var(--text-muted); max-width: 320px; }
+    .btn-icon {
+      font-size: 12px; padding: 6px 10px; background: var(--surface-1);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary);
+      cursor: pointer; transition: border-color 0.12s, color 0.12s;
+    }
+    .btn-icon:hover { border-color: var(--border-accent); color: var(--text-accent); }
+
+    .collapse-card {
+      border: 0.5px solid var(--border); border-radius: 12px;
+      background: var(--surface); margin-bottom: 2rem;
+    }
+    .collapse-card > summary {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      cursor: pointer; padding: 12px 16px; list-style: none;
+    }
+    .collapse-card > summary::-webkit-details-marker { display: none; }
+    .collapse-card > summary::before {
+      content: '\203A'; display: inline-block; transition: transform 0.12s;
+      color: var(--text-muted); font-size: 1.1rem;
+    }
+    .collapse-card[open] > summary::before { transform: rotate(90deg); }
+    .count-pill {
       padding: 2px 12px; border-radius: 99px; font-size: 0.85rem; font-weight: 600;
+      background: var(--surface-1); color: var(--text-secondary);
+      vertical-align: middle;
     }
-    .cat-validees .category-count { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
-    .cat-non-validees .category-count { background: rgba(248, 113, 113, 0.15); color: #f87171; }
-    .cat-tres-loin .category-count { background: rgba(151, 166, 199, 0.15); color: #97a6c7; }
-    .cat-proches .category-count { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
-    .cat-attente .category-count { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
-    .segment-tag {
-      display: inline-block; padding: 2px 10px; border-radius: 99px;
-      font-size: 0.75rem; font-weight: 600;
-      background: rgba(255,255,255,0.06);
+    .collapse-sub { font-size: 13px; color: var(--text-muted); }
+
+    .warning-banner {
+      display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+      background: var(--bg-warning); border-radius: var(--radius); margin-bottom: 1rem;
     }
-    .dropdown-menu-csv-pdf .dropdown-item { font-size: 0.85rem; padding: 6px 16px; }
-    .dropdown-menu-csv-pdf .dropdown-item:hover { background: rgba(255,255,255,0.06); }
+
+    .flash-stack .alert {
+      padding: 12px 16px; margin-bottom: 14px; border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .flash-stack .alert-success { background: var(--bg-success); color: var(--text-success); }
+    .flash-stack .alert-danger { background: rgba(220, 38, 38, 0.08); color: var(--text-danger); }
+    .flash-stack .alert-warning { background: var(--bg-warning); color: var(--text-warning); }
+    .flash-stack .alert-info { background: rgba(0, 171, 228, 0.08); color: var(--text-accent); }
+
+    .empty-state-compact { padding: 16px; color: var(--text-muted); text-align: center; font-size: 0.9rem; }
   </style>
 </head>
 <body>
   <div class="shell">
-    <header class="hero" style="grid-template-columns:1fr;">
-      <div class="hero-copy">
-        <p class="eyebrow">Etape 4/4 — Resultats</p>
-        <h1>Leads analyses</h1>
-        <p class="lead">
-          Session #{{ session.id }} &middot; {{ session.label or 'Sans titre' }} &middot;
-          {{ summary.total }} leads, {{ summary.scored }} scores
-          {% if summary.en_attente %} &middot; <span class="text-warning">{{ summary.en_attente }} en attente</span>{% endif %}
-        </p>
-        <div class="hero-actions">
-          <a class="btn btn-light" href="{{ url_for('home') }}">Nouvelle analyse</a>
-          <!-- Download dropdowns -->
-          <div class="btn-group">
-            <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
-              Resultats
-            </button>
-            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-csv-pdf">
-              <li><a class="dropdown-item" href="{{ url_for('export_results', session_id=session.id, format='csv') }}">CSV complet</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('export_results', session_id=session.id, format='pdf') }}" target="_blank">PDF (impression)</a></li>
-            </ul>
-          </div>
-          <div class="btn-group">
-            <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
-              Scores
-            </button>
-            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-csv-pdf">
-              <li><a class="dropdown-item" href="{{ url_for('download_scores_csv', session_id=session.id) }}">CSV</a></li>
-            </ul>
-          </div>
-          <div class="btn-group">
-            <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
-              Scraping
-            </button>
-            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-csv-pdf">
-              <li><a class="dropdown-item" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV</a></li>
-            </ul>
-          </div>
-          <a class="btn btn-accent btn-lg" href="{{ url_for('phase2_select', session_id=session.id) }}">Phase 2 — Recherche web + nouveau score</a>
-          {% if has_search_evidence %}
-          <a class="btn btn-outline-light" href="{{ url_for('web_search_view', session_id=session.id) }}">Recherche web</a>
-          {% endif %}
-        </div>
-      </div>
-    </header>
+
+    <div class="topbar">
+      <h1>Lead Qualification &amp; Scoring</h1>
+      <nav>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
+        <a href="{{ url_for('history') }}">Historique</a>
+      </nav>
+    </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
-        <div class="flash-stack mt-3">
+        <div class="flash-stack">
           {% for category, message in messages %}
-            <div class="alert alert-{{ 'danger' if category == 'error' else category }} shadow-sm">{{ message }}</div>
+            <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
           {% endfor %}
         </div>
       {% endif %}
     {% endwith %}
 
-    <!-- Validées -->
-    <section class="category-section cat-validees mt-4">
-      <div class="category-header">
-        <h3>Validees</h3>
-        <span class="category-count">{{ categories.validees|length }}</span>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5rem;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h1 style="margin:0;">Leads analysés</h1>
       </div>
-      {% if categories.validees %}
-        <div class="table-wrap">
-          <table class="table table-hover table-striped align-middle">
-            <thead>
-              <tr>
-                <th>Societe</th>
-                <th>Site</th>
-                <th>Segment</th>
-                <th>Confiance</th>
-                <th>Offre</th>
-                <th>Stage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for lead in categories.validees %}
-                <tr>
-                  <td><strong>{{ lead.company_name or '--' }}</strong></td>
-                  <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                  <td><span class="segment-tag tag-{{ lead.segment }}">{{ lead.segment }}</span></td>
-                  <td>{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
-                  <td>{{ lead.recommended_offer or '--' }}</td>
-                  <td>{{ lead.company_stage or '--' }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <a class="btn-outline" href="{{ url_for('download_scores_csv', session_id=session.id) }}">
+          <i class="ti ti-download" style="font-size:16px;vertical-align:-2px;" aria-hidden="true"></i>CSV
+        </a>
+        <a class="btn-outline" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV Scraping</a>
+        {% if has_search_evidence %}
+        <a class="btn-outline" href="{{ url_for('download_search_csv', session_id=session.id) }}">CSV Recherche web</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <p class="stat-label">Leads</p>
+        <p class="stat-value">{{ summary.total }}</p>
+      </div>
+      <div class="stat-card stat-success">
+        <p class="stat-label">Prêts à approuver</p>
+        <p class="stat-value">{{ summary.validees }}</p>
+      </div>
+      <div class="stat-card stat-warning">
+        <p class="stat-label">À réviser</p>
+        <p class="stat-value">{{ summary.proches }}</p>
+      </div>
+      <div class="stat-card">
+        <p class="stat-label">En attente</p>
+        <p class="stat-value">{{ summary.en_attente }}</p>
+      </div>
+    </div>
+
+    <!-- Prêts à approuver -->
+    <h3 class="section-title stat-success">Prêts à approuver</h3>
+    {% if categories.validees %}
+    <div class="list-card">
+      {% for lead in categories.validees %}
+      <div class="list-row">
+        <div class="list-row-main">
+          <p class="list-row-name">{{ lead.company_name or '--' }}</p>
+          <p class="list-row-sub">
+            {% if lead.website_url %}<a href="{{ lead.website_url }}" target="_blank" rel="noopener">{{ lead.website_url.split('://')[-1].split('/')[0] }}</a>{% endif %}
+          </p>
         </div>
-      {% else %}
-        <div class="empty-state">Aucun lead valide pour le moment.</div>
-      {% endif %}
-    </section>
-
-    <!-- Proches (low confidence / unclear) -->
-    <section class="category-section cat-proches mt-4">
-      <div class="category-header">
-        <h3>Proches — a re-evaluer</h3>
-        <span class="category-count">{{ categories.proches|length }}</span>
+        <span class="tag-pill">{{ lead.segment|map_segment }}</span>
+        <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
+        <span class="offer-cell">{{ lead.recommended_offer|map_offer }}</span>
+        <button class="btn-icon" type="button" aria-label="Approuver {{ lead.company_name or '' }}"><i class="ti ti-check" style="font-size:15px;" aria-hidden="true"></i></button>
+        <button class="btn-icon" type="button" aria-label="Rejeter {{ lead.company_name or '' }}"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>
       </div>
-      {% if categories.proches %}
-        <div class="table-wrap">
-          <table class="table table-hover table-striped align-middle">
-            <thead>
-              <tr>
-                <th>Societe</th>
-                <th>Site</th>
-                <th>Segment</th>
-                <th>Confiance</th>
-                <th>Offre</th>
-                <th>Raison</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for lead in categories.proches %}
-                <tr>
-                  <td><strong>{{ lead.company_name or '--' }}</strong></td>
-                  <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                  <td><span class="segment-tag tag-{{ lead.segment }}">{{ lead.segment }}</span></td>
-                  <td class="text-warning">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</td>
-                  <td>{{ lead.recommended_offer or '--' }}</td>
-                  <td><span class="text-muted" style="font-size:0.82rem;">{{ lead.disqualify_reason or lead.status }}</span></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="empty-state">Aucun lead proche.</div>
-      {% endif %}
-    </section>
-
-    <!-- Très loin (wrong_field / too_big) -->
-    <section class="category-section cat-tres-loin mt-4">
-      <div class="category-header">
-        <h3>Tres loin — disqualifies</h3>
-        <span class="category-count">{{ categories.tres_loin|length }}</span>
-      </div>
-      {% if categories.tres_loin %}
-        <div class="table-wrap">
-          <table class="table table-hover table-striped align-middle">
-            <thead>
-              <tr>
-                <th>Societe</th>
-                <th>Site</th>
-                <th>Segment</th>
-                <th>Raison</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for lead in categories.tres_loin %}
-                <tr>
-                  <td><strong>{{ lead.company_name or '--' }}</strong></td>
-                  <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                  <td><span class="segment-tag tag-{{ lead.segment }}">{{ lead.segment }}</span></td>
-                  <td><span class="text-muted" style="font-size:0.82rem;">{{ lead.disqualify_reason or '--' }}</span></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="empty-state">Aucun lead disqualifie.</div>
-      {% endif %}
-    </section>
-
-    <!-- Non sélectionnés (SKIPPED a l'import) -->
-    <section class="category-section cat-non-validees mt-4">
-      <div class="category-header">
-        <h3>Non selectionnes</h3>
-        <span class="category-count">{{ categories.non_validees|length }}</span>
-      </div>
-      {% if categories.non_validees %}
-        <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post" class="mb-0">
-          <div class="table-wrap">
-            <table class="table table-hover table-striped align-middle">
-              <thead>
-                <tr>
-                  <th><input type="checkbox" id="selectAllNonValidees" onchange="toggleAllIn(this, 'nonValidees')"></th>
-                  <th>Societe</th>
-                  <th>Site web</th>
-                  <th>Contact</th>
-                  <th>Email</th>
-                  <th>Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for lead in categories.non_validees %}
-                  <tr>
-                    <td><input type="checkbox" name="lead_ids" value="{{ lead.id }}" class="cb-nonValidees"></td>
-                    <td><strong>{{ lead.company_name or '--' }}</strong></td>
-                    <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                    <td>{{ lead.first_name or '' }} {{ lead.last_name or '' }}</td>
-                    <td>{{ lead.email or '--' }}</td>
-                    <td><span class="badge bg-secondary">Non evalue</span></td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          <div class="d-flex align-items-center gap-3 mt-3 flex-wrap">
-            <button class="btn btn-primary btn-lg" type="submit">Lancer l'analyse <span id="countNonValidees">0</span></button>
-          </div>
-        </form>
-      {% else %}
-        <div class="empty-state">Tous les leads ont ete selectionnes.</div>
-      {% endif %}
-    </section>
-
-    <!-- En attente (erreurs / non analyses) -->
-    {% if categories.en_attente %}
-    <section class="category-section mt-4">
-      <div class="category-header">
-        <h3>En attente d'analyse</h3>
-        <span class="category-count" style="background:rgba(96,165,250,0.15);color:#60a5fa;">{{ categories.en_attente|length }}</span>
-      </div>
-      <div class="table-wrap">
-        <table class="table table-hover table-striped align-middle">
-          <thead>
-            <tr>
-              <th>Societe</th>
-              <th>Site web</th>
-              <th>Statut</th>
-              <th>Erreur</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for lead in categories.en_attente %}
-              <tr>
-                <td><strong>{{ lead.company_name or '--' }}</strong></td>
-                <td><a href="{{ lead.website_url }}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.85rem;">{{ lead.website_url[:40] }}{% if lead.website_url and lead.website_url|length > 40 %}...{% endif %}</a></td>
-                <td><span class="badge bg-secondary">{{ lead.status }}</span></td>
-                <td><span class="text-muted" style="font-size:0.82rem;">{{ lead.last_error or lead.disqualify_reason or '--' }}</span></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post" class="mt-3">
-        <button class="btn btn-primary btn-lg" type="submit">Relancer l'analyse ({{ categories.en_attente|length }} leads)</button>
-      </form>
-    </section>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="list-card"><div class="empty-state-compact">Aucun lead prêt à approuver.</div></div>
     {% endif %}
+
+    <!-- À réviser -->
+    <h3 class="section-title stat-warning">À réviser</h3>
+    {% if categories.proches %}
+    <div class="list-card">
+      {% for lead in categories.proches %}
+      <div class="list-row">
+        <div class="list-row-main">
+          <p class="list-row-name">{{ lead.company_name or '--' }}</p>
+          <p class="list-row-sub">
+            {% if lead.website_url %}<a href="{{ lead.website_url }}" target="_blank" rel="noopener">{{ lead.website_url.split('://')[-1].split('/')[0] }}</a>{% endif %}
+          </p>
+        </div>
+        <span class="tag-pill">{{ lead.segment|map_segment }}</span>
+        <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
+        {% set reason_text = lead.disqualify_reason or lead.status|map_status_label %}
+        <span class="reason-cell" title="{{ reason_text }}">{{ reason_text|truncate(160, killwords=False, end='…') }}</span>
+        <button class="btn-outline btn-small" type="button">Examiner</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="list-card"><div class="empty-state-compact">Aucun lead à réviser.</div></div>
+    {% endif %}
+
+    <!-- Hors cible -->
+    {% if categories.tres_loin %}
+    <details class="collapse-card">
+      <summary>
+        <h3 class="section-title" style="margin:0;">Hors cible <span class="count-pill">{{ categories.tres_loin|length }}</span></h3>
+        {% if categories.tres_loin[0].disqualify_reason %}<span class="collapse-sub">— {{ categories.tres_loin[0].disqualify_reason }}</span>{% endif %}
+      </summary>
+      <div class="list-card" style="margin:0 12px 12px;">
+        {% for lead in categories.tres_loin %}
+        <div class="list-row" style="padding:10px 16px;">
+          <span style="flex:1;font-size:14px;">{{ lead.company_name or '--' }}</span>
+          <span style="font-size:12px;color:var(--text-muted);">{{ lead.segment|map_segment }}</span>
+          <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+
+    <!-- En attente (erreurs / non analysés) -->
+    {% if categories.en_attente %}
+    <h3 class="section-title">En attente</h3>
+    {% for lead in categories.en_attente %}
+    <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post">
+      <div class="warning-banner">
+        <input type="hidden" name="lead_ids" value="{{ lead.id }}">
+        <i class="ti ti-alert-triangle" style="font-size:18px;color:var(--text-warning);" aria-hidden="true"></i>
+        <span style="flex:1;font-size:14px;color:var(--text-warning);">
+          {{ lead.company_name or '--' }}{% if lead.website_url %} ({{ lead.website_url.split('://')[-1].split('/')[0] }}){% endif %}
+          — {{ lead.last_error or lead.disqualify_reason or lead.status|map_status_label }}.
+        </span>
+        <button class="btn-outline btn-small" type="submit">Relancer</button>
+      </div>
+    </form>
+    {% endfor %}
+    {% endif %}
+
+    <!-- Non sélectionnés (SKIPPED à l'import) -->
+    {% if categories.non_validees %}
+    <details class="collapse-card">
+      <summary>
+        <h3 class="section-title" style="margin:0;">Non sélectionnés <span class="count-pill">{{ categories.non_validees|length }}</span></h3>
+        <span class="collapse-sub">— ces leads n'ont pas encore été scorés</span>
+      </summary>
+      <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post" style="margin:0 12px 12px;">
+        <div class="list-card" style="margin-bottom:12px;">
+          <div class="list-row" style="border-bottom:0.5px solid var(--border);">
+            <input type="checkbox" id="selectAllNonValidees" onchange="toggleAllIn(this, 'nonValidees')" aria-label="Sélectionner tout">
+            <span class="list-row-main" style="font-size:13px;color:var(--text-secondary);">Sélectionner tout</span>
+          </div>
+          {% for lead in categories.non_validees %}
+          <div class="list-row">
+            <input type="checkbox" name="lead_ids" value="{{ lead.id }}" class="cb-nonValidees">
+            <div class="list-row-main">
+              <p class="list-row-name">{{ lead.company_name or '--' }}</p>
+              <p class="list-row-sub">
+                {% if lead.website_url %}<a href="{{ lead.website_url }}" target="_blank" rel="noopener">{{ lead.website_url.split('://')[-1].split('/')[0] }}</a>{% endif %}
+              </p>
+            </div>
+            <span style="font-size:13px;color:var(--text-secondary);">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</span>
+            <span style="font-size:13px;color:var(--text-muted);">{{ lead.email or '--' }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <button class="btn-primary" type="submit">Lancer le scoring <span id="countNonValidees">0</span></button>
+      </form>
+    </details>
+    {% endif %}
+
   </div>
   <script>
     function toggleAllIn(master, group) {
@@ -288,6 +298,5 @@
       }
     }
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -10,6 +10,17 @@
   --warning: #F59E0B;
   --danger: #EF4444;
   --border: rgba(0, 0, 0, 0.08);
+  --surface-1: #F3F7FB;
+  --text-secondary: #52606D;
+  --text-muted: #8A98A5;
+  --bg-success: rgba(22, 163, 74, 0.08);
+  --text-success: #16A34A;
+  --bg-warning: rgba(245, 158, 11, 0.12);
+  --text-warning: #F59E0B;
+  --text-danger: #DC2626;
+  --text-accent: #0098CC;
+  --border-accent: #00ABE4;
+  --radius: 10px;
 }
 
 * {
@@ -36,7 +47,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 28px;
   background: var(--surface);
-  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.06);
 }
 
 .eyebrow {
@@ -183,12 +193,15 @@ body {
 
 .btn-outline-primary,
 .btn-outline-warning,
-.btn-dark,
-.btn-outline-light {
+.btn-dark {
   border-color: var(--border);
   color: var(--text);
 }
-.btn-outline-light:hover {
+.btn-outline-secondary {
+  border-color: var(--border);
+  color: var(--text);
+}
+.btn-outline-secondary:hover {
   background: var(--bg-soft);
   color: var(--text);
 }
@@ -226,14 +239,14 @@ body {
   margin-bottom: 14px;
 }
 
-/* -----------------------------------------------
-   Status badges
-   ----------------------------------------------- */
-
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+@media (max-width: 1100px) {
+  .hero,
+  .grid-2,
+  .hero-panel,
+  .filters,
+  .form-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat-badge {
@@ -389,43 +402,19 @@ body {
    ----------------------------------------------- */
 
 .progress-page {
-  max-width: 680px;
-  margin: 60px auto;
+  max-width: 640px;
+  margin: 40px auto;
   text-align: center;
-  position: relative;
-  padding: 48px 32px;
+  padding: 32px 28px;
   border: 1px solid var(--border);
-  border-radius: 32px;
+  border-radius: 22px;
   background: var(--surface);
-  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.06);
-  overflow: hidden;
-}
-
-.progress-glow {
-  position: absolute;
-  top: -60%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 180px;
-  height: 180px;
-  background: radial-gradient(circle, rgba(0, 171, 228, 0.12), transparent 70%);
-  border-radius: 50%;
-  pointer-events: none;
-  animation: progress-pulse 2s ease-in-out infinite;
-}
-
-@keyframes progress-pulse {
-  0%, 100% { opacity: 0.4; transform: translateX(-50%) scale(1); }
-  50% { opacity: 0.9; transform: translateX(-50%) scale(1.12); }
 }
 
 .progress-title {
-  font-size: clamp(1.6rem, 3vw, 2.2rem);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  margin-bottom: 32px;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin-bottom: 24px;
 }
 
 .progress-bar-track {

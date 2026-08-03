@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 *.db
+*.db-info
+*.db-shm
+*.db-wal
 *.csv
 .venv/
 venv/

@@ -35,6 +35,70 @@ def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=
     time.sleep(seconds)
 
 
+def _build_lead_metadata(lead: dict) -> dict:
+    """Extrait les métadonnées Apollo d'un lead pour le prompt de scoring."""
+    return {
+        "first_name": lead.get("first_name"),
+        "last_name": lead.get("last_name"),
+        "title": lead.get("title"),
+        "company_name": lead.get("company_name"),
+        "email": lead.get("email"),
+        "website_url": lead.get("website_url"),
+    }
+
+
+def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
+    """Recherche web (LinkedIn, Product Hunt, etc.), persiste chaque source en
+    DB (lead_search_evidence), et retourne les résultats sous forme de dict
+    {source: [hits]} — SÉPARÉ du contenu scrapé du site.
+
+    Avant : les hits étaient fusionnés directement dans `rows` (perte de
+    title/url, plus de distinction de fiabilité site vs web dans le prompt).
+    Maintenant : `scorer.score_content()` reçoit ce dict via son propre
+    paramètre `web_search_evidence`, formaté et budgété à part (voir
+    scorer._format_web_search_evidence).
+    """
+    company_name = lead.get("company_name", "")
+    if not company_name:
+        return {}
+    founder_name = " ".join(filter(None, [lead.get("first_name"), lead.get("last_name")])).strip() or None
+    try:
+        search_results = scraper.search_additional_evidence(
+            company_name=company_name,
+            founder_name=founder_name,
+            limit_per_query=2,
+        )
+        if "_error" in search_results:
+            return {}
+        for source, hits in search_results.items():
+            if isinstance(hits, list) and hits:
+                dbmod.save_search_evidence(conn, lead_id, source, "", hits)
+        return {
+            source: hits for source, hits in search_results.items()
+            if isinstance(hits, list) and hits
+        }
+    except Exception:
+        return {}
+
+
+def _load_persisted_web_evidence(conn, lead_id: int) -> dict:
+    """Recharge les preuves web déjà collectées et persistées (lead_search_evidence)
+    pour un lead — utilisé par run_rescore_pipeline, qui ne relance pas de
+    nouvelle recherche web mais ne doit PAS non plus perdre celles du premier
+    passage (bug corrigé : avant, un rescore ne rechargeait que lead_content,
+    jamais lead_search_evidence — les preuves web coûtées en crédits SGAI
+    disparaissaient silencieusement)."""
+    evidence_rows = dbmod.get_lead_search_evidence(conn, lead_id)
+    web_evidence: dict = {}
+    for row in evidence_rows:
+        source = row.get("source")
+        hits = row.get("results")
+        if not source or not isinstance(hits, list):
+            continue
+        web_evidence.setdefault(source, []).extend(hits)
+    return web_evidence
+
+
 def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, session_id: int | None = None, cancellation_check=None):
     # Charger les critères de scoring sélectionnés par l'utilisateur
     scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
@@ -95,6 +159,12 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
         progress.update(step="scraping_done", status=scrape_result["status"], error=scrape_result["error"], ts=_now_ts())
         yield dict(progress)
 
+        # --- Web Search (intégré à la Phase 1) ---
+        # Récupère les preuves web (LinkedIn, Product Hunt, GitHub, etc.)
+        # SÉPARÉMENT du contenu scrapé du site — plus de fusion silencieuse
+        # dans `rows` (voir _fetch_web_search_evidence).
+        web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
+
         # Même si le scraping a échoué (FETCH_FAILED), on continue vers le
         # scoring : scorer.py gère le cas rows=[] et renvoie un verdict
         # unclear/needs_human_review, pour ne pas bloquer le lead silencieusement.
@@ -113,7 +183,15 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
 
         try:
             score_t0 = _now_ts()
-            verdict = scorer.score_content(scrape_result["rows"], deterministic_signals=deterministic_signals, scoring_criteria=scoring_criteria, scoring_criteria_custom=scoring_criteria_custom)
+            lead_metadata = _build_lead_metadata(lead)
+            verdict = scorer.score_content(
+                scrape_result["rows"],
+                deterministic_signals=deterministic_signals,
+                lead_metadata=lead_metadata,
+                web_search_evidence=web_evidence,
+                scoring_criteria=scoring_criteria,
+                scoring_criteria_custom=scoring_criteria_custom,
+            )
             score_elapsed = _now_ts() - score_t0
 
             # Garde-fou domain_mismatch : si l'email et le site scrapé ne
@@ -148,3 +226,92 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
         yield dict(progress)
 
         _sleep_check(throttle_seconds)  # respecter les quotas
+
+
+def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | None = None, lead_status: str = "RESCORE_PENDING", cancellation_check=None):
+    """
+    Re-score uniquement (pas de re-scraping ni recherche web).
+    Recharge le contenu déjà scrapé depuis la DB et relance le LLM.
+    Utilisé par le bouton "Re-scorer" depuis la page résultats.
+    """
+    scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
+    scoring_criteria_custom = dbmod.get_scoring_criteria_custom(conn, session_id) if session_id else ""
+
+    leads = dbmod.get_leads_by_status(conn, lead_status, session_id=session_id)
+    total = len(leads)
+    started_at = _now_ts()
+
+    for i, lead in enumerate(leads, start=1):
+        lead_id = lead["id"]
+        progress = {
+            "index": i,
+            "total": total,
+            "lead_id": lead_id,
+            "company_name": lead["company_name"],
+            "website_url": lead.get("website_url", ""),
+            "step": "scoring",
+            "status": None,
+            "error": None,
+            "ts": _now_ts(),
+            "started_at": started_at,
+        }
+        yield dict(progress)
+
+        existing_rows = dbmod.get_lead_content(conn, lead_id)
+        if not existing_rows:
+            fail_status = f"{lead_status.replace('_PENDING', '_FAILED')}"
+            dbmod.update_lead_status(conn, lead_id, fail_status, error="no_scraped_content")
+            progress.update(step="scoring", status=fail_status, error="no_scraped_content", ts=_now_ts())
+            yield dict(progress)
+            continue
+
+        deterministic_signals = None
+        signals_row = dbmod.get_lead_technical_signals(conn, lead_id)
+        if signals_row:
+            deterministic_signals = dict(signals_row)
+
+        # Recharge les preuves web déjà collectées au premier passage — sans
+        # ça, un rescore perdait silencieusement tout ce que la recherche web
+        # avait trouvé (bug corrigé : lead_search_evidence existe en DB mais
+        # n'était jamais relu ici).
+        web_evidence = _load_persisted_web_evidence(conn, lead_id)
+
+        try:
+            score_t0 = _now_ts()
+            lead_metadata = _build_lead_metadata(lead)
+            verdict = scorer.score_content(
+                existing_rows,
+                deterministic_signals=deterministic_signals,
+                lead_metadata=lead_metadata,
+                web_search_evidence=web_evidence,
+                scoring_criteria=scoring_criteria,
+                scoring_criteria_custom=scoring_criteria_custom,
+            )
+            score_elapsed = _now_ts() - score_t0
+
+            if lead.get("domain_mismatch"):
+                reason = lead.get("domain_mismatch_reason") or "email/website domain mismatch"
+                warning = (
+                    f"domain_mismatch: {reason} — ce verdict décrit peut-être "
+                    "la mauvaise entreprise, à confirmer manuellement avant tout envoi"
+                )
+                verdict["needs_human_review"] = True
+                existing = verdict.get("disqualify_reason")
+                verdict["disqualify_reason"] = f"{existing} | {warning}" if existing else warning
+
+            dbmod.save_lead_score(conn, lead_id, verdict)
+            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
+            new_status = "LOW_CONFIDENCE" if verdict.get("needs_human_review") else "SCORED"
+            dbmod.update_lead_status(conn, lead_id, new_status)
+        except Exception as e:
+            score_elapsed = _now_ts() - score_t0
+            dbmod.update_lead_status(conn, lead_id, "SCORE_FAILED", error=str(e))
+            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
+            progress.update(step="scoring", status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed, ts=_now_ts())
+            yield dict(progress)
+            _sleep_check(throttle_seconds)
+            continue
+
+        progress.update(step="done", status=new_status, error=None, verdict=verdict, ts=_now_ts())
+        yield dict(progress)
+        _sleep_check(throttle_seconds)

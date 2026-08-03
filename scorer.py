@@ -5,18 +5,25 @@ Scoring IA des leads via Groq API (compatible OpenAI SDK).
 et des signaux déterministes calculés par scraper.py. Produit un verdict JSON
 structuré (segment, confiance, signaux, hooks, disqualification).
 
-Trois flux d'entrée :
+Quatre flux d'entrée :
 1. lead_metadata — nom, titre, entreprise, email (issus du CSV Apollo). Le
    titre du contact (ex: "CTO" vs "Founder") est un signal direct pour la
    distinction technical_founder / ai_solo_founder, et ne doit jamais être
    absent du prompt (cf. cahier des charges FR-3 : "Input: lead metadata +
    parsed site text").
-2. Texte scrapé (contenu de site) — analysé par le LLM pour le ton, la
-   spécificité, les mentions explicites et les indices de construction IA.
+2. Texte scrapé (contenu de site, first-party) — analysé par le LLM pour le
+   ton, la spécificité, les mentions explicites et les indices de
+   construction IA.
 3. deterministic_signals (optionnel) — signaux DOM/CSS/meta/git déjà calculés
    par scraper.py, fournis tels quels avec leur niveau de fiabilité explicite.
    Le LLM ne doit pas re-dériver ces signaux, seulement les interpréter selon
    leur poids indiqué.
+4. web_search_evidence (optionnel) — résultats de recherche web d'escalade
+   (LinkedIn, Product Hunt, GitHub, interviews), formatés et budgétés à part
+   du contenu du site : preuve THIRD-PARTY, jamais fusionnée silencieusement
+   dans le texte du site comme avant (perte de title/url et de la distinction
+   de fiabilité). Persisté en DB (lead_search_evidence) et rechargé lors d'un
+   rescore, pour ne pas perdre ces preuves entre deux passages de scoring.
 
 Segments (alignés sur le cahier des charges original, FR-3) :
   ai_solo_founder | technical_founder | small_agency_scaling | too_big |
@@ -35,7 +42,10 @@ load_dotenv()
 
 MODEL = "llama-3.3-70b-versatile"
 CONFIDENCE_THRESHOLD = 0.7  # valeur du cahier des charges d'origine (FR-3)
-MAX_CONTENT_CHARS = 16000  # ~4000 tokens pour respecter le quota TPD Groq
+MAX_CONTENT_CHARS = 16000  # legacy — encore utilisé par les chemins de retry (contenu site seul)
+MAX_SITE_CONTENT_CHARS = 12000  # budget dédié au contenu du site (first-party)
+MAX_WEB_EVIDENCE_CHARS = 4000   # budget dédié séparé pour la recherche web (third-party) —
+                                 # jamais écrasé par un site verbeux qui remplirait tout le quota
 MAX_OUTPUT_TOKENS = 2048
 RETRY_MAX_CONTENT_CHARS = 6000
 RETRY_MAX_OUTPUT_TOKENS = 1024
@@ -97,6 +107,12 @@ strictement, ne traite jamais deux signaux de force différente comme équivalen
   tracker, widget) — s'il est isolé et que rien d'autre ne corrobore (pas de mention explicite
   dans le texte visible, pas de langage vibe-coding), baisse ta confiance en conséquence plutôt
   que de le traiter comme acquis.
+- Les résultats de recherche web (bloc "Résultats de recherche web", si présent) sont une preuve
+  TIERCE — quelqu'un d'autre parle de cette entreprise, ce n'est pas l'entreprise elle-même qui
+  s'exprime sur son propre site. Une mention explicite trouvée là (ex: un post où le fondateur
+  admet lui-même avoir vibe-codé) reste un signal FORT, mais un extrait de recherche vague, hors
+  contexte, ou qui semble parler d'une autre entreprise du même nom doit être traité avec plus de
+  prudence qu'une mention équivalente trouvée directement sur le site officiel du lead.
 
 RÈGLES :
 1. Chaque signal cité dans built_with_ai_signals/technical_signals/pain_signals DOIT avoir une
@@ -167,13 +183,6 @@ def _strip_images(text: str) -> str:
     return text
 
 
-def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
-    """Concatène les pages scrapées en un seul bloc texte pour le prompt LLM."""
-    chunks = [f"## Source: {source}\n{content}" for source, _url, content in rows if content]
-    full_text = "\n\n---\n\n".join(chunks)
-    return _strip_images(full_text[:max_chars])
-
-
 def _format_lead_metadata(lead_metadata: dict | None) -> str:
     """
     Formate les métadonnées Apollo du lead (nom, titre, entreprise, email) en
@@ -194,6 +203,59 @@ def _format_lead_metadata(lead_metadata: dict | None) -> str:
     if not lines:
         return ""
     return "Métadonnées du contact (source Apollo) :\n" + "\n".join(lines)
+
+
+def _format_web_search_evidence(web_search_evidence: dict | None, max_chars: int = MAX_WEB_EVIDENCE_CHARS) -> str:
+    """
+    Formate les résultats de recherche web (escalade, LinkedIn/Product Hunt/
+    GitHub/interviews) en bloc DISTINCT du contenu du site.
+
+    Pourquoi séparé plutôt que fusionné dans `rows` comme avant : le site est
+    une preuve first-party (l'entreprise parle d'elle-même), la recherche web
+    est souvent third-party (quelqu'un d'autre parle d'eux, ou un extrait de
+    recherche tronqué hors contexte) — le LLM doit pouvoir distinguer les deux
+    fiabilités, pas les traiter comme équivalentes. `title`/`url` sont aussi
+    préservés ici (perdus si simplement concaténés dans `rows` comme avant).
+
+    Args:
+        web_search_evidence: dict {source: [{"url":..,"title":..,"content":..}, ...]}
+            — format retourné par scraper.search_additional_evidence(), ou
+            reconstruit depuis db.get_lead_search_evidence() pour un rescore.
+        max_chars: budget dédié, indépendant du budget du contenu du site.
+    """
+    if not web_search_evidence:
+        return ""
+
+    chunks = []
+    for source, hits in web_search_evidence.items():
+        if not isinstance(hits, list):
+            continue
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            content = (hit.get("content") or "").strip()
+            if not content:
+                continue
+            title = hit.get("title", "")
+            url = hit.get("url", "")
+            chunks.append(f"[{source}] {title} ({url})\n{content}")
+
+    if not chunks:
+        return ""
+
+    joined = "\n\n".join(chunks)[:max_chars]
+    return (
+        "Résultats de recherche web (preuve TIERCE — quelqu'un d'autre parle de cette "
+        "entreprise, ce n'est PAS le site officiel du lead. À traiter avec plus de prudence "
+        "qu'une mention trouvée directement sur le site) :\n\n" + joined
+    )
+
+
+def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
+    """Concatène les pages scrapées en un seul bloc texte pour le prompt LLM."""
+    chunks = [f"## Source: {source}\n{content}" for source, _url, content in rows if content]
+    full_text = "\n\n---\n\n".join(chunks)
+    return _strip_images(full_text[:max_chars])
 
 
 VALID_SEGMENTS = {
@@ -344,6 +406,7 @@ def score_content(
     rows: list,
     deterministic_signals: dict | None = None,
     lead_metadata: dict | None = None,
+    web_search_evidence: dict | None = None,
     scoring_criteria: list[str] | None = None,
     scoring_criteria_custom: str = "",
 ) -> dict:
@@ -351,19 +414,27 @@ def score_content(
     signaux déterministes.
 
     Args:
-        rows: Liste de tuples (source, url, content) du scraper.
+        rows: Liste de tuples (source, url, content) du scraper — contenu du
+            site UNIQUEMENT (first-party). Les résultats de recherche web ne
+            doivent plus être fusionnés ici, voir web_search_evidence.
         deterministic_signals: Dict des signaux DOM/CSS/meta/git calculés par scraper.py.
         lead_metadata: Dict des champs Apollo du lead (first_name, last_name, title,
             company_name, email, website_url) — cf. FR-3 du cahier des charges,
             "Input: lead metadata + parsed site text". Absent jusqu'ici, ajouté ici.
+        web_search_evidence: Dict {source: [{"url","title","content"}, ...]} des
+            résultats de recherche web (escalade). Formaté et budgété séparément
+            du contenu du site (preuve third-party, jamais fusionnée silencieusement
+            comme avant — voir _format_web_search_evidence).
         scoring_criteria: Liste de critères sélectionnés par l'utilisateur pour guider le scoring.
         scoring_criteria_custom: Texte libre saisi par l'utilisateur pour un critère personnalisé.
 
     Returns:
         Dict correspondant au schéma JSON du verdict (segment, confidence, etc.).
     """
-    text = rows_to_text(rows)
-    if not text.strip():
+    text = rows_to_text(rows, max_chars=MAX_SITE_CONTENT_CHARS)
+    web_evidence_block = _format_web_search_evidence(web_search_evidence)
+
+    if not text.strip() and not web_evidence_block:
         return _empty_verdict("no_content_scraped")
 
     def build_user_content(t: str) -> str:
@@ -373,7 +444,11 @@ def score_content(
         if metadata_block:
             parts.append(metadata_block)
 
-        parts.append(f"Informations collectées sur ce lead :\n\n{t}")
+        if t.strip():
+            parts.append(f"Informations collectées sur ce lead (site officiel) :\n\n{t}")
+
+        if web_evidence_block:
+            parts.append(web_evidence_block)
 
         has_criteria = bool(scoring_criteria) or bool(scoring_criteria_custom)
         if has_criteria:

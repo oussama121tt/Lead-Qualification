@@ -3,64 +3,69 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lead Qualification Engine</title>
+  <title>Tableau de bord — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; margin-bottom: 20px; gap: 12px;
+    }
+    .topbar h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+    }
+    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--bg-soft); }
+    .topbar nav a.primary { background: var(--accent); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--accent-2); }
+    .topbar nav a:not(.primary) { color: var(--text); }
+
+    .dashboard-card {
+      border: 1px solid var(--border); border-radius: 22px;
+      background: var(--surface); padding: 24px; margin-bottom: 24px;
+    }
+    .dashboard-card h2 { margin: 0 0 4px; font-family: Georgia, "Times New Roman", serif; font-size: 1.2rem; }
+    .dashboard-card .lead { margin: 0 0 16px; color: var(--muted); font-size: 0.92rem; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr); gap: 12px;
+    }
+    .stat-card-dash {
+      padding: 16px 14px; border-radius: 14px;
+      background: var(--bg-soft); border: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .stat-card-dash .stat-lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .stat-card-dash .stat-num { font-size: 1.5rem; font-weight: 600; }
+    .stat-card-dash.stat-warning .stat-num { color: var(--warning); }
+    .stat-card-dash.stat-danger .stat-num { color: var(--danger); }
+    .stat-card-dash.stat-info .stat-num { color: var(--accent); }
+
+    .badge-fw { display: inline-block; min-width: 92px; text-align: center; }
+    .btn-fw { min-width: 100px; text-align: center; }
+
+    @media (max-width: 720px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
 </head>
 <body>
   <div class="shell">
-    <header class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">RuyaTech prototype interne</p>
-        <h1>Lead Qualification &amp; Scoring Engine</h1>
-        <p class="lead">Interface complète pour importer un CSV Apollo, lancer la déduplication et exécuter le scraping + scoring, puis consulter et télécharger les résultats.</p>
-        <div class="hero-actions">
-          <a class="btn btn-light" href="#ingestion">Commencer l'analyse</a>
-          <a class="btn btn-outline-light" href="#resultats">Voir les résultats</a>
-          <button class="btn btn-outline-light" type="button"
-                  data-bs-toggle="collapse" data-bs-target="#historyPanel"
-                  aria-expanded="false" aria-controls="historyPanel">
-            Voir l'historique
-          </button>
-        </div>
-        <div class="collapse mt-4" id="historyPanel">
-          <form class="session-switcher" method="get" action="{{ url_for('dashboard') }}">
-            <label class="form-label">Historique des analyses</label>
-            <div class="d-flex gap-2 flex-wrap">
-              <select class="form-select session-select" name="session_id">
-                {% for session in sessions %}
-                  <option value="{{ session.id }}" {% if session.id == selected_session_id %}selected{% endif %}>
-                    #{{ session.id }} · {{ session.label or 'Sans titre' }} · {{ session.status }} · {{ session.created_at }}
-                  </option>
-                {% endfor %}
-              </select>
-              <button class="btn btn-outline-light" type="submit">Ouvrir</button>
-            </div>
-          </form>
-        </div>
-      </div>
-      <aside class="hero-panel">
-        <div class="panel-card">
-          <span class="panel-label">Total leads</span>
-          <strong>{{ summary.total_leads }}</strong>
-        </div>
-        <div class="panel-card">
-          <span class="panel-label">Prêts à traiter</span>
-          <strong>{{ summary.ready_to_process }}</strong>
-        </div>
-        <div class="panel-card">
-          <span class="panel-label">Doublons</span>
-          <strong>{{ summary.duplicates }}</strong>
-        </div>
-        <div class="panel-card">
-          <span class="panel-label">Scorés</span>
-          <strong>{{ summary.scored }}</strong>
-        </div>
-      </aside>
-    </header>
+
+    <div class="topbar">
+      <h1>Lead Qualification &amp; Scoring</h1>
+      <nav>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
+        <a href="{{ url_for('history') }}">Historique</a>
+
+      </nav>
+    </div>
 
     {% if api_key_missing %}
-      <div class="alert alert-warning shadow-sm mt-4">Clés manquantes : {{ api_key_missing | join(', ') }}. L'import reste possible, mais le scraping/scoring nécessitent ces variables d'environnement.</div>
+      <div class="alert alert-warning shadow-sm">Clés manquantes : {{ api_key_missing | join(', ') }}. L'import reste possible, mais le scraping/scoring nécessitent ces variables d'environnement.</div>
     {% endif %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -73,213 +78,232 @@
       {% endif %}
     {% endwith %}
 
-    <section class="grid-2 mt-4">
-      <div class="card block" id="ingestion">
-        <div class="card-body">
-          <h2>Ingestion</h2>
-          <p class="section-hint">Importer un CSV Apollo, puis lancer l'analyse complète ou une étape indépendante.</p>
-          <form class="stack" action="{{ url_for('start_analysis') }}" method="post" enctype="multipart/form-data">
-            <label class="form-label">CSV Apollo</label>
-            <input class="form-control form-control-lg" type="file" name="csv_file" accept=".csv" required>
-            <div class="form-row">
-              <div>
-                <label class="form-label">Seuil fuzzy</label>
-                <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold">
-              </div>
-              <div>
-                <label class="form-label">Pause entre leads (s)</label>
-                <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
-              </div>
-            </div>
-            <div class="button-row">
-              <button class="btn btn-primary btn-lg" type="submit">Commencer l'analyse complète</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <div class="card block">
-        <div class="card-body">
-          <h2>Actions rapides</h2>
-          <p class="section-hint">Lance chaque étape indépendamment si tu veux contrôler le flux.</p>
-          <div class="stack">
-            <form action="{{ url_for('dedup_only', session_id=selected_session_id or '') }}" method="post">
-              <div class="form-row">
-                <div>
-                  <label class="form-label">Seuil fuzzy</label>
-                  <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold">
-                </div>
-              </div>
-              <button class="btn btn-outline-primary mt-3" type="submit">Lancer la déduplication</button>
-            </form>
-            <form action="{{ url_for('pipeline_only', session_id=selected_session_id or '') }}" method="post">
-              <div class="form-row">
-                <div>
-                  <label class="form-label">Pause entre leads (s)</label>
-                  <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
-                </div>
-              </div>
-              <button class="btn btn-outline-warning mt-3" type="submit">Lancer le scraping + scoring</button>
-            </form>
-            <div class="download-row">
-              <a class="btn btn-dark" href="{{ url_for('download_scraping_csv', session_id=selected_session_id or '') }}">CSV scraping</a>
-              <a class="btn btn-dark" href="{{ url_for('download_scores_csv', session_id=selected_session_id or '') }}">CSV scoring</a>
-              <a class="btn btn-dark" href="{{ url_for('download_search_csv', session_id=selected_session_id or '') }}">CSV recherche web</a>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card block mt-4">
-      <div class="card-body">
-        <h2>Tableau des leads</h2>
-        <p class="section-hint">Session active : {{ session_name }}</p>
-        <div class="table-wrap">{{ leads_table | safe }}</div>
-      </div>
-    </section>
-
-    <section class="card block mt-4" id="resultats">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
-          <div>
-            <h2 class="mb-1">Résultats scorés</h2>
-            <p class="section-hint mb-0">Filtrer par segment, masquer les doublons et afficher seulement les leads à revoir.</p>
-          </div>
-        </div>
-
-        <form class="filters" method="get">
-          <div>
-            <label class="form-label">Segment</label>
-            <select class="form-select" name="segment" multiple size="4">
-              {% for segment in segments %}
-                <option value="{{ segment }}" {% if segment in selected_segments %}selected{% endif %}>{{ segment }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" role="switch" name="needs_review" value="1" id="needs_review" {% if needs_review %}checked{% endif %}>
-            <label class="form-check-label" for="needs_review">Uniquement needs_human_review</label>
-          </div>
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" role="switch" name="hide_duplicates" value="1" id="hide_duplicates" {% if hide_duplicates %}checked{% endif %}>
-            <label class="form-check-label" for="hide_duplicates">Masquer les doublons</label>
-          </div>
-          <button class="btn btn-outline-light" type="submit">Appliquer</button>
+    <!-- Session selector & summary -->
+    <div class="dashboard-card">
+      <h2>Tableau de bord</h2>
+      <p class="lead">Session active : {{ session_name }}</p>
+      <div class="d-flex gap-2 flex-wrap mb-4">
+        <form class="d-flex gap-2 flex-wrap" method="get" action="{{ url_for('dashboard') }}">
+          <select class="form-select" name="session_id" style="width:auto;">
+            {% for session in sessions %}
+              <option value="{{ session.id }}" {% if session.id == selected_session_id %}selected{% endif %}>
+                #{{ session.id }} · {{ session.label or 'Sans titre' }} · {{ session.status|map_status_label }} · {{ session.created_at[:10] }}
+              </option>
+            {% endfor %}
+          </select>
+          <button class="btn btn-outline-secondary" type="submit">Ouvrir</button>
         </form>
-
-        <div class="table-wrap mt-3">{{ scores_table | safe }}</div>
       </div>
-    </section>
+      <div class="stats-grid">
+        <div class="stat-card-dash stat-info">
+          <span class="stat-lbl">Total leads</span>
+          <span class="stat-num">{{ summary.total_leads }}</span>
+        </div>
+        <div class="stat-card-dash">
+          <span class="stat-lbl">Prêts à traiter</span>
+          <span class="stat-num">{{ summary.ready_to_process }}</span>
+        </div>
+        <div class="stat-card-dash">
+          <span class="stat-lbl">Doublons</span>
+          <span class="stat-num">{{ summary.duplicates }}</span>
+        </div>
+        <div class="stat-card-dash stat-info">
+          <span class="stat-lbl">Scorés</span>
+          <span class="stat-num">{{ summary.scored }}</span>
+        </div>
+        <div class="stat-card-dash stat-warning">
+          <span class="stat-lbl">Confiance faible</span>
+          <span class="stat-num">{{ summary.low_confidence }}</span>
+        </div>
+        <div class="stat-card-dash stat-warning">
+          <span class="stat-lbl">À vérifier</span>
+          <span class="stat-num">{{ summary.needs_review }}</span>
+        </div>
+        <div class="stat-card-dash stat-danger">
+          <span class="stat-lbl">Échecs scraping</span>
+          <span class="stat-num">{{ summary.fetch_failed }}</span>
+        </div>
+        <div class="stat-card-dash stat-danger">
+          <span class="stat-lbl">Échecs scoring</span>
+          <span class="stat-num">{{ summary.score_failed }}</span>
+        </div>
+      </div>
+    </div>
 
-    <section class="grid-2 mt-4">
-      <div class="card block">
-        <div class="card-body">
-          <h2>Statuts</h2>
-          <div class="status-grid">
-            <div class="stat-badge stat-bad">
-              <span class="stat-badge-label">FETCH_FAILED</span>
-              <span class="stat-badge-value">{{ summary.fetch_failed }}</span>
+    <!-- Ingestion -->
+    <div class="dashboard-card">
+      <h2>Ingestion</h2>
+      <p class="lead">Importer un CSV Apollo, puis lancer l'analyse complète ou une étape indépendante.</p>
+      <form class="stack" action="{{ url_for('start_analysis') }}" method="post" enctype="multipart/form-data">
+        <label class="form-label">CSV Apollo</label>
+        <input class="form-control form-control-lg" type="file" name="csv_file" accept=".csv" required>
+        <div class="form-row mt-3">
+          <div>
+            <label class="form-label">Seuil fuzzy</label>
+            <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold">
+          </div>
+          <div>
+            <label class="form-label">Pause entre leads (s)</label>
+            <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-lg mt-3" type="submit">Commencer l'analyse complète</button>
+      </form>
+    </div>
+
+    <!-- Actions rapides -->
+    <div class="dashboard-card">
+      <h2>Actions rapides</h2>
+      <p class="lead">Lance chaque étape indépendamment si tu veux contrôler le flux.</p>
+      <div class="d-flex gap-3 flex-wrap">
+        <form action="{{ url_for('dedup_only', session_id=selected_session_id or '') }}" method="post">
+          <div class="mb-2">
+            <label class="form-label">Seuil fuzzy</label>
+            <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold" style="width:160px;">
+          </div>
+          <button class="btn btn-outline-primary" type="submit">Lancer la déduplication</button>
+        </form>
+        <form action="{{ url_for('pipeline_only', session_id=selected_session_id or '') }}" method="post">
+          <div class="mb-2">
+            <label class="form-label">Pause entre leads (s)</label>
+            <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds" style="width:160px;">
+          </div>
+          <button class="btn btn-outline-warning" type="submit">Lancer le scraping + scoring</button>
+        </form>
+      </div>
+      <div class="d-flex gap-2 flex-wrap mt-3">
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_scraping_csv', session_id=selected_session_id or '') }}">CSV scraping</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_scores_csv', session_id=selected_session_id or '') }}">CSV scoring</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_search_csv', session_id=selected_session_id or '') }}">CSV recherche web</a>
+      </div>
+    </div>
+
+    <!-- Leads table -->
+    <div class="dashboard-card">
+      <h2>Tableau des leads</h2>
+      <p class="lead">Session active : {{ session_name }}</p>
+      <div class="table-wrap">{{ leads_table | safe }}</div>
+    </div>
+
+    <!-- Scores results -->
+    <div class="dashboard-card">
+      <h2>Résultats scorés</h2>
+      <p class="lead">Filtrer par segment, masquer les doublons et afficher seulement les leads à revoir.</p>
+      <form class="d-flex gap-3 flex-wrap align-items-end mb-3" method="get">
+        <div>
+          <label class="form-label">Segment</label>
+          <select class="form-select" name="segment" multiple size="4">
+            {% for segment in segments %}
+              <option value="{{ segment }}" {% if segment in selected_segments %}selected{% endif %}>{{ segment|map_segment }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch" name="needs_review" value="1" id="needs_review" {% if needs_review %}checked{% endif %}>
+          <label class="form-check-label" for="needs_review">Uniquement needs_human_review</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch" name="hide_duplicates" value="1" id="hide_duplicates" {% if hide_duplicates %}checked{% endif %}>
+          <label class="form-check-label" for="hide_duplicates">Masquer les doublons</label>
+        </div>
+        <button class="btn btn-outline-secondary" type="submit">Appliquer</button>
+      </form>
+      <div class="table-wrap">{{ scores_table | safe }}</div>
+    </div>
+
+    <!-- Lead detail -->
+    <div class="dashboard-card">
+      <h2>Détail du lead</h2>
+      {% if lead_detail %}
+        <div class="d-flex align-items-center gap-3 mb-3">
+          <div>
+            <strong style="font-size:1.1rem;">{{ lead_detail.company_name }}</strong>
+            <br>
+            <a class="text-muted" href="{{ lead_detail.website_url }}" target="_blank" style="font-size:0.85rem;">{{ lead_detail.website_url }}</a>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6 col-md-3">
+            <div class="p-3 rounded-3" style="background:var(--bg-soft);">
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Segment</div>
+              <div class="fw-semibold">{{ lead_detail.segment|map_segment }}</div>
             </div>
-            <div class="stat-badge stat-bad">
-              <span class="stat-badge-label">SCORE_FAILED</span>
-              <span class="stat-badge-value">{{ summary.score_failed }}</span>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="p-3 rounded-3" style="background:var(--bg-soft);">
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Confiance</div>
+              <div class="fw-semibold">{{ lead_detail.confidence or '—' }}</div>
             </div>
-            <div class="stat-badge stat-warn">
-              <span class="stat-badge-label">LOW_CONFIDENCE</span>
-              <span class="stat-badge-value">{{ summary.low_confidence }}</span>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="p-3 rounded-3" style="background:var(--bg-soft);">
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Offre</div>
+              <div class="fw-semibold">{{ lead_detail.recommended_offer|map_offer }}</div>
             </div>
-            <div class="stat-badge stat-warn">
-              <span class="stat-badge-label">Needs review</span>
-              <span class="stat-badge-value">{{ summary.needs_review }}</span>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="p-3 rounded-3" style="background:var(--bg-soft);">
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Statut</div>
+              <div class="fw-semibold">{{ lead_detail.status|map_status_label }}</div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="card block">
-        <div class="card-body">
-          <h2>Détail du lead</h2>
-          {% if lead_detail %}
-            <div class="lead-header">
-              <strong class="lead-name">{{ lead_detail.company_name }}</strong>
-              <a class="lead-url" href="{{ lead_detail.website_url }}" target="_blank">{{ lead_detail.website_url }}</a>
-            </div>
-            <div class="meta-grid">
-              <div class="meta-item">
-                <span class="meta-label">Segment</span>
-                <span class="meta-value badge-segment tag-{{ lead_detail.segment }}">{{ lead_detail.segment or '—' }}</span>
+        {% if lead_detail.evidence_quotes and lead_detail.evidence_quotes is not string and lead_detail.evidence_quotes|length > 0 %}
+          <details class="detail-section" open>
+            <summary class="detail-summary">Evidence quotes ({{ lead_detail.evidence_quotes|length }})</summary>
+            <ul class="quote-list">
+              {% for quote in lead_detail.evidence_quotes if quote %}
+                <li>{{ quote }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+
+        {% if lead_detail.personalization_hooks and lead_detail.personalization_hooks is not string and lead_detail.personalization_hooks|length > 0 %}
+          <details class="detail-section" open>
+            <summary class="detail-summary">Personalization hooks</summary>
+            <ul class="quote-list">
+              {% for hook in lead_detail.personalization_hooks if hook %}
+                <li>{{ hook }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+
+        {% if lead_detail.web_search_evidence and lead_detail.web_search_evidence|length > 0 %}
+          <details class="detail-section">
+            <summary class="detail-summary">Web search ({{ lead_detail.web_search_evidence|length }} sources)</summary>
+            {% for ev in lead_detail.web_search_evidence %}
+              <div class="search-source">
+                <strong>{{ ev.source }}</strong>
+                {% if ev.results is mapping and ev.results.get('error') %}
+                  <span class="text-warning">{{ ev.results.error }}</span>
+                {% elif ev.results and ev.results is iterable and ev.results is not string and ev.results|length > 0 %}
+                  <ul class="quote-list">
+                    {% for hit in ev.results if hit.url %}
+                      <li><a href="{{ hit.url }}" target="_blank" rel="noopener">{{ hit.title }}</a></li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="text-muted">Aucun résultat</span>
+                {% endif %}
               </div>
-              <div class="meta-item">
-                <span class="meta-label">Confiance</span>
-                <span class="meta-value {% if lead_detail.confidence is number and lead_detail.confidence < 0.7 %}text-warning{% endif %}">{{ lead_detail.confidence or '—' }}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Offre</span>
-                <span class="meta-value">{{ lead_detail.recommended_offer or '—' }}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Statut</span>
-                <span class="meta-value {% if lead_detail.status in ('SCORE_FAILED', 'FETCH_FAILED') %}text-danger{% elif lead_detail.status == 'LOW_CONFIDENCE' %}text-warning{% endif %}">{{ lead_detail.status }}</span>
-              </div>
-            </div>
+            {% endfor %}
+          </details>
+        {% endif %}
 
-            {% if lead_detail.evidence_quotes and lead_detail.evidence_quotes is not string and lead_detail.evidence_quotes|length > 0 %}
-              <details class="detail-section" open>
-                <summary class="detail-summary">Evidence quotes ({{ lead_detail.evidence_quotes|length }})</summary>
-                <ul class="quote-list">
-                  {% for quote in lead_detail.evidence_quotes if quote %}
-                    <li>{{ quote }}</li>
-                  {% endfor %}
-                </ul>
-              </details>
-            {% endif %}
+        {% if lead_detail.disqualify_reason %}
+          <details class="detail-section">
+            <summary class="detail-summary text-danger">Raison</summary>
+            <div class="error-block">{{ lead_detail.disqualify_reason }}</div>
+          </details>
+        {% endif %}
+      {% else %}
+        <div class="empty-state">Sélectionne un lead scoré pour afficher le détail.</div>
+      {% endif %}
+    </div>
 
-            {% if lead_detail.personalization_hooks and lead_detail.personalization_hooks is not string and lead_detail.personalization_hooks|length > 0 %}
-              <details class="detail-section" open>
-                <summary class="detail-summary">Personalization hooks</summary>
-                <ul class="quote-list">
-                  {% for hook in lead_detail.personalization_hooks if hook %}
-                    <li>{{ hook }}</li>
-                  {% endfor %}
-                </ul>
-              </details>
-            {% endif %}
-
-            {% if lead_detail.web_search_evidence and lead_detail.web_search_evidence|length > 0 %}
-              <details class="detail-section">
-                <summary class="detail-summary">Web search ({{ lead_detail.web_search_evidence|length }} sources)</summary>
-                {% for ev in lead_detail.web_search_evidence %}
-                  <div class="search-source">
-                    <strong>{{ ev.source }}</strong>
-                    {% if ev.results is mapping and ev.results.get('error') %}
-                      <span class="text-warning">{{ ev.results.error }}</span>
-                    {% elif ev.results and ev.results is iterable and ev.results is not string and ev.results|length > 0 %}
-                      <ul class="quote-list">
-                        {% for hit in ev.results if hit.url %}
-                          <li><a href="{{ hit.url }}" target="_blank" rel="noopener">{{ hit.title }}</a></li>
-                        {% endfor %}
-                      </ul>
-                    {% else %}
-                      <span class="text-muted">Aucun résultat</span>
-                    {% endif %}
-                  </div>
-                {% endfor %}
-              </details>
-            {% endif %}
-
-            {% if lead_detail.disqualify_reason %}
-              <details class="detail-section">
-                <summary class="detail-summary text-danger">Raison</summary>
-                <div class="error-block">{{ lead_detail.disqualify_reason }}</div>
-              </details>
-            {% endif %}
-          {% else %}
-            <div class="empty-state">Sélectionne un lead scoré pour afficher le détail.</div>
-          {% endif %}
-        </div>
-      </div>
-    </section>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
