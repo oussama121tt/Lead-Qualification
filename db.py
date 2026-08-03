@@ -1,5 +1,5 @@
 """
-Couche base de données (SQLite prototype).
+Couche base de données (PostgreSQL/Neon).
 
 Tables :
 - analysis_sessions        : une ligne par analyse/relecture historique
@@ -7,14 +7,38 @@ Tables :
 - lead_content             : une ligne par page scrapée (Firecrawl) pour un lead
 - lead_technical_signals   : signaux déterministes calculés par scraper.py
 - lead_scores              : verdict du scoring IA (1 ligne = 1 verdict)
+
+Fonctionnement : si DATABASE_URL (DATABASE_URL du .env, ex : Neon) est défini,
+on se connecte à PostgreSQL via psycopg2 à travers un wrapper qui reproduit
+l'API sqlite3 utilisée partout ailleurs (? placeholders, lignes dict/indice).
+Sinon, repli local sur SQLite (prototype sans réseau).
 """
 
 import csv
 import json
-import sqlite3
+import os
+import re
 from datetime import datetime, timezone
 
-DB_PATH_DEFAULT = "leads.db"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+DB_PATH_DEFAULT = os.getenv("DB_PATH", "leads.db")  # repli SQLite local
+
+
+def _is_duplicate_column(e: Exception) -> bool:
+    """Vrai si l'erreur signifie 'colonne déjà existante' (PostgreSQL ou sqlite)."""
+    msg = str(e)
+    return "duplicate column" in msg or "already exists" in msg
+
 
 COLUMN_ALIASES = {
     "first_name": ["first_name", "first name", "firstname"],
@@ -44,7 +68,89 @@ def _domains_related(a: str, b: str) -> bool:
     return a == b or a.endswith("." + b) or b.endswith("." + a)
 
 
-def get_connection(db_path: str = DB_PATH_DEFAULT) -> sqlite3.Connection:
+# ---------------------------------------------------------------------------
+# Wrapper PostgreSQL compatible sqlite3
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_RE = re.compile(r"\?")
+
+
+class _PgRow(dict):
+    """Ligne compatible sqlite3.Row : accessible par clé ET par indice."""
+
+    def __init__(self, mapping):
+        super().__init__(mapping)
+        self._colnames = list(mapping.keys())
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return dict.__getitem__(self, key)
+        if int(key) >= len(self._colnames):
+            raise IndexError(key)
+        return dict.__getitem__(self, self._colnames[int(key)])
+
+    def keys(self):
+        return self._colnames
+
+
+class _PgCursor:
+    """Curseur wrapper : transforme les RealDictRow en _PgRow (clé + indice)."""
+
+    def __init__(self, cur):
+        self._cur = cur
+        self.description = cur.description
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        return _PgRow(dict(row)) if row is not None else None
+
+    def fetchall(self):
+        return [_PgRow(dict(r)) for r in self._cur.fetchall()]
+
+
+class _PgConnection:
+    """Connexion PostgreSQL mimant l'API sqlite3.Connection du reste du code."""
+
+    def __init__(self, raw):
+        self._conn = raw
+
+    def execute(self, sql, params=None):
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        translated = _PLACEHOLDER_RE.sub("%s", sql)
+        if params is not None:
+            cur.execute(translated, params)
+        else:
+            cur.execute(translated)
+        return _PgCursor(cur)
+
+    def executemany(self, sql, seq):
+        cur = self._conn.cursor()
+        cur.executemany(_PLACEHOLDER_RE.sub("%s", sql), seq)
+
+    def executescript(self, sql):
+        for stmt in (s.strip() for s in sql.split(";") if s and s.strip()):
+            self.execute(stmt)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
+def get_connection(db_path: str = DB_PATH_DEFAULT):
+    if DATABASE_URL:
+        if psycopg2 is None:
+            raise RuntimeError(
+                "DATABASE_URL est défini mais 'psycopg2' n'est pas installé. "
+                "Ajoute 'psycopg2-binary' à requirements.txt et installe-le."
+            )
+        raw = psycopg2.connect(DATABASE_URL)
+        return _PgConnection(raw)
+    import sqlite3
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -56,25 +162,26 @@ def _now() -> str:
 
 
 def create_analysis_session(
-    conn: sqlite3.Connection,
+    conn,
     label: str | None = None,
     source_filename: str | None = None,
     notes: str | None = None,
 ) -> int:
     now = _now()
-    conn.execute(
+    row = conn.execute(
         """
         INSERT INTO analysis_sessions (label, source_filename, status, created_at, notes)
         VALUES (?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (label, source_filename, "imported", now, notes),
-    )
+    ).fetchone()
     conn.commit()
-    return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    return row["id"]
 
 
 def update_analysis_session_status(
-    conn: sqlite3.Connection,
+    conn,
     session_id: int,
     status: str,
     completed_at: str | None = None,
@@ -86,12 +193,12 @@ def update_analysis_session_status(
     conn.commit()
 
 
-def get_analysis_session(conn: sqlite3.Connection, session_id: int) -> dict | None:
+def get_analysis_session(conn, session_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     return dict(row) if row else None
 
 
-def delete_analysis_session(conn: sqlite3.Connection, session_id: int) -> None:
+def delete_analysis_session(conn, session_id: int) -> None:
     """Supprime une session et toutes ses données associées."""
     conn.execute("DELETE FROM lead_search_evidence WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
     conn.execute("DELETE FROM lead_scores WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
@@ -100,27 +207,30 @@ def delete_analysis_session(conn: sqlite3.Connection, session_id: int) -> None:
     conn.execute("DELETE FROM export_history WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
     conn.execute("DELETE FROM leads WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM analysis_sessions WHERE id = ?", (session_id,))
+
     # Réinitialise les compteurs auto-incrément si les tables sont vides
-    for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores", "lead_search_evidence", "export_history", "analysis_sessions"):
-        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        if count == 0:
-            conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+    # (sqlite uniquement — PostgreSQL gère ses séquences tout seul).
+    if _backend() == "sqlite":
+        for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores", "lead_search_evidence", "export_history", "analysis_sessions"):
+            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if count == 0:
+                conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
     conn.commit()
 
 
-def cancel_analysis_session(conn: sqlite3.Connection, session_id: int) -> None:
+def cancel_analysis_session(conn, session_id: int) -> None:
     """Marque une session comme annulée. Le pipeline vérifie ce flag."""
     conn.execute("UPDATE analysis_sessions SET cancelled = 1 WHERE id = ?", (session_id,))
     conn.commit()
 
 
-def resume_analysis_session(conn: sqlite3.Connection, session_id: int) -> None:
+def resume_analysis_session(conn, session_id: int) -> None:
     """Réactive une session annulée pour permettre la reprise du pipeline."""
     conn.execute("UPDATE analysis_sessions SET cancelled = 0, status = 'running' WHERE id = ?", (session_id,))
     conn.commit()
 
 
-def save_scoring_criteria_custom(conn: sqlite3.Connection, session_id: int, custom_text: str) -> None:
+def save_scoring_criteria_custom(conn, session_id: int, custom_text: str) -> None:
     """Sauvegarde le critère personnalisé saisi par l'utilisateur."""
     conn.execute(
         "UPDATE analysis_sessions SET scoring_criteria_custom = ? WHERE id = ?",
@@ -129,7 +239,7 @@ def save_scoring_criteria_custom(conn: sqlite3.Connection, session_id: int, cust
     conn.commit()
 
 
-def get_scoring_criteria_custom(conn: sqlite3.Connection, session_id: int) -> str:
+def get_scoring_criteria_custom(conn, session_id: int) -> str:
     """Retourne le critère personnalisé pour une session."""
     row = conn.execute("SELECT scoring_criteria_custom FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
@@ -137,15 +247,14 @@ def get_scoring_criteria_custom(conn: sqlite3.Connection, session_id: int) -> st
     return row[0]
 
 
-def is_session_cancelled(conn: sqlite3.Connection, session_id: int) -> bool:
+def is_session_cancelled(conn, session_id: int) -> bool:
     """Vérifie si une session a été annulée."""
     row = conn.execute("SELECT cancelled FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     return bool(row and row[0])
 
 
-def save_scoring_criteria(conn: sqlite3.Connection, session_id: int, criteria: list[str]) -> None:
+def save_scoring_criteria(conn, session_id: int, criteria: list[str]) -> None:
     """Sauvegarde les critères checkés par l'utilisateur pour le scoring."""
-    import json
     conn.execute(
         "UPDATE analysis_sessions SET scoring_criteria = ? WHERE id = ?",
         (json.dumps(criteria, ensure_ascii=False), session_id),
@@ -153,9 +262,8 @@ def save_scoring_criteria(conn: sqlite3.Connection, session_id: int, criteria: l
     conn.commit()
 
 
-def get_scoring_criteria(conn: sqlite3.Connection, session_id: int) -> list[str]:
+def get_scoring_criteria(conn, session_id: int) -> list[str]:
     """Retourne les critères de scoring pour une session."""
-    import json
     row = conn.execute("SELECT scoring_criteria FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
         return []
@@ -165,17 +273,15 @@ def get_scoring_criteria(conn: sqlite3.Connection, session_id: int) -> list[str]
         return []
 
 
-def set_last_batch_ids(conn: sqlite3.Connection, session_id: int, lead_ids: list[int]) -> None:
-    """Stocke les IDs des leads du dernier lot traite (pour la page batch results)."""
-    import json
+def set_last_batch_ids(conn, session_id: int, lead_ids: list[int]) -> None:
+    """Stocke les IDs des leads du dernier lot traité (pour la page batch results)."""
     conn.execute("UPDATE analysis_sessions SET last_batch_ids = ? WHERE id = ?",
                  (json.dumps(lead_ids), session_id))
     conn.commit()
 
 
-def get_last_batch_ids(conn: sqlite3.Connection, session_id: int) -> list[int]:
-    """Recupere les IDs du dernier lot traite."""
-    import json
+def get_last_batch_ids(conn, session_id: int) -> list[int]:
+    """Recupère les IDs du dernier lot traité."""
     row = conn.execute("SELECT last_batch_ids FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
         return []
@@ -185,32 +291,45 @@ def get_last_batch_ids(conn: sqlite3.Connection, session_id: int) -> list[int]:
         return []
 
 
-def get_latest_session_id(conn: sqlite3.Connection) -> int | None:
+def get_latest_session_id(conn) -> int | None:
     row = conn.execute("SELECT id FROM analysis_sessions ORDER BY id DESC LIMIT 1").fetchone()
     return row["id"] if row else None
 
 
-def list_analysis_sessions(conn: sqlite3.Connection, limit: int = 50) -> list:
+def list_analysis_sessions(conn, limit: int = 50) -> list:
     query = """
-        SELECT s.*,
+        SELECT s.id, s.label, s.source_filename, s.status, s.created_at, s.completed_at,
+               s.notes, s.cancelled, s.scoring_criteria, s.scoring_criteria_custom,
+               s.last_batch_ids,
                COUNT(DISTINCT l.id) AS lead_count,
                SUM(CASE WHEN l.is_duplicate = 1 THEN 1 ELSE 0 END) AS duplicate_count,
                SUM(CASE WHEN l.status IN ('SCORED', 'LOW_CONFIDENCE') THEN 1 ELSE 0 END) AS scored_count,
                SUM(CASE WHEN l.status = 'NEW' THEN 1 ELSE 0 END) AS pending_count
         FROM analysis_sessions s
         LEFT JOIN leads l ON l.session_id = s.id
-        GROUP BY s.id
+        GROUP BY s.id, s.label, s.source_filename, s.status, s.created_at, s.completed_at,
+                 s.notes, s.cancelled, s.scoring_criteria, s.scoring_criteria_custom,
+                 s.last_batch_ids
         ORDER BY s.id DESC
         LIMIT ?
     """
     return [dict(r) for r in conn.execute(query, (limit,)).fetchall()]
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
+def _schema_sql(backend: str) -> str:
+    if backend == "postgres":
+        pk = "id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY"
+        status_in = "l.status IN ('SCORED', 'LOW_CONFIDENCE')"
+        int_col = "INTEGER"
+        real_col = "DOUBLE PRECISION"
+    else:
+        pk = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+        status_in = "l.status IN ('SCORED', 'LOW_CONFIDENCE')"
+        int_col = "INTEGER"
+        real_col = "REAL"
+    return f"""
         CREATE TABLE IF NOT EXISTS analysis_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             label TEXT,
             source_filename TEXT,
             status TEXT NOT NULL DEFAULT 'imported',
@@ -220,7 +339,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             first_name TEXT,
             last_name TEXT,
@@ -230,10 +349,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             website_url TEXT,
             domain_normalized TEXT,
             email_domain TEXT,
-            domain_mismatch INTEGER NOT NULL DEFAULT 0,
+            domain_mismatch {int_col} NOT NULL DEFAULT 0,
             domain_mismatch_reason TEXT,
             status TEXT NOT NULL DEFAULT 'NEW',
-            is_duplicate INTEGER NOT NULL DEFAULT 0,
+            is_duplicate {int_col} NOT NULL DEFAULT 0,
             duplicate_of_id INTEGER,
             duplicate_reason TEXT,
             batch_id TEXT,
@@ -243,7 +362,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS lead_content (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
             source TEXT,
@@ -255,7 +374,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS lead_technical_signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
             generator_fingerprint TEXT,
@@ -274,11 +393,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS lead_scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
             segment TEXT,
-            confidence REAL,
+            confidence {real_col},
             company_stage TEXT,
             built_with_ai_signals TEXT,
             technical_signals TEXT,
@@ -294,7 +413,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS lead_search_evidence (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
             source TEXT NOT NULL,
@@ -306,7 +425,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS export_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
             domain_normalized TEXT NOT NULL,
@@ -325,7 +444,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_technical_signals_lead ON lead_technical_signals(lead_id);
         CREATE INDEX IF NOT EXISTS idx_export_history_domain ON export_history(domain_normalized);
         """
-    )
+
+
+def _backend() -> str:
+    return "postgres" if DATABASE_URL else "sqlite"
+
+
+def init_db(conn) -> None:
+    conn.executescript(_schema_sql(_backend()))
+    conn.commit()
 
     # Colonnes d'annulation pipeline + critères scoring + batch tracking
     for col, coltype in [
@@ -334,10 +461,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("scoring_criteria_custom", "TEXT"),
         ("last_batch_ids", "TEXT"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE analysis_sessions ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        _add_column(conn, "analysis_sessions", col, coltype)
 
     # Colonnes de review humaine (APPROVED/REJECTED + override de segment)
     for col, coltype in [
@@ -345,10 +469,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("review_segment_override", "TEXT"),
         ("reviewed_at", "TEXT"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        _add_column(conn, "leads", col, coltype)
 
     # Colonnes d'erreur et timing pour le diagnostic dans le dashboard
     for col, coltype in [
@@ -356,70 +477,38 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("scrape_seconds", "REAL"),
         ("score_seconds", "REAL"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
-
-    for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores"):
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN session_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
+        _add_column(conn, "leads", col, coltype)
 
     for col, coltype in [
         ("email_domain", "TEXT"),
         ("domain_mismatch", "INTEGER NOT NULL DEFAULT 0"),
         ("domain_mismatch_reason", "TEXT"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
+        _add_column(conn, "leads", col, coltype)
 
     for col, coltype in [
         ("ai_style_phrases_found", "TEXT"),
         ("ai_style_phrase_density", "TEXT"),
         ("ai_authorship_disclosures_found", "TEXT"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE lead_technical_signals ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass
-
-    # Migrer les donnees existantes sans session_id vers un session "legacy"
-    unassigned_count = 0
-    for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores"):
-        try:
-            count = conn.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE session_id IS NULL").fetchone()["c"]
-            unassigned_count += count
-        except sqlite3.OperationalError:
-            pass
-
-    if unassigned_count > 0:
-        legacy = conn.execute(
-            "SELECT id FROM analysis_sessions WHERE label = ? ORDER BY id LIMIT 1",
-            ("legacy",),
-        ).fetchone()
-        if legacy is None:
-            conn.execute(
-                """
-                INSERT INTO analysis_sessions (label, source_filename, status, created_at, completed_at, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                ("legacy", None, "completed", _now(), _now(), "Imported existing data before session support"),
-            )
-            legacy_session_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-        else:
-            legacy_session_id = legacy["id"]
-
-        for table in ("leads", "lead_content", "lead_technical_signals", "lead_scores"):
-            conn.execute(
-                f"UPDATE {table} SET session_id = ? WHERE session_id IS NULL",
-                (legacy_session_id,),
-            )
+        _add_column(conn, "lead_technical_signals", col, coltype)
 
     conn.commit()
+
+
+def _add_column(conn, table: str, col: str, coltype: str) -> None:
+    """Ajoute une colonne si elle n'existe pas. gère le 'duplicate column' des deux backends."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+        conn.commit()
+    except Exception as _e:
+        if not _is_duplicate_column(_e):
+            raise
+        # PostgreSQL : une erreur aborte la transaction courante, on la nettoie
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _normalize_domain(url: str) -> str:
@@ -442,7 +531,7 @@ def _pick_column(row: dict, key: str) -> str:
 
 
 def insert_leads_from_csv(
-    conn: sqlite3.Connection,
+    conn,
     csv_path: str,
     batch_id: str,
     session_id: int | None = None,
@@ -511,7 +600,7 @@ def insert_leads_from_csv(
     return {"inserted": inserted, "skipped_no_website": skipped}
 
 
-def get_leads(conn: sqlite3.Connection, include_duplicates: bool = True, session_id: int | None = None) -> list:
+def get_leads(conn, include_duplicates: bool = True, session_id: int | None = None) -> list:
     query = "SELECT * FROM leads"
     conditions = []
     params = []
@@ -529,7 +618,7 @@ def get_leads(conn: sqlite3.Connection, include_duplicates: bool = True, session
 NON_TERMINAL_STATUSES = ("NEW", "PARSED", "FETCH_PARTIAL", "FETCH_FAILED")
 
 
-def get_leads_by_status(conn: sqlite3.Connection, status: str, session_id: int | None = None) -> list:
+def get_leads_by_status(conn, status: str, session_id: int | None = None) -> list:
     """Récupère les leads avec un statut donné (ex: PHASE2_PENDING)."""
     query = "SELECT * FROM leads WHERE is_duplicate = 0 AND status = ?"
     params = [status]
@@ -540,7 +629,7 @@ def get_leads_by_status(conn: sqlite3.Connection, status: str, session_id: int |
     return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def get_leads_to_process(conn: sqlite3.Connection, session_id: int | None = None) -> list:
+def get_leads_to_process(conn, session_id: int | None = None) -> list:
     placeholders = ",".join("?" for _ in NON_TERMINAL_STATUSES)
     query = f"SELECT * FROM leads WHERE is_duplicate = 0 AND status IN ({placeholders})"
     params = list(NON_TERMINAL_STATUSES)
@@ -551,7 +640,7 @@ def get_leads_to_process(conn: sqlite3.Connection, session_id: int | None = None
     return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def update_lead_status(conn: sqlite3.Connection, lead_id: int, status: str, error: str | None = None) -> None:
+def update_lead_status(conn, lead_id: int, status: str, error: str | None = None) -> None:
     """Met à jour le statut et l'erreur d'un lead. Un appel avec error=None efface l'erreur précédente."""
     conn.execute(
         "UPDATE leads SET status = ?, last_error = ? WHERE id = ?",
@@ -561,7 +650,7 @@ def update_lead_status(conn: sqlite3.Connection, lead_id: int, status: str, erro
 
 
 def record_lead_timing(
-    conn: sqlite3.Connection,
+    conn,
     lead_id: int,
     scrape_seconds: float | None = None,
     score_seconds: float | None = None,
@@ -586,7 +675,7 @@ def record_lead_timing(
     conn.commit()
 
 
-def mark_duplicate(conn: sqlite3.Connection, lead_id: int, duplicate_of_id: int, reason: str) -> None:
+def mark_duplicate(conn, lead_id: int, duplicate_of_id: int, reason: str) -> None:
     conn.execute(
         "UPDATE leads SET is_duplicate = 1, duplicate_of_id = ?, duplicate_reason = ? WHERE id = ?",
         (duplicate_of_id, reason, lead_id),
@@ -598,7 +687,7 @@ VALID_REVIEW_STATUSES = ("APPROVED", "REJECTED")
 
 
 def set_lead_review(
-    conn: sqlite3.Connection,
+    conn,
     lead_id: int,
     decision: str,
     segment_override: str | None = None,
@@ -613,7 +702,7 @@ def set_lead_review(
     conn.commit()
 
 
-def save_lead_content(conn: sqlite3.Connection, lead_id: int, rows: list) -> None:
+def save_lead_content(conn, lead_id: int, rows: list) -> None:
     now = _now()
     session_row = conn.execute("SELECT session_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
     session_id = session_row[0] if session_row else None
@@ -624,13 +713,13 @@ def save_lead_content(conn: sqlite3.Connection, lead_id: int, rows: list) -> Non
     conn.commit()
 
 
-def get_lead_content(conn: sqlite3.Connection, lead_id: int) -> list:
+def get_lead_content(conn, lead_id: int) -> list:
     query = "SELECT source, url, content FROM lead_content WHERE lead_id = ?"
     return [dict(r) for r in conn.execute(query, (lead_id,)).fetchall()]
 
 
 def save_lead_technical_signals(
-    conn: sqlite3.Connection,
+    conn,
     lead_id: int,
     technical_signals: dict | None,
     github_check: dict | None,
@@ -671,7 +760,7 @@ def save_lead_technical_signals(
     conn.commit()
 
 
-def get_lead_technical_signals(conn: sqlite3.Connection, lead_id: int) -> dict | None:
+def get_lead_technical_signals(conn, lead_id: int) -> dict | None:
     row = conn.execute(
         """
         SELECT * FROM lead_technical_signals
@@ -699,7 +788,7 @@ def get_lead_technical_signals(conn: sqlite3.Connection, lead_id: int) -> dict |
     return result
 
 
-def save_lead_score(conn: sqlite3.Connection, lead_id: int, verdict: dict) -> None:
+def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
     def as_json(v):
         return json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v
 
@@ -734,7 +823,7 @@ def save_lead_score(conn: sqlite3.Connection, lead_id: int, verdict: dict) -> No
 
 
 def save_search_evidence(
-    conn: sqlite3.Connection,
+    conn,
     lead_id: int,
     source: str,
     query: str,
@@ -752,7 +841,7 @@ def save_search_evidence(
     conn.commit()
 
 
-def get_lead_search_evidence(conn: sqlite3.Connection, lead_id: int) -> list:
+def get_lead_search_evidence(conn, lead_id: int) -> list:
     """Retourne toutes les recherches web SGAI pour un lead."""
     rows = conn.execute(
         "SELECT * FROM lead_search_evidence WHERE lead_id = ? ORDER BY id", (lead_id,)
@@ -768,13 +857,13 @@ def get_lead_search_evidence(conn: sqlite3.Connection, lead_id: int) -> list:
     return result
 
 
-def get_exported_domains(conn: sqlite3.Connection) -> set:
+def get_exported_domains(conn) -> set:
     """Retourne l'ensemble des domaines déjà exportés (toutes sessions confondues)."""
     rows = conn.execute("SELECT DISTINCT domain_normalized FROM export_history").fetchall()
     return {r["domain_normalized"] for r in rows if r["domain_normalized"]}
 
 
-def record_export(conn: sqlite3.Connection, lead_ids: list, session_id: int | None = None) -> int:
+def record_export(conn, lead_ids: list, session_id: int | None = None) -> int:
     """
     Enregistre l'export d'une liste de leads (par id) dans export_history,
     pour que le prochain batch les retrouve via get_exported_domains().
@@ -801,7 +890,7 @@ def record_export(conn: sqlite3.Connection, lead_ids: list, session_id: int | No
     return len(rows_to_insert)
 
 
-def get_leads_with_scores(conn: sqlite3.Connection, session_id: int | None = None) -> list:
+def get_leads_with_scores(conn, session_id: int | None = None) -> list:
     query = """
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
