@@ -1,6 +1,6 @@
 """Interface Flask pour le pipeline Lead Qualification & Scoring.
 
-Flux : upload CSV Apollo → ingestion SQLite → déduplication RapidFuzz →
+Flux : upload CSV Apollo → ingestion PostgreSQL (Neon) → déduplication RapidFuzz →
 scraping Firecrawl + scoring Claude → tableaux de résultats → exports CSV.
 
 Lancer avec : python app.py
@@ -29,6 +29,7 @@ from scorer import CONFIDENCE_THRESHOLD, INVALID_VERDICT_CONFIDENCE_CAP
 
 
 DB_PATH = os.getenv("DB_PATH", dbmod.DB_PATH_DEFAULT)
+# PostgreSQL (Neon) obligatoire — db.get_connection() lève une erreur sans DATABASE_URL.
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "lead-qualification-engine")
