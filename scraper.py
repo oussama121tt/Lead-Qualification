@@ -15,7 +15,9 @@ Le LLM (scorer.py) ne reçoit que le texte + ces signaux en JSON.
 import hashlib
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -241,19 +243,40 @@ def _format_signal_as_text(label: str, signal: dict) -> str:
     return "\n".join(lines)
 
 
-def _get_clients() -> list[Firecrawl]:
-    """Crée un client Firecrawl par clé API configurée dans .env.
+_client_pool: list[Firecrawl] | None = None
+_client_pool_lock = threading.Lock()
+_client_pool_dead: set[int] = set()
 
-    Retourne une liste de clients ordonnée (clé 1, clé 2, ...).
-    Utile pour round-robin ou fallback : si un client rate-limit, on passe
-    au suivant sans attendre.
+
+def _get_client_pool() -> list[Firecrawl]:
+    """Crée (une seule fois) un client Firecrawl par clé API configurée dans .env.
+
+    Le pool est partagé par toutes les requêtes : une clé qui épuise son quota
+    est marquée 'dead' pour la suite de l'exécution et ignorée — les autres
+    clés continuent de travailler à sa place.
     """
-    keys = []
-    for k in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_KEY_2", "FIRECRAWL_API_KEY_3", "FIRECRAWL_API_KEY_4", "FIRECRAWL_API_KEY_5"):
-        val = os.getenv(k)
-        if val:
-            keys.append(val)
-    return [Firecrawl(api_key=key, timeout=120) for key in keys]
+    global _client_pool
+    with _client_pool_lock:
+        if _client_pool is None:
+            keys = []
+            for k in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_KEY_2", "FIRECRAWL_API_KEY_3", "FIRECRAWL_API_KEY_4", "FIRECRAWL_API_KEY_5"):
+                val = os.getenv(k)
+                if val:
+                    keys.append(val)
+            if not keys:
+                raise RuntimeError("Aucune clé API Firecrawl configurée dans .env")
+            _client_pool = [Firecrawl(api_key=key, timeout=120) for key in keys]
+        return _client_pool
+
+
+def _is_quota_error(error_msg: str) -> bool:
+    """Vrai si l'erreur signifie 'quota/crédits épuisés' (clé à ignorer)."""
+    msg = error_msg.lower()
+    return any(kw in msg for kw in (
+        "insufficient credits", "no credits", "out of credits", "quota exceeded",
+        "credit limit", "not enough credits", "insufficient_credits",
+        "402", "429 quota", "billing", "upgrade required", "payment required",
+    ))
 
 
 def _parse_retry_after(error_msg: str) -> float | None:
@@ -269,40 +292,43 @@ def _parse_retry_after(error_msg: str) -> float | None:
 
 
 def _firecrawl_scrape(url: str, *args, **kwargs):
-    """Wrapper autour de `app.scrape()` avec retry sur rate-limit et bascule
-    automatique entre plusieurs clés API Firecrawl.
+    """Wrapper autour de `app.scrape()` avec pool de clés Firecrawl.
 
-    Free tier = 10 req/min par clé. Si la clé courante rate-limit, on
-    essaie la clé suivante immédiatement (pas d'attente). Si TOUTES les clés
-    rate-limit, on attend le délai le plus court et on retente (max 2 rounds).
-
-    Config : ajoute FIRECRAWL_API_KEY_2, _3, ... dans .env.
+    - Round-robin sur toutes les clés configurées.
+    - Une clé en erreur de QUOTA est marquée 'dead' pour toute l'exécution et
+      ignorée : les autres clés travaillent à sa place.
+    - Une clé rate-limitée est contournée immédiatement (on passe à la suivante).
+    - Si TOUTES les clés sont dead/rate-limitées, on attend le délai le plus
+      court puis on retente une dernière passe.
     """
-    clients = _get_clients()
-    if not clients:
-        raise RuntimeError("Aucune clé API Firecrawl configurée dans .env")
-
-    max_rounds = 2  # deux tours complets sur toutes les clés
+    clients = _get_client_pool()
+    max_rounds = 2  # deux tours complets sur toutes les clés vivantes
     last_exc = None
 
     for attempt_round in range(max_rounds):
         for idx, client in enumerate(clients):
+            if idx in _client_pool_dead:
+                continue
             try:
                 return client.scrape(url, *args, **kwargs)
             except Exception as e:
                 last_exc = e
                 msg = str(e)
+                if _is_quota_error(msg):
+                    with _client_pool_lock:
+                        _client_pool_dead.add(idx)
+                    print(f"[scraper] Clé {idx+1} sans crédits, ignorée pour la suite ({url})")
+                    continue
                 if "rate limit" in msg.lower() or "rate_limit" in msg.lower():
                     delay = _parse_retry_after(msg)
                     if delay:
                         print(f"[scraper] Clé {idx+1} rate-limitée pour {url}, "
-                              f"bascule clé {idx+2 if idx+2 <= len(clients) else 1} "
-                              f"(attente {delay:.0f}s si toutes épuisées)")
+                              f"bascule clé suivante (retry après {delay:.0f}s)")
                     continue
-                # Erreur non-rate-limit : remonte immédiatement
+                # Erreur non-rate-limit ni quota : remonte immédiatement
                 raise
 
-        # Toutes les clés ont rate-limité : attendre avant de retenter
+        # Toutes les clés vivantes ont rate-limité : attendre avant de retenter
         delay = _parse_retry_after(str(last_exc)) or 15.0
         print(f"[scraper] Toutes les clés rate-limitées pour {url}, "
               f"attente {delay:.0f}s avant retour {attempt_round+2}/{max_rounds}")
@@ -313,6 +339,52 @@ def _firecrawl_scrape(url: str, *args, **kwargs):
             remaining -= chunk
 
     raise last_exc
+
+
+def _scrape_pages_in_parallel(urls_by_category: dict[str, str], throttle_seconds: float = 1.0) -> dict:
+    """Scrape plusieurs pages en parallèle, une thread par clé Firecrawl.
+
+    Répartit les URLs entre les threads (1 thread max par clé pour ne pas
+    exploser le rate-limit d'une clé). Une clé à quota épuisé est ignorée par
+    _firecrawl_scrape, les autres continuent.
+
+    Retourne {category: (url, FirecrawlResponse | Exception)}.
+    """
+    clients = _get_client_pool()
+    n_workers = max(1, min(len(clients), len(urls_by_category)))
+    if n_workers == 1:
+        # Une seule clé : séquentiel, mais on garde le throttle d'origine
+        results = {}
+        for category, url in urls_by_category.items():
+            time.sleep(throttle_seconds)
+            try:
+                r = _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
+                results[category] = (url, r)
+            except Exception as e:
+                results[category] = (url, e)
+        return results
+
+    # Parallel: worker i utilise la clé i (round-robin des URLs sur les workers)
+    items = list(urls_by_category.items())
+
+    def _worker(url: str):
+        return _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {}
+        for i, (category, url) in enumerate(items):
+            future = pool.submit(_worker, url)
+            futures[future] = category
+        for future in as_completed(futures):
+            category = futures[future]
+            url = dict(urls_by_category)[category]
+            try:
+                r = future.result()
+            except Exception as e:
+                r = e
+            results[category] = (url, r)
+    return results
 
 
 def _normalize_domain(url: str) -> str:
@@ -668,38 +740,41 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     duplicates = 0
     other_pages = {k: v for k, v in pages.items() if k != "homepage"}
 
+    # Scraping des pages clés en parallèle (1 thread par clé Firecrawl).
+    # Une clé à quota épuisé est ignorée par le pool, les autres continuent.
+    scraped_pages = _scrape_pages_in_parallel(other_pages, throttle_seconds=throttle_seconds)
+
     for category, url in other_pages.items():
-        time.sleep(throttle_seconds)
-        try:
-            r = _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
-            raw_content = (r.markdown or "")[:MAX_CONTENT_CHARS_PER_PAGE]
-            if _looks_broken(raw_content):
-                failures += 1
-                print(f"Page ignorée (rendu cassé/vide) sur {category} ({url})")
-                continue
-
-            fingerprint = _content_fingerprint(raw_content)
-            if fingerprint in seen_fingerprints:
-                duplicates += 1
-                print(
-                    f"Page ignorée (contenu identique à une page déjà "
-                    f"retenue, probable SPA shell) sur {category} ({url})"
-                )
-                continue
-            seen_fingerprints.add(fingerprint)
-
-            if category == "careers":
-                content = _format_signal_as_text("Careers", extract_careers_signal(raw_content))
-            elif category == "pricing":
-                content = _format_signal_as_text("Pricing", extract_pricing_signal(raw_content))
-            else:
-                content = raw_content
-
-            rows.append((category, url, content))
-        except Exception as e:
+        result = scraped_pages[category]
+        if isinstance(result[1], Exception):
             failures += 1
-            print(f"Échec sur {category} ({url}): {e}")
+            print(f"Échec sur {category} ({url}): {result[1]}")
             continue
+        r = result[1]
+        raw_content = (r.markdown or "")[:MAX_CONTENT_CHARS_PER_PAGE]
+        if _looks_broken(raw_content):
+            failures += 1
+            print(f"Page ignorée (rendu cassé/vide) sur {category} ({url})")
+            continue
+
+        fingerprint = _content_fingerprint(raw_content)
+        if fingerprint in seen_fingerprints:
+            duplicates += 1
+            print(
+                f"Page ignorée (contenu identique à une page déjà "
+                f"retenue, probable SPA shell) sur {category} ({url})"
+            )
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        if category == "careers":
+            content = _format_signal_as_text("Careers", extract_careers_signal(raw_content))
+        elif category == "pricing":
+            content = _format_signal_as_text("Pricing", extract_pricing_signal(raw_content))
+        else:
+            content = raw_content
+
+        rows.append((category, url, content))
 
     # Un doublon SPA n'est pas un "échec" au même titre qu'un timeout ou un
     # 404 (la page existe, elle est juste inutile) — mais elle compte quand
