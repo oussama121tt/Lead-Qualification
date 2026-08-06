@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Revue d'import — Lead Qualification Engine</title>
+  <title>Import review — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -13,9 +13,9 @@
     }
     .topbar h1 {
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
-    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
     .topbar nav a:hover { background: var(--bg-soft); }
     .topbar nav a.primary { background: var(--accent); color: #fff; }
@@ -68,16 +68,16 @@
     <div class="topbar">
       <h1>Lead Qualification &amp; Scoring</h1>
       <nav>
-        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
-        <a href="{{ url_for('history') }}">Historique</a>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
 
       </nav>
     </div>
 
     <div class="page-card">
-      <p style="text-transform:uppercase;letter-spacing:0.18em;color:var(--accent);font-size:0.78rem;margin-bottom:12px;">Étape 2/4 — Revue d'import</p>
-      <h2>Vérifier les leads importés</h2>
-      <p class="lead">{{ keepers|length }} leads conservés, {{ duplicates|length }} doublons identifiés. Sélectionne les critères de scoring avant de lancer l'analyse.</p>
+      <p style="text-transform:uppercase;letter-spacing:0.18em;color:var(--accent);font-size:0.78rem;margin-bottom:12px;">Step 2/4 — Import review</p>
+      <h2>Review imported leads</h2>
+      <p class="lead">{{ keepers|length }} leads kept, {{ duplicates|length }} duplicates identified. Select the scoring criteria before launching the analysis.</p>
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -94,10 +94,10 @@
 
       <!-- Keepers table -->
       <div class="page-card">
-        <h2>Leads conservés ({{ keepers|length }})</h2>
-        <p class="lead">Coche les leads à analyser, ou laisse tous cochés par défaut.</p>
+        <h2>Kept leads ({{ keepers|length }})</h2>
+        <p class="lead">Check the leads to analyze, or leave all checked by default.</p>
         <div class="mb-3">
-          <input class="form-control" type="search" id="searchKeepers" placeholder="Rechercher par société, email, contact..." oninput="filterKeepers(this.value)">
+          <input class="form-control" type="search" id="searchKeepers" placeholder="Search by company, email, contact..." oninput="filterKeepers(this.value)">
         </div>
         <div class="table-wrap">
           <table class="table table-hover table-striped align-middle">
@@ -105,11 +105,11 @@
               <tr>
                 <th><input type="checkbox" id="selectAllKeepers" onchange="toggleAllKeepers(this)" checked></th>
                 <th>ID</th>
-                <th>Société</th>
-                <th>Site web</th>
+                <th>Company</th>
+                <th>Website</th>
                 <th>Email</th>
                 <th>Contact</th>
-                <th>Statut</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody id="keepersBody">
@@ -127,23 +127,23 @@
             </tbody>
           </table>
         </div>
-        <p class="text-muted" style="font-size:0.85rem;" id="keepersSelectedCount">{{ keepers|length }} sélectionné(s)</p>
+        <p class="text-muted" style="font-size:0.85rem;" id="keepersSelectedCount">{{ keepers|length }} selected</p>
       </div>
 
       <!-- Duplicates table -->
       {% if duplicates %}
       <div class="page-card">
-        <h2>Doublons ignorés ({{ duplicates|length }})</h2>
-        <p class="lead">Coche les doublons à inclure tout de même dans l'analyse.</p>
+        <h2>Ignored duplicates ({{ duplicates|length }})</h2>
+        <p class="lead">Check the duplicates to include in the analysis anyway.</p>
         <div class="table-wrap">
           <table class="table table-hover table-striped align-middle table-duplicates">
             <thead>
               <tr>
                 <th><input type="checkbox" id="selectAllDups" onchange="toggleAllDups(this)"></th>
                 <th>ID</th>
-                <th>Société</th>
-                <th>Raison</th>
-                <th>Duplicata de</th>
+                <th>Company</th>
+                <th>Reason</th>
+                <th>Duplicate of</th>
               </tr>
             </thead>
             <tbody>
@@ -164,11 +164,11 @@
 
       <!-- Scoring criteria -->
       <div class="page-card">
-        <h2>Critères de scoring</h2>
-        <p class="lead">Sélectionne les profils que tu souhaites détecter en priorité. Le modèle IA adaptera son analyse en conséquence.</p>
+        <h2>Scoring criteria</h2>
+        <p class="lead">Select the profiles you want to prioritize. The AI model will adapt its analysis accordingly.</p>
         <div class="criteria-grid">
           {% for opt in criteria_options %}
-            {% if opt.key != 'not_target' %}
+            {% if opt.key != 'wrong_field' %}
             <label class="criteria-card selected" id="card-{{ opt.key }}" onclick="toggleCriteria('{{ opt.key }}')">
               <input type="checkbox" name="criteria" value="{{ opt.key }}" checked>
               <span class="check">&#10003;</span>
@@ -180,15 +180,15 @@
         </div>
 
         <div class="mt-3">
-          <label class="form-label" for="custom_criteria">Critère personnalisé (optionnel)</label>
-          <textarea class="form-control" id="custom_criteria" name="custom_criteria" rows="2" placeholder="Ex: Détecter les entreprises qui utilisent Python/Django, ou qui ont une page carrières..." style="background:var(--surface-2);color:var(--text);border-color:var(--border);">{{ custom_criteria or '' }}</textarea>
+          <label class="form-label" for="custom_criteria">Custom criterion (optional)</label>
+          <textarea class="form-control" id="custom_criteria" name="custom_criteria" rows="2" placeholder="E.g.: Detect companies that use Python/Django, or that have a careers page..." style="background:var(--surface-2);color:var(--text);border-color:var(--border);">{{ custom_criteria or '' }}</textarea>
         </div>
 
         <div class="d-flex align-items-center gap-3 mt-4 flex-wrap">
           <button class="btn btn-primary btn-lg" type="submit">
-            Lancer l'analyse <span id="submitCount">{{ keepers|length }}</span> lead(s)
+            Launch analysis <span id="submitCount">{{ keepers|length }}</span> lead(s)
           </button>
-          <a class="btn btn-outline-secondary btn-lg" href="{{ url_for('home') }}">Annuler</a>
+          <a class="btn btn-outline-secondary btn-lg" href="{{ url_for('home') }}">Cancel</a>
         </div>
       </div>
 
@@ -225,7 +225,7 @@
         if (checkboxes[i].checked) count++;
       }
       var el = document.getElementById('keepersSelectedCount');
-      if (el) el.textContent = count + ' sélectionné(s)';
+      if (el) el.textContent = count + ' selected';
       var submitEl = document.getElementById('submitCount');
       if (submitEl) submitEl.textContent = count;
     }
@@ -244,7 +244,7 @@
         if (leadCbs[i].checked) { leadChecked = true; break; }
       }
       if (!leadChecked) {
-        alert('Sélectionne au moins un lead à analyser.');
+        alert('Select at least one lead to analyze.');
         return false;
       }
       var critCbs = document.querySelectorAll('input[name="criteria"]');
@@ -253,7 +253,7 @@
         if (critCbs[i].checked) { critChecked = true; break; }
       }
       if (!critChecked) {
-        alert('Sélectionne au moins un critère de scoring.');
+        alert('Select at least one scoring criterion.');
         return false;
       }
       return true;

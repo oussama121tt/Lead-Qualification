@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Résultats — Lead Qualification Engine</title>
+  <title>Results — Lead Qualification Engine</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -13,9 +13,9 @@
     }
     .topbar h1 {
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
-    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
     .topbar nav a:hover { background: var(--bg-soft); }
     .topbar nav a.primary { background: var(--accent); color: #fff; }
@@ -117,8 +117,8 @@
     <div class="topbar">
       <h1>Lead Qualification &amp; Scoring</h1>
       <nav>
-        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
-        <a href="{{ url_for('history') }}">Historique</a>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
       </nav>
     </div>
 
@@ -134,15 +134,15 @@
 
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5rem;flex-wrap:wrap;gap:8px;">
       <div>
-        <h1 style="margin:0;">Leads analysés</h1>
+        <h1 style="margin:0;">Analyzed leads</h1>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <a class="btn-outline" href="{{ url_for('download_scores_csv', session_id=session.id) }}">
           <i class="ti ti-download" style="font-size:16px;vertical-align:-2px;" aria-hidden="true"></i>CSV
         </a>
-        <a class="btn-outline" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">CSV Scraping</a>
+        <a class="btn-outline" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">Scraping CSV</a>
         {% if has_search_evidence %}
-        <a class="btn-outline" href="{{ url_for('download_search_csv', session_id=session.id) }}">CSV Recherche web</a>
+        <a class="btn-outline" href="{{ url_for('download_search_csv', session_id=session.id) }}">Web search CSV</a>
         {% endif %}
       </div>
     </div>
@@ -153,24 +153,24 @@
         <p class="stat-value">{{ summary.total }}</p>
       </div>
       <div class="stat-card stat-success">
-        <p class="stat-label">Prêts à approuver</p>
-        <p class="stat-value">{{ summary.validees }}</p>
+        <p class="stat-label">Ready to approve</p>
+        <p class="stat-value">{{ summary.approved }}</p>
       </div>
       <div class="stat-card stat-warning">
-        <p class="stat-label">À réviser</p>
-        <p class="stat-value">{{ summary.proches }}</p>
+        <p class="stat-label">To review</p>
+        <p class="stat-value">{{ summary.to_review }}</p>
       </div>
       <div class="stat-card">
-        <p class="stat-label">En attente</p>
-        <p class="stat-value">{{ summary.en_attente }}</p>
+        <p class="stat-label">Waiting</p>
+        <p class="stat-value">{{ summary.pending }}</p>
       </div>
     </div>
 
-    <!-- Prêts à approuver -->
-    <h3 class="section-title stat-success">Prêts à approuver</h3>
-    {% if categories.validees %}
+    <!-- Ready to approve -->
+    <h3 class="section-title stat-success">Ready to approve</h3>
+    {% if categories.approved %}
     <div class="list-card">
-      {% for lead in categories.validees %}
+      {% for lead in categories.approved %}
       <div class="list-row">
         <div class="list-row-main">
           <p class="list-row-name">{{ lead.company_name or '--' }}</p>
@@ -181,20 +181,21 @@
         <span class="tag-pill">{{ lead.segment|map_segment }}</span>
         <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
         <span class="offer-cell">{{ lead.recommended_offer|map_offer }}</span>
-        <button class="btn-icon" type="button" aria-label="Approuver {{ lead.company_name or '' }}"><i class="ti ti-check" style="font-size:15px;" aria-hidden="true"></i></button>
-        <button class="btn-icon" type="button" aria-label="Rejeter {{ lead.company_name or '' }}"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>
+        {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
+        <button class="btn-icon" type="button" aria-label="Approve {{ lead.company_name or '' }}"><i class="ti ti-check" style="font-size:15px;" aria-hidden="true"></i></button>
+        <button class="btn-icon" type="button" aria-label="Reject {{ lead.company_name or '' }}"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <div class="list-card"><div class="empty-state-compact">Aucun lead prêt à approuver.</div></div>
+    <div class="list-card"><div class="empty-state-compact">No leads ready to approve.</div></div>
     {% endif %}
 
-    <!-- À réviser -->
-    <h3 class="section-title stat-warning">À réviser</h3>
-    {% if categories.proches %}
+    <!-- To review -->
+    <h3 class="section-title stat-warning">To review</h3>
+    {% if categories.to_review %}
     <div class="list-card">
-      {% for lead in categories.proches %}
+      {% for lead in categories.to_review %}
       <div class="list-row">
         <div class="list-row-main">
           <p class="list-row-name">{{ lead.company_name or '--' }}</p>
@@ -206,38 +207,40 @@
         <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
         {% set reason_text = lead.disqualify_reason or lead.status|map_status_label %}
         <span class="reason-cell" title="{{ reason_text }}">{{ reason_text|truncate(160, killwords=False, end='…') }}</span>
-        <button class="btn-outline btn-small" type="button">Examiner</button>
+        {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
+        <button class="btn-outline btn-small" type="button">Review</button>
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <div class="list-card"><div class="empty-state-compact">Aucun lead à réviser.</div></div>
+    <div class="list-card"><div class="empty-state-compact">No leads to review.</div></div>
     {% endif %}
 
-    <!-- Hors cible -->
-    {% if categories.tres_loin %}
+    <!-- Out of target -->
+    {% if categories.out_of_target %}
     <details class="collapse-card">
       <summary>
-        <h3 class="section-title" style="margin:0;">Hors cible <span class="count-pill">{{ categories.tres_loin|length }}</span></h3>
-        {% if categories.tres_loin[0].disqualify_reason %}<span class="collapse-sub">— {{ categories.tres_loin[0].disqualify_reason }}</span>{% endif %}
+        <h3 class="section-title" style="margin:0;">Out of target <span class="count-pill">{{ categories.out_of_target|length }}</span></h3>
+        {% if categories.out_of_target[0].disqualify_reason %}<span class="collapse-sub">— {{ categories.out_of_target[0].disqualify_reason }}</span>{% endif %}
       </summary>
       <div class="list-card" style="margin:0 12px 12px;">
-        {% for lead in categories.tres_loin %}
+        {% for lead in categories.out_of_target %}
         <div class="list-row" style="padding:10px 16px;">
           <span style="flex:1;font-size:14px;">{{ lead.company_name or '--' }}</span>
           <span style="font-size:12px;color:var(--text-muted);">{{ lead.segment|map_segment }}</span>
           <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
+          {% if lead.already_exported %}<span class="tag-pill">Already exported</span>{% endif %}
         </div>
         {% endfor %}
       </div>
     </details>
     {% endif %}
 
-    <!-- En attente (erreurs / non analysés) -->
-    {% if categories.en_attente %}
-    <h3 class="section-title">En attente</h3>
-    {% for lead in categories.en_attente %}
-    <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post">
+    <!-- Waiting (errors / not analyzed) -->
+    {% if categories.pending %}
+    <h3 class="section-title">Waiting</h3>
+    {% for lead in categories.pending %}
+    <form action="{{ url_for('analyze_pending', session_id=session.id) }}" method="post">
       <div class="warning-banner">
         <input type="hidden" name="lead_ids" value="{{ lead.id }}">
         <i class="ti ti-alert-triangle" style="font-size:18px;color:var(--text-warning);" aria-hidden="true"></i>
@@ -245,26 +248,26 @@
           {{ lead.company_name or '--' }}{% if lead.website_url %} ({{ lead.website_url.split('://')[-1].split('/')[0] }}){% endif %}
           — {{ lead.last_error or lead.disqualify_reason or lead.status|map_status_label }}.
         </span>
-        <button class="btn-outline btn-small" type="submit">Relancer</button>
+        <button class="btn-outline btn-small" type="submit">Retry</button>
       </div>
     </form>
     {% endfor %}
     {% endif %}
 
-    <!-- Non sélectionnés (SKIPPED à l'import) -->
-    {% if categories.non_validees %}
+    <!-- Already exported in a previous batch -->
+    {% if categories.not_selected %}
     <details class="collapse-card">
       <summary>
-        <h3 class="section-title" style="margin:0;">Non sélectionnés <span class="count-pill">{{ categories.non_validees|length }}</span></h3>
-        <span class="collapse-sub">— ces leads n'ont pas encore été scorés</span>
+        <h3 class="section-title" style="margin:0;">Not selected <span class="count-pill">{{ categories.not_selected|length }}</span></h3>
+        <span class="collapse-sub">— these leads have not been scored yet</span>
       </summary>
-      <form action="{{ url_for('analyser_attente', session_id=session.id) }}" method="post" style="margin:0 12px 12px;">
+      <form action="{{ url_for('analyze_pending', session_id=session.id) }}" method="post" style="margin:0 12px 12px;">
         <div class="list-card" style="margin-bottom:12px;">
           <div class="list-row" style="border-bottom:0.5px solid var(--border);">
-            <input type="checkbox" id="selectAllNonValidees" onchange="toggleAllIn(this, 'nonValidees')" aria-label="Sélectionner tout">
-            <span class="list-row-main" style="font-size:13px;color:var(--text-secondary);">Sélectionner tout</span>
+            <input type="checkbox" id="selectAllNonValidees" onchange="toggleAllIn(this, 'nonValidees')" aria-label="Select all">
+            <span class="list-row-main" style="font-size:13px;color:var(--text-secondary);">Select all</span>
           </div>
-          {% for lead in categories.non_validees %}
+          {% for lead in categories.not_selected %}
           <div class="list-row">
             <input type="checkbox" name="lead_ids" value="{{ lead.id }}" class="cb-nonValidees">
             <div class="list-row-main">
@@ -275,10 +278,11 @@
             </div>
             <span style="font-size:13px;color:var(--text-secondary);">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</span>
             <span style="font-size:13px;color:var(--text-muted);">{{ lead.email or '--' }}</span>
+            {% if lead.already_exported %}<span class="tag-pill">Already exported</span>{% endif %}
           </div>
           {% endfor %}
         </div>
-        <button class="btn-primary" type="submit">Lancer le scoring <span id="countNonValidees">0</span></button>
+        <button class="btn-primary" type="submit">Rescore select <span id="countNonValidees">0</span></button>
       </form>
     </details>
     {% endif %}

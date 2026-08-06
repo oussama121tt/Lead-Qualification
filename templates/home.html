@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,14 +13,16 @@
     }
     .topbar h1 {
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
-    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
     .topbar nav a:hover { background: var(--bg-soft); }
     .topbar nav a.primary { background: var(--accent); color: #fff; }
     .topbar nav a.primary:hover { background: var(--accent-2); }
     .topbar nav a:not(.primary) { color: var(--text); }
+    .topbar form { margin: 0; }
+    .topbar form button { border: 1px solid var(--border); background: var(--surface); color: var(--text); font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; }
 
     .stats-row {
       display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;
@@ -101,13 +103,17 @@
     <div class="topbar">
       <h1>Lead Qualification &amp; Scoring</h1>
       <nav>
-        <a class="primary" href="#" onclick="document.getElementById('dropzone').scrollIntoView({behavior:'smooth'}); return false;">Nouvelle analyse</a>
-        <a href="{{ url_for('history') }}">Historique</a>
+        <a class="primary" href="#" onclick="document.getElementById('dropzone').scrollIntoView({behavior:'smooth'}); return false;">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
+        {% if session.get('role') == 'admin' %}
+          <a href="{{ url_for('admin_users') }}">Users</a>
+        {% endif %}
+        <form method="post" action="{{ url_for('logout') }}"><button type="submit">Log out</button></form>
       </nav>
     </div>
 
     {% if api_key_missing %}
-      <div class="alert alert-warning shadow-sm mt-4">Clés manquantes : {{ api_key_missing | join(', ') }}. L'import reste possible, mais le scraping/scoring nécessitent ces variables d'environnement.</div>
+      <div class="alert alert-warning shadow-sm mt-4">Missing keys: {{ api_key_missing | join(', ') }}. Import is still possible, but scraping/scoring require these environment variables.</div>
     {% endif %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -121,49 +127,49 @@
     {% endwith %}
 
     <!-- Stats cards -->
-    {% set a_verifier = summary.needs_review + summary.low_confidence %}
-    {% set echecs = summary.fetch_failed + summary.score_failed %}
+    {% set to_review = summary.needs_review + summary.low_confidence %}
+    {% set failures = summary.fetch_failed + summary.score_failed %}
     <div class="stats-row">
       <div class="stat-card">
         <div class="stat-lbl">Total</div>
         <div class="stat-num">{{ summary.total_leads }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">À traiter</div>
+        <div class="stat-lbl">To process</div>
         <div class="stat-num">{{ summary.ready_to_process }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Doublons</div>
+        <div class="stat-lbl">Duplicates</div>
         <div class="stat-num">{{ summary.duplicates }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Scorés</div>
+        <div class="stat-lbl">Scored</div>
         <div class="stat-num">{{ summary.scored }}</div>
       </div>
       <div class="stat-card stat-warning">
-        <div class="stat-lbl">À vérifier</div>
-        <div class="stat-num">{{ a_verifier }}</div>
+        <div class="stat-lbl">Needs review</div>
+        <div class="stat-num">{{ to_review }}</div>
       </div>
       <div class="stat-card stat-danger">
-        <div class="stat-lbl">Échecs</div>
-        <div class="stat-num">{{ echecs }}</div>
+        <div class="stat-lbl">Failures</div>
+        <div class="stat-num">{{ failures }}</div>
       </div>
     </div>
 
-    <!-- Upload card (toujours visible) -->
+    <!-- Upload card (always visible) -->
     <div class="upload-card">
-      <h2>Nouvelle analyse</h2>
-      <p class="lead">Importe un CSV Apollo et lance le pipeline complet.</p>
+      <h2>New analysis</h2>
+      <p class="lead">Import an Apollo CSV and launch the full pipeline.</p>
       <form action="{{ url_for('upload_and_review') }}" method="post" enctype="multipart/form-data">
         <div class="dropzone" id="dropzone" onclick="document.getElementById('csvInput').click()">
           <div class="dz-icon" id="dzIcon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="var(--accent)" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M4.406 1.342A5.53 5.53 0 0 1 8 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 0 1 0-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 0 0-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 0 1 0 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383"/><path fill-rule="evenodd" d="M7.646 4.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707V14.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708z"/></svg></div>
           <div class="dz-body">
-            <div class="dz-text" id="dzText">Choisir un fichier CSV</div>
-            <div class="dz-hint" id="dzHint">Format attendu : export Apollo (colonnes nom, email, entreprise, site web)</div>
+            <div class="dz-text" id="dzText">Choose a CSV file</div>
+            <div class="dz-hint" id="dzHint">Expected format: Apollo export (columns name, email, company, website)</div>
           </div>
         </div>
         <input id="csvInput" type="file" name="csv_file" accept=".csv" required style="display:none;" onchange="handleFile(this)">
-        <div class="text-center"><button class="btn btn-primary btn-lg mt-3" type="submit">Importer et passer en revue</button></div>
+        <div class="text-center"><button class="btn btn-primary btn-lg mt-3" type="submit">Import and review</button></div>
       </form>
     </div>
 
@@ -171,9 +177,9 @@
     {% set recent = sessions[:3] %}
     <div class="history-card">
       <div class="hc-header">
-        <h2>Historique récent</h2>
+        <h2>Recent history</h2>
         {% if sessions|length > 3 %}
-        <a href="{{ url_for('history') }}">Voir tout →</a>
+        <a href="{{ url_for('history') }}">View all →</a>
         {% endif %}
       </div>
       <div class="hc-body">
@@ -181,23 +187,23 @@
           {% for session in recent %}
           <div class="d-flex align-items-center justify-content-between py-2" style="border-bottom:1px solid var(--border);">
             <div>
-              <strong>{{ session.label or 'Sans titre' }}</strong>
+              <strong>{{ session.label or 'Untitled' }}</strong>
               <span class="text-muted" style="font-size:0.82rem;margin-left:8px;">{{ session.lead_count }} lead(s)</span>
             </div>
             <div class="d-flex align-items-center gap-2">
               <span class="badge badge-fw {{ session.status|badge_class }}">{{ session.status|map_status_label }}</span>
               {% if session.scored_count and session.scored_count > 0 %}
-                <a class="btn btn-sm btn-outline-primary btn-fw" href="{{ url_for('results_view', session_id=session.id) }}">Résultats</a>
+                <a class="btn btn-sm btn-outline-primary btn-fw" href="{{ url_for('results_view', session_id=session.id) }}">Results</a>
               {% elif session.status == 'running' %}
-                <a class="btn btn-sm btn-outline-warning btn-fw" href="{{ url_for('progress_view', session_id=session.id) }}">Progression</a>
+                <a class="btn btn-sm btn-outline-warning btn-fw" href="{{ url_for('progress_view', session_id=session.id) }}">Progress</a>
               {% elif session.pending_count and session.pending_count > 0 %}
-                <a class="btn btn-sm btn-outline-secondary btn-fw" href="{{ url_for('import_review', session_id=session.id) }}">Revue</a>
+                <a class="btn btn-sm btn-outline-secondary btn-fw" href="{{ url_for('import_review', session_id=session.id) }}">Review</a>
               {% endif %}
             </div>
           </div>
           {% endfor %}
         {% else %}
-          <div class="empty-state" style="border:none;">Aucune session pour le moment. Importe un CSV pour commencer.</div>
+          <div class="empty-state" style="border:none;">No sessions yet. Import a CSV to get started.</div>
         {% endif %}
       </div>
     </div>
@@ -217,13 +223,13 @@
         var name = f.name.length > 40 ? f.name.slice(0, 37) + '...' : f.name;
         icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="#0d6efd" viewBox="0 0 16 16"><path d="M5.5 7a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1zM5 9.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m0 2a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5"/><path d="M9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5zm0 1v3a1 1 0 0 0 1 1h3v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/></svg>';
         text.textContent = name;
-        hint.textContent = 'Cliquez pour remplacer';
+        hint.textContent = 'Click to replace';
         dz.classList.add('selected');
       } else {
         dz.classList.remove('selected');
         icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="var(--accent)" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M4.406 1.342A5.53 5.53 0 0 1 8 0c2.69 0 4.923 2 5.166 4.579C14.758 4.804 16 6.137 16 7.773 16 9.569 14.502 11 12.687 11H10a.5.5 0 0 1 0-1h2.688C13.979 10 15 8.988 15 7.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 2.825 10.328 1 8 1a4.53 4.53 0 0 0-2.941 1.1c-.757.652-1.153 1.438-1.153 2.055v.448l-.445.049C2.064 4.805 1 5.952 1 7.318 1 8.785 2.23 10 3.781 10H6a.5.5 0 0 1 0 1H3.781C1.708 11 0 9.366 0 7.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383"/><path fill-rule="evenodd" d="M7.646 4.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707V14.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708z"/></svg>';
-        text.textContent = 'Choisir un fichier CSV';
-        hint.textContent = 'Format attendu : export Apollo (colonnes nom, email, entreprise, site web)';
+        text.textContent = 'Choose a CSV file';
+        hint.textContent = 'Expected format: Apollo export (columns name, email, company, website)';
       }
     }
     (function() {

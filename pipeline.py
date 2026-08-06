@@ -1,17 +1,21 @@
 """
-Orchestrateur du pipeline scraping + scoring, lead par lead.
+Orchestrator of the scraping + scoring pipeline, lead by lead.
 
-run_pipeline() est un générateur : il yield un dict de progression après
-chaque lead pour alimenter l'interface temps réel. Une exception sur un
-lead ne casse jamais le batch entier.
+run_pipeline() is a generator: it yields a progress dict after each lead
+to feed the real-time interface. An exception on a lead never breaks the
+whole batch.
 """
 
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import db as dbmod
 import scraper
 import scorer
 
 DEFAULT_THROTTLE_SECONDS = 15  # Firecrawl free tier ~10 req/min
+DEFAULT_CONCURRENCY = int(os.getenv("PIPELINE_CONCURRENCY", "3") or "3")
 
 
 def _now_ts() -> float:
@@ -31,12 +35,12 @@ def _now_ts() -> float:
 #         remaining -= chunk
 
 def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=None):
-    """Dort le nombre de secondes demandé."""
+    """Sleeps for the requested number of seconds."""
     time.sleep(seconds)
 
 
 def _build_lead_metadata(lead: dict) -> dict:
-    """Extrait les métadonnées Apollo d'un lead pour le prompt de scoring."""
+    """Extracts Apollo metadata from a lead for the scoring prompt."""
     return {
         "first_name": lead.get("first_name"),
         "last_name": lead.get("last_name"),
@@ -48,14 +52,14 @@ def _build_lead_metadata(lead: dict) -> dict:
 
 
 def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
-    """Recherche web (LinkedIn, Product Hunt, etc.), persiste chaque source en
-    DB (lead_search_evidence), et retourne les résultats sous forme de dict
-    {source: [hits]} — SÉPARÉ du contenu scrapé du site.
+    """Runs a web search (LinkedIn, Product Hunt, etc.), persists each source in
+    the DB (lead_search_evidence), and returns the results as a dict
+    {source: [hits]} — SEPARATE from the scraped site content.
 
-    Avant : les hits étaient fusionnés directement dans `rows` (perte de
-    title/url, plus de distinction de fiabilité site vs web dans le prompt).
-    Maintenant : `scorer.score_content()` reçoit ce dict via son propre
-    paramètre `web_search_evidence`, formaté et budgété à part (voir
+    Before: hits were merged directly into `rows` (loss of title/url, and no
+    distinction of site vs web reliability in the prompt).
+    Now: `scorer.score_content()` receives this dict via its own
+    `web_search_evidence` parameter, formatted and budgeted separately (see
     scorer._format_web_search_evidence).
     """
     company_name = lead.get("company_name", "")
@@ -82,12 +86,12 @@ def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
 
 
 def _load_persisted_web_evidence(conn, lead_id: int) -> dict:
-    """Recharge les preuves web déjà collectées et persistées (lead_search_evidence)
-    pour un lead — utilisé par run_rescore_pipeline, qui ne relance pas de
-    nouvelle recherche web mais ne doit PAS non plus perdre celles du premier
-    passage (bug corrigé : avant, un rescore ne rechargeait que lead_content,
-    jamais lead_search_evidence — les preuves web coûtées en crédits SGAI
-    disparaissaient silencieusement)."""
+    """Reloads the web evidence already collected and persisted (lead_search_evidence)
+    for a lead — used by run_rescore_pipeline, which does not run a new web
+    search but must NOT lose the one from the first pass either (fixed bug:
+    previously, a rescore only reloaded lead_content, never
+    lead_search_evidence — web evidence paid for in SGAI credits silently
+    disappeared)."""
     evidence_rows = dbmod.get_lead_search_evidence(conn, lead_id)
     web_evidence: dict = {}
     for row in evidence_rows:
@@ -99,31 +103,37 @@ def _load_persisted_web_evidence(conn, lead_id: int) -> dict:
     return web_evidence
 
 
-def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, session_id: int | None = None, cancellation_check=None):
-    # Charger les critères de scoring sélectionnés par l'utilisateur
-    scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
-    scoring_criteria_custom = dbmod.get_scoring_criteria_custom(conn, session_id) if session_id else ""
+def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, throttle_seconds):
+    """Processes a SINGLE lead end to end (Firecrawl scrape + SG web search
+    + scoring) in its own DB connection (taken from the shared pool).
 
-    leads = dbmod.get_leads_to_process(conn, session_id=session_id)
-    total = len(leads)
-    started_at = _now_ts()
+    Returns the list of progress dicts for the lead — same format as the
+    yields of the old sequential run_pipeline. Used as-is in sequential
+    mode (concurrency<=1) and as a parallel work unit (one thread per
+    batch of leads, each with its own connection).
 
-    for i, lead in enumerate(leads, start=1):
-        lead_id = lead["id"]
-        website = lead["website_url"]
-        progress = {
-            "index": i,
-            "total": total,
+    NB: no inter-lead throttle here — concurrency is what limits the
+    throughput. Any error on a lead is caught and turned into a *FAILED
+    event: a lead that crashes never makes the others fail.
+    """
+    conn = dbmod.get_connection()
+    events = []
+    lead_id = lead["id"]
+    website = lead["website_url"]
+
+    def _base(extra=None):
+        d = {
             "lead_id": lead_id,
-            "company_name": lead["company_name"],
+            "company_name": lead.get("company_name"),
             "website_url": website,
-            "step": "scraping",
-            "status": None,
-            "error": None,
             "ts": _now_ts(),
-            "started_at": started_at,
         }
-        yield dict(progress)
+        if extra:
+            d.update(extra)
+        return d
+
+    try:
+        events.append(_base({"step": "scraping", "status": None, "error": None}))
 
         # --- Scraping ---
         scrape_t0 = _now_ts()
@@ -132,22 +142,18 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
         except Exception as e:
             err_str = str(e)
             scrape_elapsed = _now_ts() - scrape_t0
-            dbmod.update_lead_status(conn, lead_id, "FETCH_FAILED", error=err_str)
-            dbmod.record_lead_timing(conn, lead_id, scrape_seconds=scrape_elapsed)
-            progress.update(step="scraping", status="FETCH_FAILED", error=err_str, scrape_seconds=scrape_elapsed, ts=_now_ts())
-            yield dict(progress)
-            continue
+            dbmod.update_lead_progress(conn, lead_id, status="FETCH_FAILED", error=err_str, scrape_seconds=scrape_elapsed)
+            events.append(_base({"step": "scraping", "status": "FETCH_FAILED", "error": err_str, "scrape_seconds": scrape_elapsed}))
+            return events
 
         scrape_elapsed = _now_ts() - scrape_t0
-
-        dbmod.record_lead_timing(conn, lead_id, scrape_seconds=scrape_elapsed)
-        dbmod.update_lead_status(conn, lead_id, scrape_result["status"], error=scrape_result.get("error"))
+        dbmod.update_lead_progress(conn, lead_id, status=scrape_result["status"], error=scrape_result.get("error"), scrape_seconds=scrape_elapsed)
         if scrape_result["rows"]:
             dbmod.save_lead_content(conn, lead_id, scrape_result["rows"])
 
-        # Signaux déterministes (fonts, patterns visuels, fingerprint de
-        # builder, pattern git) : sauvegardés tels quels, jamais interprétés
-        # ici — le jugement reste dans le scoring ci-dessous.
+        # Deterministic signals (fonts, visual patterns, builder fingerprint,
+        # git pattern): saved as-is, never interpreted here — judgment stays
+        # in the scoring below.
         if scrape_result.get("technical_signals"):
             dbmod.save_lead_technical_signals(
                 conn,
@@ -156,26 +162,16 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
                 scrape_result.get("github_check"),
             )
 
-        progress.update(step="scraping_done", status=scrape_result["status"], error=scrape_result["error"], ts=_now_ts())
-        yield dict(progress)
+        events.append(_base({"step": "scraping_done", "status": scrape_result["status"], "error": scrape_result.get("error"), "scrape_seconds": scrape_elapsed}))
 
-        # --- Web Search (intégré à la Phase 1) ---
-        # Récupère les preuves web (LinkedIn, Product Hunt, GitHub, etc.)
-        # SÉPARÉMENT du contenu scrapé du site — plus de fusion silencieuse
-        # dans `rows` (voir _fetch_web_search_evidence).
+        # --- Web Search (integrated into Phase 1) ---
+        # Fetches web evidence (LinkedIn, Product Hunt, GitHub, etc.)
+        # SEPARATELY from the scraped site content.
         web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
 
-        # Même si le scraping a échoué (FETCH_FAILED), on continue vers le
-        # scoring : scorer.py gère le cas rows=[] et renvoie un verdict
-        # unclear/needs_human_review, pour ne pas bloquer le lead silencieusement.
-
         # --- Scoring ---
-        progress.update(step="scoring", ts=_now_ts())
-        yield dict(progress)
-
-        # Regroupe les signaux déterministes du scraper (technical_signals +
-        # github_check) en un seul bloc pour le prompt — voir scorer.py pour
-        # la distinction avec le champ `technical_signals` du verdict LLM.
+        # Groups the scraper's deterministic signals (technical_signals +
+        # github_check) into a single block for the prompt.
         deterministic_signals = None
         if scrape_result.get("technical_signals"):
             deterministic_signals = dict(scrape_result["technical_signals"])
@@ -194,45 +190,91 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
             )
             score_elapsed = _now_ts() - score_t0
 
-            # Garde-fou domain_mismatch : si l'email et le site scrapé ne
-            # partagent pas le même domaine, le verdict porte peut-être sur la
-            # MAUVAISE entreprise. On ne fait jamais confiance à la confidence
-            # du modèle dans ce cas — human review obligatoire, quoi qu'il dise.
+            # domain_mismatch safeguard: if the email and the scraped site do
+            # not share the same domain, the verdict may concern the WRONG
+            # company. In that case we never trust the model's confidence —
+            # human review is mandatory, no matter what it says.
             if lead.get("domain_mismatch"):
                 reason = lead.get("domain_mismatch_reason") or "email/website domain mismatch"
                 warning = (
-                    f"domain_mismatch: {reason} — ce verdict décrit peut-être "
-                    "la mauvaise entreprise, à confirmer manuellement avant tout envoi"
+                    f"domain_mismatch: {reason} — this verdict may describe the "
+                    "wrong company, please confirm manually before any send"
                 )
                 verdict["needs_human_review"] = True
                 existing = verdict.get("disqualify_reason")
                 verdict["disqualify_reason"] = f"{existing} | {warning}" if existing else warning
 
             dbmod.save_lead_score(conn, lead_id, verdict)
-            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
             new_status = "LOW_CONFIDENCE" if verdict.get("needs_human_review") else "SCORED"
-            scrape_err = scrape_result.get("error") or progress.get("error")
-            dbmod.update_lead_status(conn, lead_id, new_status, error=scrape_err)
+            scrape_err = scrape_result.get("error")
+            dbmod.update_lead_progress(conn, lead_id, status=new_status, error=scrape_err, score_seconds=score_elapsed)
         except Exception as e:
             score_elapsed = _now_ts() - score_t0
-            dbmod.update_lead_status(conn, lead_id, "SCORE_FAILED", error=str(e))
-            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
-            progress.update(step="scoring", status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed, ts=_now_ts())
-            yield dict(progress)
+            dbmod.update_lead_progress(conn, lead_id, status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed)
+            events.append(_base({"step": "scoring", "status": "SCORE_FAILED", "error": str(e), "score_seconds": score_elapsed}))
+            return events
+
+        events.append(_base({"step": "done", "status": new_status, "error": None, "verdict": verdict}))
+        return events
+    except Exception as fatal:
+        events.append(_base({"step": "done", "status": "SCORE_FAILED", "error": str(fatal)}))
+        return events
+    finally:
+        conn.close()
+
+
+def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, session_id: int | None = None, cancellation_check=None, concurrency: int = DEFAULT_CONCURRENCY):
+    """Orchestrator of the scraping + scoring pipeline, lead by lead.
+
+    With ``concurrency <= 1`` (or a single lead to process): historical
+    sequential behavior, waiting ``throttle_seconds`` between each lead.
+
+    With ``concurrency > 1``: leads are processed IN PARALLEL (at most
+    ``concurrency`` workers, each with its own DB connection taken from the
+    pool). A batch's duration drops from about ``N * T`` to ``N/w * T`` —
+    essential when each lead waits a long time on Firecrawl/SGAI.
+
+    Yields the progress events (same format as before) in the order of
+    completion of the workers.
+    """
+    scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
+    scoring_criteria_custom = dbmod.get_scoring_criteria_custom(conn, session_id) if session_id else ""
+
+    leads = dbmod.get_leads_to_process(conn, session_id=session_id)
+    total = len(leads)
+    started_at = _now_ts()
+    if total == 0:
+        return
+
+    def _emit(ev: dict, index: int):
+        ev["index"] = index
+        ev["total"] = total
+        ev["started_at"] = started_at
+        yield dict(ev)
+
+    if concurrency <= 1 or total == 1:
+        for i, lead in enumerate(leads, start=1):
+            for ev in _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, throttle_seconds):
+                yield from _emit(ev, i)
             _sleep_check(throttle_seconds)
-            continue
+        return
 
-        progress.update(step="done", status=new_status, error=None, verdict=verdict, ts=_now_ts())
-        yield dict(progress)
-
-        _sleep_check(throttle_seconds)  # respecter les quotas
+    with ThreadPoolExecutor(max_workers=min(concurrency, total)) as pool:
+        futures = {
+            pool.submit(_process_lead, lead, session_id, scoring_criteria, scoring_criteria_custom, throttle_seconds): i
+            for i, lead in enumerate(leads, start=1)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            for ev in future.result():
+                yield from _emit(ev, index)
 
 
 def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | None = None, lead_status: str = "RESCORE_PENDING", cancellation_check=None):
     """
-    Re-score uniquement (pas de re-scraping ni recherche web).
-    Recharge le contenu déjà scrapé depuis la DB et relance le LLM.
-    Utilisé par le bouton "Re-scorer" depuis la page résultats.
+    Rescore only (no re-scraping and no web search).
+    Reloads the already-scraped content from the DB and reruns the LLM.
+    Used by the "Re-score" button from the results page.
     """
     scoring_criteria = dbmod.get_scoring_criteria(conn, session_id) if session_id else []
     scoring_criteria_custom = dbmod.get_scoring_criteria_custom(conn, session_id) if session_id else ""
@@ -270,10 +312,10 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
         if signals_row:
             deterministic_signals = dict(signals_row)
 
-        # Recharge les preuves web déjà collectées au premier passage — sans
-        # ça, un rescore perdait silencieusement tout ce que la recherche web
-        # avait trouvé (bug corrigé : lead_search_evidence existe en DB mais
-        # n'était jamais relu ici).
+        # Reloads the web evidence already collected on the first pass —
+        # without this, a rescore silently lost everything the web search had
+        # found (fixed bug: lead_search_evidence exists in the DB but was
+        # never read back here).
         web_evidence = _load_persisted_web_evidence(conn, lead_id)
 
         try:
@@ -292,21 +334,19 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
             if lead.get("domain_mismatch"):
                 reason = lead.get("domain_mismatch_reason") or "email/website domain mismatch"
                 warning = (
-                    f"domain_mismatch: {reason} — ce verdict décrit peut-être "
-                    "la mauvaise entreprise, à confirmer manuellement avant tout envoi"
+                    f"domain_mismatch: {reason} — this verdict may describe the "
+                    "wrong company, please confirm manually before any send"
                 )
                 verdict["needs_human_review"] = True
                 existing = verdict.get("disqualify_reason")
                 verdict["disqualify_reason"] = f"{existing} | {warning}" if existing else warning
 
             dbmod.save_lead_score(conn, lead_id, verdict)
-            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
             new_status = "LOW_CONFIDENCE" if verdict.get("needs_human_review") else "SCORED"
-            dbmod.update_lead_status(conn, lead_id, new_status)
+            dbmod.update_lead_progress(conn, lead_id, status=new_status, score_seconds=score_elapsed)
         except Exception as e:
             score_elapsed = _now_ts() - score_t0
-            dbmod.update_lead_status(conn, lead_id, "SCORE_FAILED", error=str(e))
-            dbmod.record_lead_timing(conn, lead_id, score_seconds=score_elapsed)
+            dbmod.update_lead_progress(conn, lead_id, status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed)
             progress.update(step="scoring", status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed, ts=_now_ts())
             yield dict(progress)
             _sleep_check(throttle_seconds)

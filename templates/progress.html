@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Analyse en cours — Lead Qualification Engine</title>
+  <title>Analysis in progress — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -13,55 +13,77 @@
     }
     .topbar h1 {
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
-    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
     .topbar nav a:hover { background: var(--bg-soft); }
     .topbar nav a.primary { background: var(--accent); color: #fff; }
-    .topbar nav a.primary:hover { background: var(--accent-2); }
+    .topbar nav a.primary:hover { background: var(--accent-2, #0098CC); }
     .topbar nav a:not(.primary) { color: var(--text); }
 
+    /* ---- Carte de progression (redesign) ---- */
+    .shell {
+      display: flex; flex-direction: column;
+      min-height: 100vh;
+    }
     .progress-card {
-      max-width: 560px; margin: 40px auto;
-      border: 1px solid var(--border); border-radius: 22px;
-      background: var(--surface); padding: 32px 28px; text-align: center;
+      max-width: 520px; margin: auto;
+      border: 0.5px solid var(--border); border-radius: 16px;
+      background: var(--surface-2); padding: 2rem 2rem 1.75rem;
     }
-    .progress-label {
-      font-size: 1.1rem; font-weight: 600; margin-bottom: 20px;
+
+    .pc-head {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      margin-bottom: 20px;
     }
-    .progress-bar-track {
-      width: 100%; height: 8px;
-      background: var(--bg-soft); border-radius: 99px; overflow: hidden;
-      margin-bottom: 16px;
+    .pc-spinner {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 3px solid var(--border); border-top-color: var(--accent);
+      flex-shrink: 0; animation: spin 0.8s linear infinite;
     }
-    .progress-bar-fill {
-      height: 100%; background: var(--accent); border-radius: 99px;
-      transition: width 0.4s ease; min-width: 4px;
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .pc-label { font-size: 17px; font-weight: 500; margin: 0; text-align: center; }
+
+    .pc-segments { display: flex; align-items: center; gap: 6px; margin-bottom: 0; }
+    .pc-segments .seg {
+      flex: 1; height: 6px; border-radius: 3px;
+      background: var(--border); transition: background 0.3s ease;
     }
-    .progress-meta {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-      margin: 20px 0;
+    .pc-segments .seg.done { background: var(--accent); }
+    .pc-segments .seg.active { background: var(--accent); }
+
+    .pc-seg-labels { display: flex; justify-content: space-between; margin: 10px 0 24px; }
+    .pc-seg-labels span { font-size: 11px; color: var(--text-muted); }
+    .pc-seg-labels span.active { color: var(--text-accent); font-weight: 500; }
+
+    .pc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+    .pc-stat { background: var(--surface-1); border-radius: var(--radius); padding: 12px; min-width: 0; }
+    .pc-stat-label {
+      font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px;
     }
-    .progress-meta-item {
-      padding: 12px; border-radius: 12px; background: var(--bg-soft);
-      text-align: left;
+    .pc-stat-value {
+      font-size: 17px; font-weight: 500; margin: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .progress-meta-item .pm-label {
-      font-size: 0.72rem; text-transform: uppercase;
-      letter-spacing: 0.08em; color: var(--muted); margin-bottom: 2px;
+    .pc-stat-value.small { font-size: 14px; }
+    .pc-stat-value.wrap {
+      white-space: normal; overflow: visible; overflow-wrap: break-word;
+      text-overflow: clip;
     }
-    .progress-meta-item .pm-value {
-      font-size: 0.95rem; font-weight: 600;
+
+    .pc-message { text-align: center; font-size: 13px; color: var(--text-secondary); margin: 0; }
+
+    .pc-complete { text-align: center; animation: fade-in 0.6s ease; }
+    .pc-complete .complete-icon { font-size: 2.6rem; margin-bottom: 8px; }
+    .pc-complete h2 {
+      font-family: Georgia, "Times New Roman", serif;
+      margin-bottom: 6px; font-size: 1.25rem;
     }
-    .progress-message {
-      color: var(--muted); font-size: 0.88rem; margin: 0 0 20px;
-    }
-    .progress-complete { animation: fade-in 0.6s ease; }
-    .progress-complete.hidden { display: none; }
-    .complete-icon { font-size: 2.8rem; margin-bottom: 12px; }
-    .progress-complete h2 { font-family: Georgia, "Times New Roman", serif; margin-bottom: 6px; font-size: 1.3rem; }
-    .progress-complete p { color: var(--muted); margin-bottom: 24px; font-size: 0.92rem; }
+    .pc-complete p { color: var(--text-secondary); margin-bottom: 20px; font-size: 0.92rem; }
+    .pc-complete .btn { border-radius: 12px; }
+
     .hidden { display: none !important; }
     @keyframes fade-in {
       from { opacity: 0; transform: translateY(12px); }
@@ -75,47 +97,54 @@
     <div class="topbar">
       <h1>Lead Qualification &amp; Scoring</h1>
       <nav>
-        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
-        <a href="{{ url_for('history') }}">Historique</a>
-
+        <a class="primary" href="{{ url_for('home') }}#dropzone">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
       </nav>
     </div>
 
     <div class="progress-card">
-      <div class="progress-label" id="progressLabel">Analyse en cours...</div>
-
-      <div class="progress-bar-track">
-        <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+      <div class="pc-head">
+        <div class="pc-spinner" id="spinner"></div>
+        <p class="pc-label" id="progressLabel">Analysis in progress...</p>
       </div>
 
-      <div class="progress-meta">
-        <div class="progress-meta-item">
-          <div class="pm-label">Progression</div>
-          <div class="pm-value" id="leadIndex">&mdash; / &mdash;</div>
+      <div class="pc-segments">
+        <div class="seg" id="segImport"></div>
+        <div class="seg" id="segScraping"></div>
+        <div class="seg" id="segScoring"></div>
+      </div>
+      <div class="pc-seg-labels">
+        <span id="lblImport">Import</span>
+        <span id="lblScraping">Scraping</span>
+        <span id="lblScoring">Scoring</span>
+      </div>
+
+      <div class="pc-stats">
+        <div class="pc-stat">
+          <p class="pc-stat-label">Progress</p>
+          <p class="pc-stat-value" id="leadIndex">&mdash; / &mdash;</p>
         </div>
-        <div class="progress-meta-item">
-          <div class="pm-label">Temps</div>
-          <div class="pm-value" id="elapsedTime">0:00</div>
+        <div class="pc-stat">
+          <p class="pc-stat-label">Time</p>
+          <p class="pc-stat-value" id="elapsedTime">0:00</p>
         </div>
-        <div class="progress-meta-item" style="grid-column:1/-1;">
-          <div class="pm-label">Étape</div>
-          <div class="pm-value" id="currentStep">Initialisation</div>
+        <div class="pc-stat">
+          <p class="pc-stat-label">Step</p>
+          <p class="pc-stat-value small wrap" id="currentStep">Initializing</p>
         </div>
       </div>
 
-      <p class="progress-message" id="progressMessage">
-        Le pipeline d'analyse est en cours d'exécution. Les résultats s'afficheront automatiquement.
+      <p class="pc-message" id="progressMessage">
+        The analysis pipeline is running.<br>Results will appear automatically.
       </p>
 
-      <div class="progress-complete hidden" id="progressComplete">
+      <div class="pc-complete hidden" id="progressComplete">
         <div class="complete-icon" id="completeIcon">&#x2705;</div>
-        <h2 id="completeTitle">Analyse terminée !</h2>
-        <p id="completeDetails">Tous les leads ont été traités.</p>
-        <div id="completedActions" class="d-flex gap-3 justify-content-center flex-wrap">
-          <a class="btn btn-primary btn-lg" href="{{ url_for('results_view', session_id=session_id) }}" id="viewResultsBtn">
-            Voir les résultats
-          </a>
-        </div>
+        <h2 id="completeTitle">Analysis complete!</h2>
+        <p id="completeDetails">All leads have been processed.</p>
+        <a class="btn btn-primary btn-lg" href="{{ url_for('results_view', session_id=session_id) }}" id="viewResultsBtn">
+          View results
+        </a>
       </div>
     </div>
 
@@ -129,7 +158,13 @@
 
   const elements = {
     label: document.getElementById('progressLabel'),
-    barFill: document.getElementById('progressBarFill'),
+    spinner: document.getElementById('spinner'),
+    segImport: document.getElementById('segImport'),
+    segScraping: document.getElementById('segScraping'),
+    segScoring: document.getElementById('segScoring'),
+    lblImport: document.getElementById('lblImport'),
+    lblScraping: document.getElementById('lblScraping'),
+    lblScoring: document.getElementById('lblScoring'),
     leadIndex: document.getElementById('leadIndex'),
     currentStep: document.getElementById('currentStep'),
     elapsedTime: document.getElementById('elapsedTime'),
@@ -159,25 +194,53 @@
 
   function translateStep(step) {
     const map = {
-      'scraping': 'Scraping du site web...',
-      'scraping_done': 'Site web analysé',
-      'scoring': 'Scoring IA en cours...',
-      'done': 'Terminé',
-      'waiting': 'En attente...',
+      'scraping': 'Scraping the website...',
+      'scraping_done': 'Website analyzed',
+      'scoring': 'AI scoring in progress...',
+      'done': 'Finished',
+      'waiting': 'Waiting...',
     };
     return map[step] || step || '--';
   }
 
   function translateStatus(status) {
     const map = {
-      'FETCH_FAILED': 'Échec du scraping',
-      'FETCH_PARTIAL': 'Scraping partiel',
-      'PARSED': 'Contenu parsé',
-      'SCORE_FAILED': 'Échec du scoring',
-      'LOW_CONFIDENCE': 'Confiance faible',
-      'SCORED': 'Scoré',
+      'FETCH_FAILED': 'Scraping failed',
+      'FETCH_PARTIAL': 'Partial scrape',
+      'PARSED': 'Content parsed',
+      'SCORE_FAILED': 'Scoring failed',
+      'LOW_CONFIDENCE': 'Low confidence',
+      'SCORED': 'Scored',
     };
     return map[status] || status || '--';
+  }
+
+  // 3 segments : Import / Scraping / Scoring
+  // state : { import: bool, scraping: 'active'|bool, scoring: 'active'|bool }
+  function setSegments(state) {
+    const segs = [
+      { el: elements.segImport, lbl: elements.lblImport, on: Boolean(state.import) },
+      { el: elements.segScraping, lbl: elements.lblScraping, on: state.scraping === true || state.scraping === 'active', active: state.scraping === 'active' },
+      { el: elements.segScoring, lbl: elements.lblScoring, on: state.scoring === true || state.scoring === 'active', active: state.scoring === 'active' },
+    ];
+    const labels = [elements.lblImport, elements.lblScraping, elements.lblScoring];
+    labels.forEach(function(l, i) {
+      l.classList.toggle('active', Boolean(segs[i].active));
+    });
+    elements.segImport.className = 'seg' + (state.import ? ' done' : '');
+    elements.segScraping.className = 'seg' + (segs[1].on ? (segs[1].active ? ' active' : ' done') : '');
+    elements.segScoring.className = 'seg' + (segs[2].on ? (segs[2].active ? ' active' : ' done') : '');
+  }
+
+  function segmentsForStep(step) {
+    switch (step) {
+      case 'waiting':     return { import: true, scraping: 'active', scoring: false };
+      case 'scraping':    return { import: true, scraping: 'active', scoring: false };
+      case 'scraping_done': return { import: true, scraping: true, scoring: 'active' };
+      case 'scoring':     return { import: true, scraping: true, scoring: 'active' };
+      case 'done':        return { import: true, scraping: true, scoring: true };
+      default:            return { import: true, scraping: 'active', scoring: false };
+    }
   }
 
   function handleProgress(data) {
@@ -185,41 +248,42 @@
       const total = data.total || 0;
       if (total > 0) {
         elements.leadIndex.textContent = '0 / ' + total;
-        elements.label.textContent = 'Lead 1 sur ' + total + ' — préparation...';
-        elements.currentStep.textContent = total + ' lead(s) trouvé(s)';
+        elements.label.textContent = 'Lead 1 of ' + total + ' — preparing...';
+        elements.currentStep.textContent = total + ' lead(s) found';
       } else {
-        elements.currentStep.textContent = 'Démarrage du pipeline...';
+        elements.currentStep.textContent = 'Starting pipeline...';
       }
+      setSegments(segmentsForStep('waiting'));
       return;
     }
 
     const index = data.index || 0;
     const total = data.total || 1;
-    const pct = Math.round((index / total) * 100);
 
-    elements.barFill.style.width = Math.min(pct, 100) + '%';
     elements.leadIndex.textContent = index + ' / ' + total;
 
     const company = data.company_name || '';
     if (company) {
-      elements.label.textContent = 'Lead ' + index + ' sur ' + total + ' — ' + company;
+      elements.label.textContent = 'Lead ' + index + ' of ' + total + ' — ' + company;
     } else {
-      elements.label.textContent = 'Lead ' + index + ' sur ' + total;
+      elements.label.textContent = 'Lead ' + index + ' of ' + total;
     }
 
     const step = data.step || '';
     const status = data.status || '';
     if (step === 'scraping') {
-      elements.currentStep.textContent = 'Scraping : ' + (data.company_name || '--');
+      elements.currentStep.textContent = 'Scraping: ' + (data.company_name || '--');
     } else if (step === 'scraping_done') {
       elements.currentStep.textContent = translateStatus(status);
     } else if (step === 'scoring') {
-      elements.currentStep.textContent = 'Scoring IA : ' + (data.company_name || '--');
+      elements.currentStep.textContent = 'Scoring: ' + (data.company_name || '--');
     } else if (step === 'done') {
-      elements.currentStep.textContent = (data.company_name || '--') + ' scoré';
+      elements.currentStep.textContent = (data.company_name || '--') + ' scored';
     } else {
       elements.currentStep.textContent = translateStep(step);
     }
+
+    setSegments(segmentsForStep(step));
 
     if (data.error) {
       elements.message.textContent = (data.company_name || '') + ': ' + data.error;
@@ -234,37 +298,36 @@
     const isFailed = data.status === 'failed';
     const success = data.status === 'completed';
 
-    elements.barFill.style.width = '100%';
-    elements.barFill.style.background = success
-      ? 'var(--accent)'
-      : 'var(--danger)';
-
     const processed = data.processed || 0;
     const total = data.total || processed;
     elements.leadIndex.textContent = processed + ' / ' + total;
-    elements.currentStep.textContent = success ? 'Terminé' : 'Échoué';
-    elements.label.textContent = success ? 'Analyse terminée' : 'Analyse échouée';
+    elements.currentStep.textContent = success ? 'Finished' : 'Failed';
+    elements.label.textContent = success ? 'Analysis complete' : 'Analysis failed';
 
     if (data.completed_ts && data.started_at) {
       const dur = data.completed_ts - data.started_at;
       elements.elapsedTime.textContent = formatElapsed(dur);
     }
 
+    elements.message.classList.add('hidden');
+
     if (success) {
+      setSegments({ import: true, scraping: true, scoring: true });
+      elements.spinner.style.borderTopColor = 'var(--accent)';
       elements.completeIcon.textContent = '\u2705';
-      elements.completeTitle.textContent = 'Analyse terminée !';
-      elements.completeDetails.textContent = processed + ' lead(s) traité(s) en ' + elements.elapsedTime.textContent + '.';
-      document.getElementById('completedActions').classList.remove('hidden');
+      elements.completeTitle.textContent = 'Analysis complete!';
+      elements.completeDetails.textContent = processed + ' lead(s) processed in ' + elements.elapsedTime.textContent + '.';
     } else {
+      setSegments({ import: true, scraping: true, scoring: true });
+      elements.spinner.style.borderTopColor = 'var(--danger, #dc3545)';
       elements.completeIcon.textContent = '\u274C';
-      elements.completeTitle.textContent = 'Analyse échouée';
+      elements.completeTitle.textContent = 'Analysis failed';
       elements.completeDetails.textContent = data.error
-        ? 'Erreur : ' + data.error
-        : processed + ' lead(s) traités avant l\'échec.';
-      document.getElementById('completedActions').classList.remove('hidden');
+        ? 'Error: ' + data.error
+        : processed + ' lead(s) processed before the failure.';
     }
 
-    elements.message.classList.add('hidden');
+    elements.spinner.style.animationPlayState = 'paused';
     elements.complete.classList.remove('hidden');
 
     setTimeout(function() {

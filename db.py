@@ -1,37 +1,68 @@
 """
-Couche base de données (PostgreSQL/Neon uniquement).
+Database layer (PostgreSQL/Neon only).
 
-Tables :
-- analysis_sessions        : une ligne par analyse/relecture historique
-- leads                    : une ligne par lead Apollo, rattachée à une session
-- lead_content             : une ligne par page scrapée (Firecrawl) pour un lead
-- lead_technical_signals   : signaux déterministes calculés par scraper.py
-- lead_scores              : verdict du scoring IA (1 ligne = 1 verdict)
+Tables:
+- analysis_sessions        : one row per historical analysis/review
+- leads                    : one row per Apollo lead, attached to a session
+- lead_content             : one row per scraped page (Firecrawl) for a lead
+- lead_technical_signals   : deterministic signals computed by scraper.py
+- lead_scores              : AI scoring verdict (1 row = 1 verdict)
 
-Fonctionnement : se connecte à PostgreSQL via psycopg2 en utilisant
-DATABASE_URL (variable d'environnement, ex : chaîne Neon). Pas de repli
-SQLite : sans DATABASE_URL, l'application refuse de démarrer.
+It connects to PostgreSQL via psycopg2 using DATABASE_URL (environment
+variable, e.g. Neon connection string). No SQLite fallback: without
+DATABASE_URL, the application refuses to start.
 """
 
 import csv
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
-load_dotenv()
+from constants import NOT_YET_SCORED_STATUSES
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-DB_PATH_DEFAULT = "leads.db"  # nom résiduel conservé pour compat API interne
+DB_PATH_DEFAULT = "leads.db"  # residual name kept for internal API compatibility
+
+# Connection pool: reuses already-established TCP connections instead of
+# opening a fresh one (SSL handshake + auth) on EVERY request. Unlike
+# pgBouncer, we keep a simple client-side pool; each connection is returned
+# to the pool at the end of a request and reused by the next one.
+_pg_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pg_pool_lock = threading.Lock()
+
+
+def _is_dead_connection_error(exc: psycopg2.OperationalError) -> bool:
+    """True if the OperationalError means the pooled connection was killed
+    server-side (Neon closes idle connections): the query can safely be
+    retried on a fresh connection."""
+    msg = str(exc).lower()
+    return any(k in msg for k in (
+        "could not receive data from server",
+        "software caused connection abort",
+        "server closed the connection",
+        "connection reset by peer",
+        "ssl syscall error",
+        "broken pipe",
+        "connection has been closed",
+        "terminated by server",
+        "no connection to the server",
+        "connection refused",
+    ))
+DB_POOL_MINCONN = max(1, int(os.getenv("DB_POOL_MINCONN", "1")))
+DB_POOL_MAXCONN = max(int(os.getenv("DB_POOL_MAXCONN", "8")), DB_POOL_MINCONN)
 
 
 def _is_duplicate_column(e: Exception) -> bool:
-    """Vrai si l'erreur signifie 'colonne déjà existante' (PostgreSQL)."""
+    """True if the error means 'column already exists' (PostgreSQL)."""
     msg = str(e)
     return "duplicate column" in msg or "already exists" in msg
 
@@ -72,7 +103,7 @@ _PLACEHOLDER_RE = re.compile(r"\?")
 
 
 class _PgRow(dict):
-    """Ligne compatible sqlite3.Row : accessible par clé ET par indice."""
+    """Row compatible with sqlite3.Row: accessible both by key AND by index."""
 
     def __init__(self, mapping):
         super().__init__(mapping)
@@ -90,7 +121,7 @@ class _PgRow(dict):
 
 
 class _PgCursor:
-    """Curseur wrapper : transforme les RealDictRow en _PgRow (clé + indice)."""
+    """Wrapper cursor: converts RealDictRow into _PgRow (key + index)."""
 
     def __init__(self, cur):
         self._cur = cur
@@ -105,12 +136,23 @@ class _PgCursor:
 
 
 class _PgConnection:
-    """Connexion PostgreSQL mimant l'API sqlite3.Connection du reste du code."""
+    """PostgreSQL connection mimicking the sqlite3.Connection API of the rest of the code."""
 
     def __init__(self, raw):
         self._conn = raw
 
     def execute(self, sql, params=None):
+        try:
+            return self._execute(sql, params)
+        except psycopg2.OperationalError as exc:
+            if not _is_dead_connection_error(exc):
+                raise
+            # The pooled connection died (Neon closes idle connections):
+            # replace it with a fresh one and retry the query once.
+            self._reconnect()
+            return self._execute(sql, params)
+
+    def _execute(self, sql, params=None):
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         translated = _PLACEHOLDER_RE.sub("%s", sql)
         if params is not None:
@@ -119,7 +161,23 @@ class _PgConnection:
             cur.execute(translated)
         return _PgCursor(cur)
 
+    def _reconnect(self):
+        try:
+            self._conn.close()
+        except psycopg2.Error:
+            pass
+        self._conn = psycopg2.connect(DATABASE_URL)
+
     def executemany(self, sql, seq):
+        try:
+            return self._executemany(sql, seq)
+        except psycopg2.OperationalError as exc:
+            if not _is_dead_connection_error(exc):
+                raise
+            self._reconnect()
+            return self._executemany(sql, seq)
+
+    def _executemany(self, sql, seq):
         cur = self._conn.cursor()
         cur.executemany(_PLACEHOLDER_RE.sub("%s", sql), seq)
 
@@ -134,17 +192,75 @@ class _PgConnection:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        # Roll back to release any unfinished transaction (error path),
+        # then return to the pool — the connection stays alive for the next
+        # request instead of being actually closed.
+        try:
+            if not self._conn.closed:
+                self._conn.rollback()
+        except psycopg2.Error:
+            pass
+        pool = _get_pg_pool()
+        try:
+            pool.putconn(self._conn)
+        except psycopg2.pool.PoolError:
+            try:
+                self._conn.close()
+            except psycopg2.Error:
+                pass
+
+
+def _get_pg_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pg_pool
+    with _pg_pool_lock:
+        if _pg_pool is None:
+            if not DATABASE_URL:
+                raise RuntimeError(
+                    "DATABASE_URL is not set. PostgreSQL (Neon) is required: "
+                    "add DATABASE_URL=postgresql://... to .env."
+                )
+            # The first connection of the pool (minconn=1) can fail
+            # transiently at startup (e.g. Neon pooler still cleaning up
+            # connections from a previous process, or a cold start):
+            # retry a few times instead of dying on the first attempt.
+            last_error: Exception | None = None
+            for attempt in range(5):
+                try:
+                    _pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                        DB_POOL_MINCONN,
+                        DB_POOL_MAXCONN,
+                        dsn=DATABASE_URL,
+                        keepalives=1,
+                        keepalives_idle=60,
+                        keepalives_interval=15,
+                        keepalives_count=4,
+                    )
+                    return _pg_pool
+                except psycopg2.OperationalError as exc:
+                    last_error = exc
+                    time.sleep(2 * (attempt + 1))
+            raise RuntimeError(
+                "Could not connect to PostgreSQL (Neon) after 5 attempts: "
+                f"{last_error}"
+            )
+        return _pg_pool
 
 
 def get_connection(db_path: str = DB_PATH_DEFAULT):
-    """Retourne une connexion PostgreSQL (Neon). SQLite n'est plus supporté."""
+    """Returns a PostgreSQL (Neon) connection taken from the shared pool.
+    SQLite is no longer supported. The connection is never actually closed:
+    `close()` returns it to the pool so it can be reused for the next request."""
     if not DATABASE_URL:
         raise RuntimeError(
-            "DATABASE_URL n'est pas défini. PostgreSQL (Neon) est obligatoire : "
-            "ajoute DATABASE_URL=postgresql://... à .env."
+            "DATABASE_URL is not set. PostgreSQL (Neon) is required: "
+            "add DATABASE_URL=postgresql://... to .env."
         )
-    raw = psycopg2.connect(DATABASE_URL)
+    pool = _get_pg_pool()
+    try:
+        raw = pool.getconn()
+    except psycopg2.pool.PoolError:
+        # Pool saturated (too many simultaneous requests): fallback connection.
+        raw = psycopg2.connect(DATABASE_URL)
     return _PgConnection(raw)
 
 
@@ -157,15 +273,16 @@ def create_analysis_session(
     label: str | None = None,
     source_filename: str | None = None,
     notes: str | None = None,
+    owner_id: int | None = None,
 ) -> int:
     now = _now()
     row = conn.execute(
         """
-        INSERT INTO analysis_sessions (label, source_filename, status, created_at, notes)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO analysis_sessions (label, source_filename, status, created_at, notes, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
-        (label, source_filename, "imported", now, notes),
+        (label, source_filename, "imported", now, notes, owner_id),
     ).fetchone()
     conn.commit()
     return row["id"]
@@ -190,7 +307,7 @@ def get_analysis_session(conn, session_id: int) -> dict | None:
 
 
 def delete_analysis_session(conn, session_id: int) -> None:
-    """Supprime une session et toutes ses données associées."""
+    """Deletes a session and all of its associated data."""
     conn.execute("DELETE FROM lead_search_evidence WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
     conn.execute("DELETE FROM lead_scores WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
     conn.execute("DELETE FROM lead_technical_signals WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
@@ -202,19 +319,19 @@ def delete_analysis_session(conn, session_id: int) -> None:
 
 
 def cancel_analysis_session(conn, session_id: int) -> None:
-    """Marque une session comme annulée. Le pipeline vérifie ce flag."""
+    """Marks a session as cancelled. The pipeline checks this flag."""
     conn.execute("UPDATE analysis_sessions SET cancelled = 1 WHERE id = ?", (session_id,))
     conn.commit()
 
 
 def resume_analysis_session(conn, session_id: int) -> None:
-    """Réactive une session annulée pour permettre la reprise du pipeline."""
+    """Reactivates a cancelled session to allow the pipeline to resume."""
     conn.execute("UPDATE analysis_sessions SET cancelled = 0, status = 'running' WHERE id = ?", (session_id,))
     conn.commit()
 
 
 def save_scoring_criteria_custom(conn, session_id: int, custom_text: str) -> None:
-    """Sauvegarde le critère personnalisé saisi par l'utilisateur."""
+    """Saves the custom criterion entered by the user."""
     conn.execute(
         "UPDATE analysis_sessions SET scoring_criteria_custom = ? WHERE id = ?",
         (custom_text, session_id),
@@ -223,7 +340,7 @@ def save_scoring_criteria_custom(conn, session_id: int, custom_text: str) -> Non
 
 
 def get_scoring_criteria_custom(conn, session_id: int) -> str:
-    """Retourne le critère personnalisé pour une session."""
+    """Returns the custom criterion for a session."""
     row = conn.execute("SELECT scoring_criteria_custom FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
         return ""
@@ -231,13 +348,13 @@ def get_scoring_criteria_custom(conn, session_id: int) -> str:
 
 
 def is_session_cancelled(conn, session_id: int) -> bool:
-    """Vérifie si une session a été annulée."""
+    """Checks whether a session has been cancelled."""
     row = conn.execute("SELECT cancelled FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     return bool(row and row[0])
 
 
 def save_scoring_criteria(conn, session_id: int, criteria: list[str]) -> None:
-    """Sauvegarde les critères checkés par l'utilisateur pour le scoring."""
+    """Saves the criteria checked by the user for scoring."""
     conn.execute(
         "UPDATE analysis_sessions SET scoring_criteria = ? WHERE id = ?",
         (json.dumps(criteria, ensure_ascii=False), session_id),
@@ -246,7 +363,7 @@ def save_scoring_criteria(conn, session_id: int, criteria: list[str]) -> None:
 
 
 def get_scoring_criteria(conn, session_id: int) -> list[str]:
-    """Retourne les critères de scoring pour une session."""
+    """Returns the scoring criteria for a session."""
     row = conn.execute("SELECT scoring_criteria FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
         return []
@@ -257,14 +374,14 @@ def get_scoring_criteria(conn, session_id: int) -> list[str]:
 
 
 def set_last_batch_ids(conn, session_id: int, lead_ids: list[int]) -> None:
-    """Stocke les IDs des leads du dernier lot traité (pour la page batch results)."""
+    """Stores the IDs of the leads from the last processed batch (for the batch results page)."""
     conn.execute("UPDATE analysis_sessions SET last_batch_ids = ? WHERE id = ?",
                  (json.dumps(lead_ids), session_id))
     conn.commit()
 
 
 def get_last_batch_ids(conn, session_id: int) -> list[int]:
-    """Recupère les IDs du dernier lot traité."""
+    """Retrieves the IDs of the last processed batch."""
     row = conn.execute("SELECT last_batch_ids FROM analysis_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row or not row[0]:
         return []
@@ -274,13 +391,24 @@ def get_last_batch_ids(conn, session_id: int) -> list[int]:
         return []
 
 
-def get_latest_session_id(conn) -> int | None:
-    row = conn.execute("SELECT id FROM analysis_sessions ORDER BY id DESC LIMIT 1").fetchone()
+def get_latest_session_id(conn, owner_id: int | None = None) -> int | None:
+    query = "SELECT id FROM analysis_sessions"
+    params = []
+    if owner_id is not None:
+        query += " WHERE owner_id = ?"
+        params.append(owner_id)
+    query += " ORDER BY id DESC LIMIT 1"
+    row = conn.execute(query, params).fetchone()
     return row["id"] if row else None
 
 
-def list_analysis_sessions(conn, limit: int = 50) -> list:
-    query = """
+def list_analysis_sessions(conn, limit: int = 50, owner_id: int | None = None) -> list:
+    where = ""
+    params = []
+    if owner_id is not None:
+        where = " WHERE s.owner_id = ?"
+        params.append(owner_id)
+    query = f"""
         SELECT s.id, s.label, s.source_filename, s.status, s.created_at, s.completed_at,
                s.notes, s.cancelled, s.scoring_criteria, s.scoring_criteria_custom,
                s.last_batch_ids,
@@ -290,13 +418,81 @@ def list_analysis_sessions(conn, limit: int = 50) -> list:
                SUM(CASE WHEN l.status = 'NEW' THEN 1 ELSE 0 END) AS pending_count
         FROM analysis_sessions s
         LEFT JOIN leads l ON l.session_id = s.id
+        {where}
         GROUP BY s.id, s.label, s.source_filename, s.status, s.created_at, s.completed_at,
                  s.notes, s.cancelled, s.scoring_criteria, s.scoring_criteria_custom,
                  s.last_batch_ids
         ORDER BY s.id DESC
         LIMIT ?
     """
-    return [dict(r) for r in conn.execute(query, (limit,)).fetchall()]
+    params.append(limit)
+    return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Users (authentication)
+# ---------------------------------------------------------------------------
+
+def count_users(conn) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    return row[0] if row else 0
+
+
+def create_user(conn, email: str, password_hash: str, role: str | None = None) -> int:
+    """Creates a user. The very first account of the database becomes an
+    admin automatically; every following account defaults to 'user'."""
+    if role is None:
+        role = "admin" if count_users(conn) == 0 else "user"
+    row = conn.execute(
+        """
+        INSERT INTO users (email, password_hash, role, is_active, created_at)
+        VALUES (?, ?, ?, 1, ?)
+        RETURNING id
+        """,
+        (email, password_hash, role, _now()),
+    ).fetchone()
+    conn.commit()
+    return row["id"]
+
+
+def get_user_by_email(conn, email: str) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_id(conn, user_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_users(conn) -> list:
+    return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id").fetchall()]
+
+
+def update_last_login(conn, user_id: int) -> None:
+    conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now(), user_id))
+    conn.commit()
+
+
+def set_user_role(conn, user_id: int, role: str) -> None:
+    conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    conn.commit()
+
+
+def set_user_active(conn, user_id: int, is_active: bool) -> None:
+    conn.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if is_active else 0, user_id))
+    conn.commit()
+
+
+def delete_user(conn, user_id: int) -> None:
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+
+
+def count_active_admins(conn) -> int:
+    """Number of active admin accounts (guard for the last-admin protection)."""
+    row = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1").fetchone()
+    return row[0] if row else 0
 
 
 def _schema_sql() -> str:
@@ -311,7 +507,18 @@ def _schema_sql() -> str:
             status TEXT NOT NULL DEFAULT 'imported',
             created_at TEXT NOT NULL,
             completed_at TEXT,
-            notes TEXT
+            notes TEXT,
+            owner_id INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+            {pk},
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_login_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS leads (
@@ -426,16 +633,24 @@ def init_db(conn) -> None:
     conn.executescript(_schema_sql())
     conn.commit()
 
-    # Colonnes d'annulation pipeline + critères scoring + batch tracking
+    # Pipeline cancellation columns + scoring criteria + batch tracking
     for col, coltype in [
         ("cancelled", "INTEGER NOT NULL DEFAULT 0"),
         ("scoring_criteria", "TEXT"),
         ("scoring_criteria_custom", "TEXT"),
         ("last_batch_ids", "TEXT"),
+        ("owner_id", "INTEGER"),
     ]:
         _add_column(conn, "analysis_sessions", col, coltype)
 
-    # Colonnes de review humaine (APPROVED/REJECTED + override de segment)
+    # Users index (authentication)
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # Human review columns (APPROVED/REJECTED + segment override)
     for col, coltype in [
         ("review_status", "TEXT"),
         ("review_segment_override", "TEXT"),
@@ -443,7 +658,7 @@ def init_db(conn) -> None:
     ]:
         _add_column(conn, "leads", col, coltype)
 
-    # Colonnes d'erreur et timing pour le diagnostic dans le dashboard
+    # Error and timing columns for diagnosis in the dashboard
     for col, coltype in [
         ("last_error", "TEXT"),
         ("scrape_seconds", "REAL"),
@@ -469,14 +684,14 @@ def init_db(conn) -> None:
 
 
 def _add_column(conn, table: str, col: str, coltype: str) -> None:
-    """Ajoute une colonne si elle n'existe pas. gère le 'duplicate column' des deux backends."""
+    """Adds a column if it does not exist. Handles the 'duplicate column' error of both backends."""
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
         conn.commit()
     except Exception as _e:
         if not _is_duplicate_column(_e):
             raise
-        # PostgreSQL : une erreur aborte la transaction courante, on la nettoie
+        # PostgreSQL: an error aborts the current transaction, we clean it up
         try:
             conn.rollback()
         except Exception:
@@ -572,26 +787,32 @@ def insert_leads_from_csv(
     return {"inserted": inserted, "skipped_no_website": skipped}
 
 
-def get_leads(conn, include_duplicates: bool = True, session_id: int | None = None) -> list:
-    query = "SELECT * FROM leads"
+def get_leads(
+    conn,
+    include_duplicates: bool = True,
+    session_id: int | None = None,
+    owner_id: int | None = None,
+) -> list:
+    query = "SELECT l.* FROM leads l"
     conditions = []
     params = []
     if not include_duplicates:
-        conditions.append("is_duplicate = 0")
+        conditions.append("l.is_duplicate = 0")
     if session_id is not None:
-        conditions.append("session_id = ?")
+        conditions.append("l.session_id = ?")
         params.append(session_id)
+    if owner_id is not None:
+        query += " JOIN analysis_sessions s ON s.id = l.session_id"
+        conditions.append("s.owner_id = ?")
+        params.append(owner_id)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " ORDER BY id"
+    query += " ORDER BY l.id"
     return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-NON_TERMINAL_STATUSES = ("NEW", "PARSED", "FETCH_PARTIAL", "FETCH_FAILED")
-
-
 def get_leads_by_status(conn, status: str, session_id: int | None = None) -> list:
-    """Récupère les leads avec un statut donné (ex: PHASE2_PENDING)."""
+    """Retrieves the leads with a given status (e.g. PHASE2_PENDING)."""
     query = "SELECT * FROM leads WHERE is_duplicate = 0 AND status = ?"
     params = [status]
     if session_id is not None:
@@ -601,22 +822,38 @@ def get_leads_by_status(conn, status: str, session_id: int | None = None) -> lis
     return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def get_leads_to_process(conn, session_id: int | None = None) -> list:
-    placeholders = ",".join("?" for _ in NON_TERMINAL_STATUSES)
-    query = f"SELECT * FROM leads WHERE is_duplicate = 0 AND status IN ({placeholders})"
-    params = list(NON_TERMINAL_STATUSES)
+def get_leads_to_process(conn, session_id: int | None = None, owner_id: int | None = None) -> list:
+    placeholders = ",".join("?" for _ in NOT_YET_SCORED_STATUSES)
+    joins = ""
+    conditions = [f"l.is_duplicate = 0", f"l.status IN ({placeholders})"]
+    params = list(NOT_YET_SCORED_STATUSES)
     if session_id is not None:
-        query += " AND session_id = ?"
+        conditions.append("l.session_id = ?")
         params.append(session_id)
-    query += " ORDER BY id"
+    if owner_id is not None:
+        joins = " JOIN analysis_sessions s ON s.id = l.session_id"
+        conditions.append("s.owner_id = ?")
+        params.append(owner_id)
+    query = f"SELECT l.* FROM leads l{joins} WHERE " + " AND ".join(conditions) + " ORDER BY l.id"
     return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
 def update_lead_status(conn, lead_id: int, status: str, error: str | None = None) -> None:
-    """Met à jour le statut et l'erreur d'un lead. Un appel avec error=None efface l'erreur précédente."""
+    """Updates a lead's status and error. A call with error=None clears the previous error."""
     conn.execute(
         "UPDATE leads SET status = ?, last_error = ? WHERE id = ?",
         (status, error, lead_id),
+    )
+    conn.commit()
+
+
+def update_leads_status(conn, lead_ids: list, status: str, error: str | None = None) -> None:
+    """Bulk version of update_lead_status: one executemany + a single commit for all ids."""
+    if not lead_ids:
+        return
+    conn.executemany(
+        "UPDATE leads SET status = ?, last_error = ? WHERE id = ?",
+        [(status, error, lead_id) for lead_id in lead_ids],
     )
     conn.commit()
 
@@ -628,12 +865,46 @@ def record_lead_timing(
     score_seconds: float | None = None,
 ) -> None:
     """
-    Enregistre le temps passé sur chaque étape (scraping / scoring)
-    séparément, pour pouvoir répondre à "où sont passées les 8 minutes ?"
-    avec des chiffres plutôt qu'une hypothèse. N'écrase que les colonnes
-    fournies : un appel scrape_seconds-only ne touche pas score_seconds.
+    Records the time spent on each step (scraping / scoring) separately,
+    so we can answer "where did the 8 minutes go?" with numbers rather
+    than a guess. Only overwrites the columns provided: a scrape_seconds-only
+    call does not touch score_seconds.
     """
     updates, params = [], []
+    if scrape_seconds is not None:
+        updates.append("scrape_seconds = ?")
+        params.append(scrape_seconds)
+    if score_seconds is not None:
+        updates.append("score_seconds = ?")
+        params.append(score_seconds)
+    if not updates:
+        return
+    params.append(lead_id)
+    conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+
+
+def update_lead_progress(
+    conn,
+    lead_id: int,
+    status: str | None = None,
+    error: str | None = None,
+    scrape_seconds: float | None = None,
+    score_seconds: float | None = None,
+) -> None:
+    """
+    Single UPDATE + one commit for a lead's per-step results (status,
+    last_error and the scrape/score timings) — the pipeline replaces its
+    update_lead_status + record_lead_timing pairs with this. A status call
+    always (re)writes last_error (None clears it), matching update_lead_status;
+    the timing columns are only written when provided.
+    """
+    updates, params = [], []
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+        updates.append("last_error = ?")
+        params.append(error)
     if scrape_seconds is not None:
         updates.append("scrape_seconds = ?")
         params.append(scrape_seconds)
@@ -664,9 +935,9 @@ def set_lead_review(
     decision: str,
     segment_override: str | None = None,
 ) -> None:
-    """Enregistre la décision de review humaine (APPROVED/REJECTED) et un éventuel override de segment."""
+    """Records the human review decision (APPROVED/REJECTED) and any segment override."""
     if decision not in VALID_REVIEW_STATUSES:
-        raise ValueError(f"decision invalide : {decision!r} (attendu APPROVED ou REJECTED)")
+        raise ValueError(f"invalid decision: {decision!r} (expected APPROVED or REJECTED)")
     conn.execute(
         "UPDATE leads SET review_status = ?, review_segment_override = ?, reviewed_at = ? WHERE id = ?",
         (decision, segment_override, _now(), lead_id),
@@ -801,7 +1072,7 @@ def save_search_evidence(
     query: str,
     results: list,
 ) -> None:
-    """Enregistre les résultats d'une recherche web SGAI pour un lead."""
+    """Records the results of an SGAI web search for a lead."""
     session_row = conn.execute(
         "SELECT session_id FROM leads WHERE id = ?", (lead_id,)
     ).fetchone()
@@ -814,42 +1085,114 @@ def save_search_evidence(
 
 
 def get_lead_search_evidence(conn, lead_id: int) -> list:
-    """Retourne toutes les recherches web SGAI pour un lead."""
+    """Returns all SGAI web searches for a lead."""
     rows = conn.execute(
         "SELECT * FROM lead_search_evidence WHERE lead_id = ? ORDER BY id", (lead_id,)
     ).fetchall()
-    result = []
+    return _group_search_evidence(rows).get(lead_id, [])
+
+
+def _group_search_evidence(rows) -> dict:
+    """Groups raw lead_search_evidence rows by lead_id and parses the `results` JSON."""
+    grouped = {}
     for r in rows:
         d = dict(r)
         try:
             d["results"] = json.loads(d["results"]) if isinstance(d["results"], str) else d["results"]
         except (json.JSONDecodeError, TypeError):
             pass
-        result.append(d)
-    return result
+        grouped.setdefault(d["lead_id"], []).append(d)
+    return grouped
+
+
+def get_search_evidence_for_session(conn, session_id: int) -> dict:
+    """Returns {lead_id: [evidence...]} for all leads of a session in 1 query."""
+    rows = conn.execute(
+        "SELECT * FROM lead_search_evidence WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?) ORDER BY lead_id, id",
+        (session_id,),
+    ).fetchall()
+    return _group_search_evidence(rows)
+
+
+def get_lead_search_evidence_map(conn, lead_ids: list) -> dict:
+    """Returns {lead_id: [evidence...]} for the given lead ids in 1 query."""
+    if not lead_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT * FROM lead_search_evidence WHERE lead_id = ANY(%s) ORDER BY lead_id, id",
+        (lead_ids,),
+    ).fetchall()
+    return _group_search_evidence(rows)
+
+
+def get_lead_content_map(conn, lead_ids: list) -> dict:
+    """Returns {lead_id: [{source, url, content}, ...]} in 1 query."""
+    if not lead_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT lead_id, source, url, content FROM lead_content WHERE lead_id = ANY(%s) ORDER BY lead_id, id",
+        (lead_ids,),
+    ).fetchall()
+    grouped = {}
+    for r in rows:
+        grouped.setdefault(r["lead_id"], []).append(dict(r))
+    return grouped
+
+
+def get_lead_technical_signals_map(conn, lead_ids: list) -> dict:
+    """Returns {lead_id: latest signals dict} for the given lead ids in 1 query."""
+    if not lead_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT * FROM lead_technical_signals WHERE lead_id = ANY(%s) ORDER BY lead_id, id DESC",
+        (lead_ids,),
+    ).fetchall()
+    grouped = {}
+    for r in rows:
+        d = dict(r)
+        if d["lead_id"] in grouped:
+            continue
+        for json_field in (
+            "vibe_language_matches",
+            "trend_fonts_found",
+            "visual_patterns_triggered",
+            "github_check",
+            "ai_style_phrases_found",
+            "ai_authorship_disclosures_found",
+        ):
+            if d.get(json_field):
+                try:
+                    d[json_field] = json.loads(d[json_field])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        grouped[d["lead_id"]] = d
+    return grouped
 
 
 def get_exported_domains(conn) -> set:
-    """Retourne l'ensemble des domaines déjà exportés (toutes sessions confondues)."""
+    """Returns the set of domains already exported (across all sessions)."""
     rows = conn.execute("SELECT DISTINCT domain_normalized FROM export_history").fetchall()
     return {r["domain_normalized"] for r in rows if r["domain_normalized"]}
 
 
 def record_export(conn, lead_ids: list, session_id: int | None = None) -> int:
     """
-    Enregistre l'export d'une liste de leads (par id) dans export_history,
-    pour que le prochain batch les retrouve via get_exported_domains().
-    Retourne le nombre de lignes effectivement enregistrées (les leads sans
-    domain_normalized sont ignorés).
+    Records the export of a list of leads (by id) in export_history,
+    so the next batch can find them again via get_exported_domains().
+    Returns the number of rows actually recorded (leads without a
+    domain_normalized are ignored).
     """
+    if not lead_ids:
+        return 0
     now = _now()
+    rows = conn.execute(
+        "SELECT id, domain_normalized, session_id FROM leads WHERE id = ANY(%s)",
+        (lead_ids,),
+    ).fetchall()
     rows_to_insert = []
-    for lead_id in lead_ids:
-        row = conn.execute(
-            "SELECT domain_normalized, session_id FROM leads WHERE id = ?", (lead_id,)
-        ).fetchone()
-        if row and row["domain_normalized"]:
-            rows_to_insert.append((session_id or row["session_id"], lead_id, row["domain_normalized"], now))
+    for row in rows:
+        if row["domain_normalized"]:
+            rows_to_insert.append((session_id or row["session_id"], row["id"], row["domain_normalized"], now))
 
     if not rows_to_insert:
         return 0
@@ -862,7 +1205,7 @@ def record_export(conn, lead_ids: list, session_id: int | None = None) -> int:
     return len(rows_to_insert)
 
 
-def get_leads_with_scores(conn, session_id: int | None = None) -> list:
+def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | None = None) -> list:
     query = """
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
@@ -872,9 +1215,16 @@ def get_leads_with_scores(conn, session_id: int | None = None) -> list:
         LEFT JOIN lead_scores s ON s.lead_id = l.id
             AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
     """
+    conditions = []
     params = []
     if session_id is not None:
-        query += " WHERE l.session_id = ?"
+        conditions.append("l.session_id = ?")
         params.append(session_id)
+    if owner_id is not None:
+        query += " JOIN analysis_sessions a ON a.id = l.session_id"
+        conditions.append("a.owner_id = ?")
+        params.append(owner_id)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY l.id"
     return [dict(r) for r in conn.execute(query, params).fetchall()]

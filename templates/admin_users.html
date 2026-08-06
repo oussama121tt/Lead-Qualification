@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>User management — Lead Qualification Engine</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; margin-bottom: 20px; gap: 12px;
+    }
+    .topbar h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+    }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--bg-soft); }
+    .topbar nav a.primary { background: var(--accent); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--accent-2); }
+    .topbar nav a:not(.primary) { color: var(--text); }
+    .topbar form { margin: 0; }
+    .topbar form button { border: 1px solid var(--border); background: var(--surface); color: var(--text); font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; }
+
+    .users-page {
+      border: 1px solid var(--border); border-radius: 22px; overflow: hidden;
+      background: var(--surface);
+    }
+    .users-page .up-header {
+      padding: 20px 24px; display: flex; align-items: center;
+      justify-content: space-between;
+    }
+    .users-page .up-header h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 1.2rem; }
+    .users-page .up-header a { color: var(--accent); text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+    .users-page .up-body { padding: 0 24px 20px; }
+
+    .badge-fw { display: inline-block; min-width: 92px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+
+    <div class="topbar">
+      <h1>Lead Qualification &amp; Scoring</h1>
+      <nav>
+        <a href="{{ url_for('home') }}#dropzone" class="primary">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
+        <a href="{{ url_for('admin_users') }}">Users</a>
+        <form method="post" action="{{ url_for('logout') }}"><button type="submit">Log out</button></form>
+      </nav>
+    </div>
+
+    <div class="users-page">
+      <div class="up-header">
+        <h2>User management</h2>
+        <a href="{{ url_for('home') }}">&larr; Back</a>
+      </div>
+      <div class="up-body">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-stack">
+              {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else category }} shadow-sm">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        {% if users %}
+          <div class="table-wrap">
+            <table class="table table-hover table-striped align-middle">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Last login</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for user in users %}
+                  <tr>
+                    <td>{{ user.id }}</td>
+                    <td>
+                      <a href="{{ url_for('admin_user_history', user_id=user.id) }}" style="color:var(--accent);text-decoration:none;font-weight:600;">
+                        {{ user.email }}
+                      </a>
+                    </td>
+                    <td>
+                      <form action="{{ url_for('admin_user_role', user_id=user.id) }}" method="post" class="d-flex align-items-center gap-2">
+                        <select name="role" class="form-select form-select-sm" style="width:auto;">
+                          <option value="user" {{ 'selected' if user.role == 'user' }}>user</option>
+                          <option value="admin" {{ 'selected' if user.role == 'admin' }}>admin</option>
+                        </select>
+                        <button class="btn btn-sm btn-outline-secondary" type="submit">Save</button>
+                      </form>
+                    </td>
+                    <td>
+                      {% if user.is_active %}
+                        <span class="badge badge-fw bg-success">Active</span>
+                      {% else %}
+                        <span class="badge badge-fw bg-secondary">Blocked</span>
+                      {% endif %}
+                    </td>
+                    <td>{{ user.last_login_at or '--' }}</td>
+                    <td>
+                      <div class="d-flex gap-1 flex-wrap">
+                        <form action="{{ url_for('admin_user_toggle_active', user_id=user.id) }}" method="post">
+                          {% if user.is_active %}
+                            <button class="btn btn-sm btn-outline-warning btn-fw" type="submit">Block</button>
+                          {% else %}
+                            <button class="btn btn-sm btn-outline-success btn-fw" type="submit">Unblock</button>
+                          {% endif %}
+                        </form>
+                        <form action="{{ url_for('admin_user_delete', user_id=user.id) }}" method="post" onsubmit="return confirm('Delete the account {{ user.email }} and all its data?')">
+                          <button class="btn btn-sm btn-outline-danger btn-fw" type="submit">Delete</button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty-state">No accounts yet.</div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

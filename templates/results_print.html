@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Resultats Session #{{ session.id }} — Lead Qualification Engine</title>
+  <title>Results Session #{{ session.id }} — Lead Qualification Engine</title>
   <style>
     @page { size: landscape; margin: 12mm; }
     body { font-family: Arial, sans-serif; font-size: 11px; color: #222; }
@@ -17,14 +17,14 @@
 </head>
 <body>
   <h1>Results Session #{{ session.id }}</h1>
-  <p>Label: {{ session.label or 'Sans titre' }} | {{ session.created_at[:10] if session.created_at else '--' }}</p>
+  <p>Label: {{ session.label or 'Untitled' }} | {{ session.created_at[:10] if session.created_at else '--' }}</p>
 
-  <h2>Validees ({{ categories.validees|length }})</h2>
-  {% if categories.validees %}
+  <h2>Approved ({{ categories.approved|length }})</h2>
+  {% if categories.approved %}
   <table>
-    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Confiance</th><th>Offre</th><th>Stage</th></tr></thead>
+    <thead><tr><th>Company</th><th>Site</th><th>Segment</th><th>Confidence</th><th>Offer</th><th>Stage</th></tr></thead>
     <tbody>
-      {% for lead in categories.validees %}
+      {% for lead in categories.approved %}
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
@@ -36,14 +36,14 @@
       {% endfor %}
     </tbody>
   </table>
-  {% else %}<p>Aucun lead valide.</p>{% endif %}
+  {% else %}<p>No valid leads.</p>{% endif %}
 
-  <h2>Proches ({{ categories.proches|length }})</h2>
-  {% if categories.proches %}
+  <h2>To review ({{ categories.to_review|length }})</h2>
+  {% if categories.to_review %}
   <table>
-    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Confiance</th><th>Offre</th><th>Raison</th></tr></thead>
+    <thead><tr><th>Company</th><th>Site</th><th>Segment</th><th>Confidence</th><th>Offer</th><th>Reason</th></tr></thead>
     <tbody>
-      {% for lead in categories.proches %}
+      {% for lead in categories.to_review %}
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
@@ -55,14 +55,14 @@
       {% endfor %}
     </tbody>
   </table>
-  {% else %}<p>Aucun lead proche.</p>{% endif %}
+  {% else %}<p>No leads to review.</p>{% endif %}
 
-  <h2>Tres loin ({{ categories.tres_loin|length }})</h2>
-  {% if categories.tres_loin %}
+  <h2>Out of target ({{ categories.out_of_target|length }})</h2>
+  {% if categories.out_of_target %}
   <table>
-    <thead><tr><th>Societe</th><th>Site</th><th>Segment</th><th>Raison</th></tr></thead>
+    <thead><tr><th>Company</th><th>Site</th><th>Segment</th><th>Reason</th></tr></thead>
     <tbody>
-      {% for lead in categories.tres_loin %}
+      {% for lead in categories.out_of_target %}
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
@@ -72,14 +72,14 @@
       {% endfor %}
     </tbody>
   </table>
-  {% else %}<p>Aucun lead disqualifie.</p>{% endif %}
+  {% else %}<p>No disqualified leads.</p>{% endif %}
 
-  <h2>Non validees ({{ categories.non_validees|length }})</h2>
-  {% if categories.non_validees %}
+  <h2>Not selected ({{ categories.not_selected|length }})</h2>
+  {% if categories.not_selected %}
   <table>
-    <thead><tr><th>Societe</th><th>Site</th><th>Statut</th><th>Erreur</th></tr></thead>
+    <thead><tr><th>Company</th><th>Site</th><th>Status</th><th>Error</th></tr></thead>
     <tbody>
-      {% for lead in categories.non_validees %}
+      {% for lead in categories.not_selected %}
       <tr>
         <td>{{ lead.company_name or '--' }}</td>
         <td>{{ lead.website_url or '--' }}</td>
@@ -89,8 +89,8 @@
       {% endfor %}
     </tbody>
   </table>
-  {% else %}<p>Aucune erreur.</p>{% endif %}
+  {% else %}<p>No errors.</p>{% endif %}
 
-  <div class="footer">Genere le {{ session.created_at or '--' }} par Lead Qualification Engine</div>
+  <div class="footer">Generated on {{ session.created_at or '--' }}</div>
 </body>
 </html>

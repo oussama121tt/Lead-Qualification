@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tableau de bord — Lead Qualification Engine</title>
+  <title>Dashboard — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -13,9 +13,9 @@
     }
     .topbar h1 {
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
+      font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
-    .topbar nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
     .topbar nav a:hover { background: var(--bg-soft); }
     .topbar nav a.primary { background: var(--accent); color: #fff; }
@@ -58,14 +58,14 @@
     <div class="topbar">
       <h1>Lead Qualification &amp; Scoring</h1>
       <nav>
-        <a class="primary" href="{{ url_for('home') }}#dropzone">Nouvelle analyse</a>
-        <a href="{{ url_for('history') }}">Historique</a>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">New analysis</a>
+        <a href="{{ url_for('history') }}">History</a>
 
       </nav>
     </div>
 
     {% if api_key_missing %}
-      <div class="alert alert-warning shadow-sm">Clés manquantes : {{ api_key_missing | join(', ') }}. L'import reste possible, mais le scraping/scoring nécessitent ces variables d'environnement.</div>
+      <div class="alert alert-warning shadow-sm">Missing keys: {{ api_key_missing | join(', ') }}. Import is still possible, but scraping/scoring require these environment variables.</div>
     {% endif %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -80,18 +80,18 @@
 
     <!-- Session selector & summary -->
     <div class="dashboard-card">
-      <h2>Tableau de bord</h2>
-      <p class="lead">Session active : {{ session_name }}</p>
+      <h2>Dashboard</h2>
+      <p class="lead">Active session: {{ session_name }}</p>
       <div class="d-flex gap-2 flex-wrap mb-4">
         <form class="d-flex gap-2 flex-wrap" method="get" action="{{ url_for('dashboard') }}">
           <select class="form-select" name="session_id" style="width:auto;">
             {% for session in sessions %}
               <option value="{{ session.id }}" {% if session.id == selected_session_id %}selected{% endif %}>
-                #{{ session.id }} · {{ session.label or 'Sans titre' }} · {{ session.status|map_status_label }} · {{ session.created_at[:10] }}
+                #{{ session.id }} · {{ session.label or 'Untitled' }} · {{ session.status|map_status_label }} · {{ session.created_at[:10] }}
               </option>
             {% endfor %}
           </select>
-          <button class="btn btn-outline-secondary" type="submit">Ouvrir</button>
+          <button class="btn btn-outline-secondary" type="submit">Open</button>
         </form>
       </div>
       <div class="stats-grid">
@@ -100,31 +100,31 @@
           <span class="stat-num">{{ summary.total_leads }}</span>
         </div>
         <div class="stat-card-dash">
-          <span class="stat-lbl">Prêts à traiter</span>
+          <span class="stat-lbl">Ready to process</span>
           <span class="stat-num">{{ summary.ready_to_process }}</span>
         </div>
         <div class="stat-card-dash">
-          <span class="stat-lbl">Doublons</span>
+          <span class="stat-lbl">Duplicates</span>
           <span class="stat-num">{{ summary.duplicates }}</span>
         </div>
         <div class="stat-card-dash stat-info">
-          <span class="stat-lbl">Scorés</span>
+          <span class="stat-lbl">Scored</span>
           <span class="stat-num">{{ summary.scored }}</span>
         </div>
         <div class="stat-card-dash stat-warning">
-          <span class="stat-lbl">Confiance faible</span>
+          <span class="stat-lbl">Low confidence</span>
           <span class="stat-num">{{ summary.low_confidence }}</span>
         </div>
         <div class="stat-card-dash stat-warning">
-          <span class="stat-lbl">À vérifier</span>
+          <span class="stat-lbl">Needs review</span>
           <span class="stat-num">{{ summary.needs_review }}</span>
         </div>
         <div class="stat-card-dash stat-danger">
-          <span class="stat-lbl">Échecs scraping</span>
+          <span class="stat-lbl">Scraping failures</span>
           <span class="stat-num">{{ summary.fetch_failed }}</span>
         </div>
         <div class="stat-card-dash stat-danger">
-          <span class="stat-lbl">Échecs scoring</span>
+          <span class="stat-lbl">Scoring failures</span>
           <span class="stat-num">{{ summary.score_failed }}</span>
         </div>
       </div>
@@ -133,62 +133,70 @@
     <!-- Ingestion -->
     <div class="dashboard-card">
       <h2>Ingestion</h2>
-      <p class="lead">Importer un CSV Apollo, puis lancer l'analyse complète ou une étape indépendante.</p>
+      <p class="lead">Import an Apollo CSV, then launch the full analysis or an independent step.</p>
       <form class="stack" action="{{ url_for('start_analysis') }}" method="post" enctype="multipart/form-data">
         <label class="form-label">CSV Apollo</label>
         <input class="form-control form-control-lg" type="file" name="csv_file" accept=".csv" required>
         <div class="form-row mt-3">
           <div>
-            <label class="form-label">Seuil fuzzy</label>
+            <label class="form-label">Fuzzy threshold</label>
             <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold">
           </div>
           <div>
-            <label class="form-label">Pause entre leads (s)</label>
+            <label class="form-label">Pause between leads (s)</label>
             <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds">
           </div>
+          <div>
+            <label class="form-label">Parallel leads</label>
+            <input class="form-control" type="number" min="1" max="8" value="3" name="concurrency" title="Number of leads analyzed simultaneously (each worker has its own DB connection)">
+          </div>
         </div>
-        <button class="btn btn-primary btn-lg mt-3" type="submit">Commencer l'analyse complète</button>
+        <button class="btn btn-primary btn-lg mt-3" type="submit">Start full analysis</button>
       </form>
     </div>
 
     <!-- Actions rapides -->
     <div class="dashboard-card">
-      <h2>Actions rapides</h2>
-      <p class="lead">Lance chaque étape indépendamment si tu veux contrôler le flux.</p>
+      <h2>Quick actions</h2>
+      <p class="lead">Run each step independently if you want to control the flow.</p>
       <div class="d-flex gap-3 flex-wrap">
         <form action="{{ url_for('dedup_only', session_id=selected_session_id or '') }}" method="post">
           <div class="mb-2">
-            <label class="form-label">Seuil fuzzy</label>
+            <label class="form-label">Fuzzy threshold</label>
             <input class="form-control" type="number" min="70" max="100" value="90" name="fuzzy_threshold" style="width:160px;">
           </div>
-          <button class="btn btn-outline-primary" type="submit">Lancer la déduplication</button>
+          <button class="btn btn-outline-primary" type="submit">Run deduplication</button>
         </form>
         <form action="{{ url_for('pipeline_only', session_id=selected_session_id or '') }}" method="post">
           <div class="mb-2">
-            <label class="form-label">Pause entre leads (s)</label>
+            <label class="form-label">Parallel leads</label>
+            <input class="form-control" type="number" min="1" max="8" value="3" name="concurrency" title="Number of leads analyzed simultaneously" style="width:160px;">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Pause between leads (s)</label>
             <input class="form-control" type="number" min="0.5" step="0.5" value="12" name="throttle_seconds" style="width:160px;">
           </div>
-          <button class="btn btn-outline-warning" type="submit">Lancer le scraping + scoring</button>
+          <button class="btn btn-outline-warning" type="submit">Run scraping + scoring</button>
         </form>
       </div>
       <div class="d-flex gap-2 flex-wrap mt-3">
         <a class="btn btn-outline-secondary" href="{{ url_for('download_scraping_csv', session_id=selected_session_id or '') }}">CSV scraping</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('download_scores_csv', session_id=selected_session_id or '') }}">CSV scoring</a>
-        <a class="btn btn-outline-secondary" href="{{ url_for('download_search_csv', session_id=selected_session_id or '') }}">CSV recherche web</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('download_search_csv', session_id=selected_session_id or '') }}">CSV web search</a>
       </div>
     </div>
 
     <!-- Leads table -->
     <div class="dashboard-card">
-      <h2>Tableau des leads</h2>
-      <p class="lead">Session active : {{ session_name }}</p>
+      <h2>Leads table</h2>
+      <p class="lead">Active session: {{ session_name }}</p>
       <div class="table-wrap">{{ leads_table | safe }}</div>
     </div>
 
     <!-- Scores results -->
     <div class="dashboard-card">
-      <h2>Résultats scorés</h2>
-      <p class="lead">Filtrer par segment, masquer les doublons et afficher seulement les leads à revoir.</p>
+      <h2>Scored results</h2>
+      <p class="lead">Filter by segment, hide duplicates, and show only leads to review.</p>
       <form class="d-flex gap-3 flex-wrap align-items-end mb-3" method="get">
         <div>
           <label class="form-label">Segment</label>
@@ -200,20 +208,20 @@
         </div>
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" role="switch" name="needs_review" value="1" id="needs_review" {% if needs_review %}checked{% endif %}>
-          <label class="form-check-label" for="needs_review">Uniquement needs_human_review</label>
+          <label class="form-check-label" for="needs_review">Only needs_human_review</label>
         </div>
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" role="switch" name="hide_duplicates" value="1" id="hide_duplicates" {% if hide_duplicates %}checked{% endif %}>
-          <label class="form-check-label" for="hide_duplicates">Masquer les doublons</label>
+          <label class="form-check-label" for="hide_duplicates">Hide duplicates</label>
         </div>
-        <button class="btn btn-outline-secondary" type="submit">Appliquer</button>
+        <button class="btn btn-outline-secondary" type="submit">Apply</button>
       </form>
       <div class="table-wrap">{{ scores_table | safe }}</div>
     </div>
 
     <!-- Lead detail -->
     <div class="dashboard-card">
-      <h2>Détail du lead</h2>
+      <h2>Lead detail</h2>
       {% if lead_detail %}
         <div class="d-flex align-items-center gap-3 mb-3">
           <div>
@@ -231,7 +239,7 @@
           </div>
           <div class="col-6 col-md-3">
             <div class="p-3 rounded-3" style="background:var(--bg-soft);">
-              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Confiance</div>
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Confidence</div>
               <div class="fw-semibold">{{ lead_detail.confidence or '—' }}</div>
             </div>
           </div>
@@ -243,7 +251,7 @@
           </div>
           <div class="col-6 col-md-3">
             <div class="p-3 rounded-3" style="background:var(--bg-soft);">
-              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Statut</div>
+              <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Status</div>
               <div class="fw-semibold">{{ lead_detail.status|map_status_label }}</div>
             </div>
           </div>
@@ -286,7 +294,7 @@
                     {% endfor %}
                   </ul>
                 {% else %}
-                  <span class="text-muted">Aucun résultat</span>
+                  <span class="text-muted">No results</span>
                 {% endif %}
               </div>
             {% endfor %}
@@ -295,12 +303,12 @@
 
         {% if lead_detail.disqualify_reason %}
           <details class="detail-section">
-            <summary class="detail-summary text-danger">Raison</summary>
+            <summary class="detail-summary text-danger">Reason</summary>
             <div class="error-block">{{ lead_detail.disqualify_reason }}</div>
           </details>
         {% endif %}
       {% else %}
-        <div class="empty-state">Sélectionne un lead scoré pour afficher le détail.</div>
+        <div class="empty-state">Select a scored lead to view its details.</div>
       {% endif %}
     </div>
 

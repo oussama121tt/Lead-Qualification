@@ -1,17 +1,17 @@
 """
-Export CSV — trois formats de sortie pour le reporting et la review humaine.
+CSV export — three output formats for reporting and human review.
 
-1. export_scraping_csv() : une ligne par page scrapée (source, url, contenu,
-   signaux déterministes calculés par scraper.py). Utilisable dans Excel/Sheets.
+1. export_scraping_csv(): one row per scraped page (source, url, content,
+   deterministic signals computed by scraper.py). Usable in Excel/Sheets.
 
-2. export_scores_csv() : une ligne par lead avec le dernier verdict de scoring
-   (segment, confiance, signaux, hooks). Point de sortie principal vers les
-   outils d'envoi (Instantly/Smartlead).
+2. export_scores_csv(): one row per lead with the latest scoring verdict
+   (segment, confidence, signals, hooks). Main export point toward the
+   sending tools (Instantly/Smartlead).
 
-3. export_readable_csv() : une ligne par lead avec aperçus tronqués des pages
-   et signaux traduits en phrases. Conçu pour la review humaine rapide.
+3. export_readable_csv(): one row per lead with truncated page previews
+   and signals translated into phrases. Designed for quick human review.
 
-Séparé de db.py : fonctions de reporting, pas d'opérations sur le cycle de vie.
+Separated from db.py: reporting functions, no lifecycle operations.
 """
 
 import csv
@@ -24,13 +24,13 @@ import db as dbmod
 
 def _flatten(value):
     """
-    Rend une valeur exploitable dans une cellule CSV :
-    - None -> chaîne vide
-    - liste/tuple -> jointe par ' | '
-    - dict -> JSON compact (lisible mais recopiable)
-    - chaîne déjà sérialisée en JSON (colonnes TEXT de db.py) -> parsée
-      d'abord pour un rendu propre, sinon renvoyée telle quelle
-    - scalaire -> inchangé
+    Makes a value usable in a CSV cell:
+    - None -> empty string
+    - list/tuple -> joined with ' | '
+    - dict -> compact JSON (readable but copyable)
+    - string already serialized as JSON (TEXT columns of db.py) -> parsed
+      first for a clean rendering, otherwise returned as-is
+    - scalar -> unchanged
     """
     if value is None:
         return ""
@@ -47,7 +47,7 @@ def _flatten(value):
 
 
 # ---------------------------------------------------------------------------
-# 1) CSV du scraping (pages + signaux déterministes)
+# 1) Scraping CSV (pages + deterministic signals)
 # ---------------------------------------------------------------------------
 
 SCRAPING_FIELDS = [
@@ -62,13 +62,16 @@ SCRAPING_FIELDS = [
 
 
 def _iter_scraping_rows(conn, session_id=None):
-    """Générateur de lignes pour le CSV de scraping. Factorisé pour fichier et mémoire."""
+    """Row generator for the scraping CSV. Factored out for file and memory use."""
     leads = dbmod.get_leads(conn, include_duplicates=True, session_id=session_id)
+    lead_ids = [lead["id"] for lead in leads]
+    pages_map = dbmod.get_lead_content_map(conn, lead_ids)
+    signals_map = dbmod.get_lead_technical_signals_map(conn, lead_ids)
 
     for lead in leads:
         lead_id = lead["id"]
-        pages = dbmod.get_lead_content(conn, lead_id)
-        signals = dbmod.get_lead_technical_signals(conn, lead_id) or {}
+        pages = pages_map.get(lead_id, [])
+        signals = signals_map.get(lead_id) or {}
 
         base_row = {
             "lead_id": lead_id,
@@ -105,11 +108,11 @@ def _iter_scraping_rows(conn, session_id=None):
 
 def export_scraping_csv(conn, output_path: str, session_id=None) -> int:
     """
-    Une ligne par (lead, page scrapée). Les leads sans contenu (pas encore
-    scrapés, ou FETCH_FAILED) sont quand même écrits avec une ligne vide de
-    contenu, pour ne perdre aucun lead du batch dans le fichier de sortie.
+    One row per (lead, scraped page). Leads without content (not yet scraped,
+    or FETCH_FAILED) are still written with an empty content row, so no lead
+    of the batch is lost in the output file.
 
-    Retourne le nombre de lignes écrites.
+    Returns the number of rows written.
     """
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -123,8 +126,8 @@ def export_scraping_csv(conn, output_path: str, session_id=None) -> int:
 
 def scraping_csv_string(conn, session_id=None) -> str:
     """
-    Même contenu que export_scraping_csv, mais renvoyé comme chaîne en
-    mémoire (pas d'écriture disque) — pour le bouton de téléchargement.
+    Same content as export_scraping_csv, but returned as an in-memory string
+    (no disk write) — for the download button.
     """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=SCRAPING_FIELDS)
@@ -135,7 +138,7 @@ def scraping_csv_string(conn, session_id=None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2) CSV du scoring (verdicts LLM)
+# 2) Scoring CSV (LLM verdicts)
 # ---------------------------------------------------------------------------
 
 SCORE_FIELDS = [
@@ -150,9 +153,9 @@ SCORE_FIELDS = [
 
 def _iter_score_rows(conn, session_id=None):
     """
-    Générateur de lignes pour le CSV de scoring — factorisé pour être
-    consommé à la fois par export_scores_csv (fichier) et scores_csv_string
-    (mémoire, pour le bouton de téléchargement).
+    Row generator for the scoring CSV — factored out to be consumed both by
+    export_scores_csv (file) and scores_csv_string (in-memory, for the
+    download button).
     """
     leads = dbmod.get_leads_with_scores(conn, session_id=session_id)
     for lead in leads:
@@ -184,12 +187,12 @@ def _iter_score_rows(conn, session_id=None):
 
 def export_scores_csv(conn, output_path: str, session_id=None) -> int:
     """
-    Une ligne par lead (dernier verdict de scoring en date, via
-    db.get_leads_with_scores). Les leads jamais scorés apparaissent quand
-    même, avec des colonnes de verdict vides, pour garder une trace complète
-    du batch (utile pour repérer les FETCH_FAILED / SCORE_FAILED).
+    One row per lead (latest scoring verdict, via db.get_leads_with_scores).
+    Leads that were never scored still appear, with empty verdict columns,
+    to keep a complete trace of the batch (useful to spot FETCH_FAILED /
+    SCORE_FAILED).
 
-    Retourne le nombre de lignes écrites.
+    Returns the number of rows written.
     """
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -203,8 +206,8 @@ def export_scores_csv(conn, output_path: str, session_id=None) -> int:
 
 def scores_csv_string(conn, session_id=None) -> str:
     """
-    Même contenu que export_scores_csv, mais renvoyé comme chaîne en mémoire
-    (pas d'écriture disque) — pour le bouton de téléchargement Flask.
+    Same content as export_scores_csv, but returned as an in-memory string
+    (no disk write) — for the Flask download button.
     """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=SCORE_FIELDS)
@@ -215,9 +218,9 @@ def scores_csv_string(conn, session_id=None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 3) CSV "lisible" — une ligne par lead, pensé pour être scanné à l'œil
-#    (review humaine rapide sur un batch entier), pas pour l'analyse ligne
-#    à ligne du contenu brut (ça reste le rôle du CSV de scraping ci-dessus).
+# 3) Human-readable CSV — one row per lead, designed to be scanned visually
+#    (quick human review over a whole batch), not for line-by-line analysis
+#    of the raw content (that remains the role of the scraping CSV above).
 # ---------------------------------------------------------------------------
 
 DEFAULT_PREVIEW_CHARS = 400
@@ -234,13 +237,13 @@ READABLE_FIELDS = [
 
 def _preview(text, max_chars: int = DEFAULT_PREVIEW_CHARS) -> str:
     """
-    Aperçu tronqué et nettoyé d'un contenu de page : sauts de ligne écrasés
-    en espaces simples (évite qu'une cellule CSV explose visuellement sur
-    plusieurs lignes dans Excel/Sheets), coupé à `max_chars` avec un « … »
-    explicite pour signaler que ce n'est qu'un extrait.
+    Truncated and cleaned preview of a page's content: newlines collapsed
+    into single spaces (prevents a CSV cell from visually exploding across
+    multiple lines in Excel/Sheets), cut at `max_chars` with an explicit "…"
+    to signal that it is only an excerpt.
     """
     if not text:
-        return "(page non trouvée / non scrapée)"
+        return "(page not found / not scraped)"
     flat = " ".join(str(text).split())
     if len(flat) <= max_chars:
         return flat
@@ -249,89 +252,93 @@ def _preview(text, max_chars: int = DEFAULT_PREVIEW_CHARS) -> str:
 
 def _format_signals_summary(signals: dict) -> str:
     """
-    Traduit le dict `technical_signals` (JSON brut, pensé pour le prompt LLM)
-    en une phrase unique lisible par un humain en review rapide. Aucune
-    interprétation ajoutée : uniquement les signaux déjà calculés de façon
-    déterministe par scraper.py, mis en forme.
+    Translates the `technical_signals` dict (raw JSON, designed for the LLM
+    prompt) into a single sentence readable by a human in quick review. No
+    interpretation added: only the signals already computed deterministically
+    by scraper.py, formatted.
     """
     if not signals:
-        return "Aucun signal technique calculé."
+        return "No technical signals computed."
 
     parts = []
 
     if signals.get("generator_fingerprint"):
-        parts.append(f"Générateur IA détecté : {signals['generator_fingerprint']}")
+        parts.append(f"AI generator detected: {signals['generator_fingerprint']}")
 
     if signals.get("generator_meta_tag"):
-        parts.append(f"Balise <meta generator> : {signals['generator_meta_tag']}")
+        parts.append(f"<meta generator> tag: {signals['generator_meta_tag']}")
 
     fonts = signals.get("trend_fonts_found") or []
     if fonts:
-        parts.append(f"Polices tendance : {', '.join(fonts)}")
+        parts.append(f"Trend fonts: {', '.join(fonts)}")
 
     patterns = signals.get("visual_patterns_triggered") or []
     if patterns:
-        parts.append(f"Patterns visuels ({len(patterns)}/9) : {', '.join(patterns)}")
+        parts.append(f"Visual patterns ({len(patterns)}/9): {', '.join(patterns)}")
 
     vibe = signals.get("vibe_language_matches") or []
     if vibe:
-        parts.append(f"Langage \"vibe-coding\" explicite : {', '.join(vibe)}")
+        parts.append(f"Explicit \"vibe-coding\" language: {', '.join(vibe)}")
 
     phrases = signals.get("ai_style_phrases_found") or []
     density = signals.get("ai_style_phrase_density")
     if phrases:
         shown = ", ".join(phrases[:5])
         suffix = ", ..." if len(phrases) > 5 else ""
-        parts.append(f"Phrases marketing génériques (densité {density}) : {shown}{suffix}")
+        parts.append(f"Generic marketing phrases (density {density}): {shown}{suffix}")
 
     disclosures = signals.get("ai_authorship_disclosures_found") or []
     if disclosures:
-        parts.append(f"Mention explicite de contenu généré par IA : {', '.join(disclosures)}")
+        parts.append(f"Explicit mention of AI-generated content: {', '.join(disclosures)}")
 
     if signals.get("github_repo_url"):
-        parts.append(f"Repo GitHub public : {signals['github_repo_url']}")
+        parts.append(f"Public GitHub repo: {signals['github_repo_url']}")
 
     if not parts:
-        return "Aucun signal technique déterministe détecté."
+        return "No deterministic technical signals detected."
     return " | ".join(parts)
 
 
 def _format_github_check_summary(github_check) -> str:
-    """Résumé lisible du check git, s'il a été effectué."""
+    """Readable summary of the git check, if it was performed."""
     if not isinstance(github_check, dict) or not github_check.get("checked"):
         return ""
     evidence = github_check.get("evidence", {}) or {}
-    parts = [f"{evidence.get('total_commits_seen', '?')} commits vus (page API)"]
+    parts = [f"{evidence.get('total_commits_seen', '?')} commits seen (API page)"]
     if evidence.get("single_commit_repo"):
-        parts.append("⚠️ repo à commit unique")
+        parts.append("⚠️ single-commit repo")
     first_msg = evidence.get("first_commit_message")
     if first_msg:
-        parts.append(f'premier commit : "{first_msg[:60]}"')
+        parts.append(f'first commit: "{first_msg[:60]}"')
     return " | ".join(parts)
 
 
 def _iter_readable_rows(conn, session_id=None, preview_chars: int = DEFAULT_PREVIEW_CHARS):
     """
-    Générateur de lignes pour le CSV lisible — une ligne par lead. Regroupe
-    les pages scrapées par `source` (homepage/about/product/pricing/careers)
-    pour donner à chacune sa propre colonne d'aperçu, au lieu d'une ligne par
-    page comme dans le CSV de scraping brut.
+    Row generator for the human-readable CSV — one row per lead. Groups the
+    scraped pages by `source` (homepage/about/product/pricing/careers) to give
+    each one its own preview column, instead of one row per page as in the raw
+    scraping CSV.
 
-    NB : pricing_preview et careers_preview restent pour l'instant un aperçu
-    du texte brut tronqué (pas encore le signal ciblé "self-serve vs sales-only"
-    / "N postes ingénierie" recommandé — ce point reste à coder séparément,
-    dans scraper.py, une fois les extracteurs dédiés écrits).
+    NB: pricing_preview and careers_preview for now remain a truncated preview
+    of the raw text (not yet the targeted signal "self-serve vs sales-only"
+    / "N engineering jobs" recommended — this point remains to be coded
+    separately, in scraper.py, once the dedicated extractors are written).
     """
     leads = dbmod.get_leads_with_scores(conn, session_id=session_id)
+    lead_ids = [lead["id"] for lead in leads]
+    pages_map = dbmod.get_lead_content_map(conn, lead_ids)
+    signals_map = dbmod.get_lead_technical_signals_map(conn, lead_ids)
+    evidence_map = dbmod.get_lead_search_evidence_map(conn, lead_ids)
 
     for lead in leads:
         lead_id = lead["id"]
         pages_by_source = {}
-        for page in dbmod.get_lead_content(conn, lead_id):
+        for page in pages_map.get(lead_id, []):
             pages_by_source[page.get("source", "")] = page.get("content", "")
 
-        signals = dbmod.get_lead_technical_signals(conn, lead_id) or {}
-        search_evidence_list = dbmod.get_lead_search_evidence(conn, lead_id)
+        signals = signals_map.get(lead_id) or {}
+        search_evidence_list = evidence_map.get(lead_id, [])
         search_summary_parts = []
         for ev in search_evidence_list:
             src = ev.get("source", "?")
@@ -365,15 +372,15 @@ def _iter_readable_rows(conn, session_id=None, preview_chars: int = DEFAULT_PREV
 
 def export_readable_csv(conn, output_path: str, session_id=None, preview_chars: int = DEFAULT_PREVIEW_CHARS) -> int:
     """
-    Une ligne par lead, pensée pour être ouverte dans Excel/Sheets et scannée
-    du regard : segment/confiance en premier, signaux techniques traduits en
-    une phrase, aperçu court de chaque page (pas le texte brut intégral).
+    One row per lead, designed to be opened in Excel/Sheets and scanned at a
+    glance: segment/confidence first, technical signals translated into a
+    single sentence, a short preview of each page (not the full raw text).
 
-    C'est un complément à export_scraping_csv (audit complet, une ligne par
-    page) — pas un remplacement. Utilise celui-ci pour une review rapide,
-    l'autre pour ré-analyser le contenu brut en détail si besoin.
+    It complements export_scraping_csv (full audit, one row per page) — not a
+    replacement. Use this one for a quick review, the other to re-analyze the
+    raw content in detail if needed.
 
-    Retourne le nombre de lignes écrites (= nombre de leads).
+    Returns the number of rows written (= number of leads).
     """
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -387,8 +394,8 @@ def export_readable_csv(conn, output_path: str, session_id=None, preview_chars: 
 
 def readable_csv_string(conn, session_id=None, preview_chars: int = DEFAULT_PREVIEW_CHARS) -> str:
     """
-    Même contenu que export_readable_csv, renvoyé en mémoire (pas d'écriture
-    disque) — pour st.download_button côté Flask.
+    Same content as export_readable_csv, returned in memory (no disk write) —
+    for the Flask download button.
     """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=READABLE_FIELDS)
@@ -399,7 +406,7 @@ def readable_csv_string(conn, session_id=None, preview_chars: int = DEFAULT_PREV
 
 
 # ---------------------------------------------------------------------------
-# 4) CSV de la recherche web SGAI
+# 4) SGAI web search CSV
 # ---------------------------------------------------------------------------
 
 SEARCH_FIELDS = [
@@ -409,10 +416,11 @@ SEARCH_FIELDS = [
 
 
 def _iter_search_rows(conn, session_id=None):
-    """Générateur de lignes pour le CSV de recherche web — une ligne par résultat."""
+    """Row generator for the web search CSV — one row per result."""
     leads = dbmod.get_leads(conn, session_id=session_id, include_duplicates=False)
+    evidence_map = dbmod.get_lead_search_evidence_map(conn, [lead["id"] for lead in leads])
     for lead in leads:
-        evidence = dbmod.get_lead_search_evidence(conn, lead["id"])
+        evidence = evidence_map.get(lead["id"], [])
         for ev in evidence:
             source = ev.get("source", "")
             query = ev.get("query", "")
@@ -441,12 +449,12 @@ def _iter_search_rows(conn, session_id=None):
                     "result_snippet": results["error"],
                 }
 
-    # Inclut aussi les leads sans search evidence (ligne vide avec juste l'en-tête)
-    # pour signaler qu'ils ont été scannés mais n'ont pas déclenché de recherche.
+    # Also includes leads without search evidence (empty row with just the header)
+    # to signal that they were scanned but did not trigger any search.
 
 
 def export_search_csv(conn, output_path: str, session_id=None) -> int:
-    """Exporte la recherche web SGAI en CSV — une ligne par résultat."""
+    """Exports the SGAI web search to CSV — one row per result."""
     rows_written = 0
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=SEARCH_FIELDS)
@@ -458,7 +466,7 @@ def export_search_csv(conn, output_path: str, session_id=None) -> int:
 
 
 def search_csv_string(conn, session_id=None) -> str:
-    """Même contenu que export_search_csv, mais en mémoire."""
+    """Same content as export_search_csv, but in memory."""
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=SEARCH_FIELDS)
     writer.writeheader()
@@ -468,29 +476,29 @@ def search_csv_string(conn, session_id=None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI — pour lancer les deux exports sans passer par Flask
+# CLI — to run the exports without going through Flask
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Exporte les résultats du scraping et du scoring en CSV depuis la base SQLite."
+        description="Exports the scraping and scoring results to CSV from the SQLite database."
     )
-    parser.add_argument("--db", default=dbmod.DB_PATH_DEFAULT, help="Chemin de la base SQLite (défaut: leads.db)")
-    parser.add_argument("--scraping-out", default="scraping_results.csv", help="Chemin du CSV de scraping en sortie")
-    parser.add_argument("--scores-out", default="scores_results.csv", help="Chemin du CSV de scoring en sortie")
-    parser.add_argument("--search-out", default="search_results.csv", help="Chemin du CSV de recherche web en sortie")
+    parser.add_argument("--db", default=dbmod.DB_PATH_DEFAULT, help="Path to the SQLite database (default: leads.db)")
+    parser.add_argument("--scraping-out", default="scraping_results.csv", help="Output path for the scraping CSV")
+    parser.add_argument("--scores-out", default="scores_results.csv", help="Output path for the scoring CSV")
+    parser.add_argument("--search-out", default="search_results.csv", help="Output path for the web search CSV")
     args = parser.parse_args()
 
     conn = dbmod.get_connection(args.db)
-    dbmod.init_db(conn)  # no-op si les tables existent déjà (CREATE TABLE IF NOT EXISTS)
+    dbmod.init_db(conn)  # no-op if the tables already exist (CREATE TABLE IF NOT EXISTS)
 
     n_scraping = export_scraping_csv(conn, args.scraping_out)
     n_scores = export_scores_csv(conn, args.scores_out)
     n_search = export_search_csv(conn, args.search_out)
 
-    print(f"[export] {n_scraping} lignes écrites -> {args.scraping_out}")
-    print(f"[export] {n_scores} lignes écrites -> {args.scores_out}")
-    print(f"[export] {n_search} lignes écrites -> {args.search_out}")
+    print(f"[export] {n_scraping} rows written -> {args.scraping_out}")
+    print(f"[export] {n_scores} rows written -> {args.scores_out}")
+    print(f"[export] {n_search} rows written -> {args.search_out}")
 
 
 if __name__ == "__main__":
