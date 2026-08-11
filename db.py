@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from constants import NOT_YET_SCORED_STATUSES
 
 import psycopg2
@@ -30,8 +32,6 @@ import psycopg2.extras
 import psycopg2.pool
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-DB_PATH_DEFAULT = "leads.db"  # residual name kept for internal API compatibility
-
 # Connection pool: reuses already-established TCP connections instead of
 # opening a fresh one (SSL handshake + auth) on EVERY request. Unlike
 # pgBouncer, we keep a simple client-side pool; each connection is returned
@@ -96,14 +96,14 @@ def _domains_related(a: str, b: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Wrapper PostgreSQL compatible sqlite3
+# PostgreSQL connection layer (compatible with the rest of the code)
 # ---------------------------------------------------------------------------
 
 _PLACEHOLDER_RE = re.compile(r"\?")
 
 
 class _PgRow(dict):
-    """Row compatible with sqlite3.Row: accessible both by key AND by index."""
+    """Row: accessible both by key AND by index (wraps a RealDictRow)."""
 
     def __init__(self, mapping):
         super().__init__(mapping)
@@ -136,7 +136,7 @@ class _PgCursor:
 
 
 class _PgConnection:
-    """PostgreSQL connection mimicking the sqlite3.Connection API of the rest of the code."""
+    """PostgreSQL connection wrapper exposing the execute/fetch API used by the rest of the code."""
 
     def __init__(self, raw):
         self._conn = raw
@@ -246,7 +246,7 @@ def _get_pg_pool() -> psycopg2.pool.ThreadedConnectionPool:
         return _pg_pool
 
 
-def get_connection(db_path: str = DB_PATH_DEFAULT):
+def get_connection():
     """Returns a PostgreSQL (Neon) connection taken from the shared pool.
     SQLite is no longer supported. The connection is never actually closed:
     `close()` returns it to the pool so it can be reused for the next request."""
@@ -412,6 +412,7 @@ def list_analysis_sessions(conn, limit: int = 50, owner_id: int | None = None) -
         SELECT s.id, s.label, s.source_filename, s.status, s.created_at, s.completed_at,
                s.notes, s.cancelled, s.scoring_criteria, s.scoring_criteria_custom,
                s.last_batch_ids,
+               ROW_NUMBER() OVER (PARTITION BY s.owner_id ORDER BY s.id) AS user_rank,
                COUNT(DISTINCT l.id) AS lead_count,
                SUM(CASE WHEN l.is_duplicate = 1 THEN 1 ELSE 0 END) AS duplicate_count,
                SUM(CASE WHEN l.status IN ('SCORED', 'LOW_CONFIDENCE') THEN 1 ELSE 0 END) AS scored_count,
@@ -629,6 +630,85 @@ def _schema_sql() -> str:
         """
 
 
+_SEQUENCE_TRIGGER_TABLES = (
+    "analysis_sessions", "users", "leads", "lead_content",
+    "lead_technical_signals", "lead_scores", "lead_search_evidence",
+    "export_history",
+)
+
+
+def _sequence_housekeeping_sql() -> list[str]:
+    """Returns the sequence housekeeping statements, each as ONE standalone
+    SQL statement (the wrapper's executescript() splits on ';' and would
+    break the dollar-quoted bodies below).
+
+    1. sync_seq_after_delete() — sets the identity sequence back to
+       MAX(id)+1 as soon as a DELETE frees rows (the trigger runs AFTER the
+       statement, so the new max is already visible).
+    2. One AFTER DELETE trigger per table (idempotent).
+    3. One-off realignment of every identity sequence to MAX(id)+1.
+    """
+    triggers = "\n".join(
+        f"""        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_seq_{tbl}') THEN
+            CREATE TRIGGER trg_seq_{tbl} AFTER DELETE ON public.{tbl}
+            FOR EACH STATEMENT EXECUTE FUNCTION public.sync_seq_after_delete();
+        END IF;"""
+        for tbl in _SEQUENCE_TRIGGER_TABLES
+    )
+    tables_array = "ARRAY['" + "','".join(_SEQUENCE_TRIGGER_TABLES) + "']"
+    return [
+        f"""
+        CREATE OR REPLACE FUNCTION public.sync_seq_after_delete()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            seq_name TEXT;
+            next_val BIGINT;
+        BEGIN
+            BEGIN
+                SELECT pg_get_serial_sequence(TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, 'id') INTO seq_name;
+            EXCEPTION WHEN OTHERS THEN
+                RETURN NULL;
+            END;
+            IF seq_name IS NOT NULL THEN
+                EXECUTE format('SELECT COALESCE(MAX(id), 0) + 1 FROM %I.%I', TG_TABLE_SCHEMA, TG_TABLE_NAME) INTO next_val;
+                PERFORM setval(seq_name, next_val, false);
+            END IF;
+            RETURN NULL;
+        END;
+        $$;
+        """,
+        f"""
+        DO $$
+        BEGIN
+        {triggers}
+        END;
+        $$;
+        """,
+        f"""
+        DO $$
+        DECLARE t TEXT;
+        BEGIN
+            FOREACH t IN ARRAY {tables_array}
+            LOOP
+                EXECUTE format('SELECT setval(pg_get_serial_sequence(%L, %L), COALESCE(MAX(id), 0) + 1, false) FROM %I', t, 'id', t);
+            END LOOP;
+        END;
+        $$;
+        """,
+    ]
+
+
+def _ensure_sequence_housekeeping(conn) -> None:
+    """Installs the sequence-reset triggers (idempotent) and realigns every
+    identity sequence to MAX(id)+1: deleting a session/user/lead frees its
+    ids, the counter steps back and the freed ids are reused."""
+    for stmt in _sequence_housekeeping_sql():
+        conn.execute(stmt)
+    conn.commit()
+
+
 def init_db(conn) -> None:
     conn.executescript(_schema_sql())
     conn.commit()
@@ -680,6 +760,7 @@ def init_db(conn) -> None:
     ]:
         _add_column(conn, "lead_technical_signals", col, coltype)
 
+    _ensure_sequence_housekeeping(conn)
     conn.commit()
 
 

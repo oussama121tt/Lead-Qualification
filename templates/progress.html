@@ -5,22 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Analysis in progress — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
       padding: 16px 0; margin-bottom: 20px; gap: 12px;
+      border-bottom: 1px solid var(--border);
     }
     .topbar h1 {
-      font-family: Georgia, "Times New Roman", serif;
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-weight: 700;
       font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
     .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
-    .topbar nav a:hover { background: var(--bg-soft); }
-    .topbar nav a.primary { background: var(--accent); color: #fff; }
-    .topbar nav a.primary:hover { background: var(--accent-2, #0098CC); }
-    .topbar nav a:not(.primary) { color: var(--text); }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--surface-2); }
+    .topbar nav a.primary { background: var(--gradient); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--gradient); opacity: 0.9; }
+    .topbar nav a:not(.primary) { color: var(--text-primary); }
+    .topbar form { margin: 0; }
+    .topbar form button { border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); font-weight: 600; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 0.9rem; }
 
     /* ---- Carte de progression (redesign) ---- */
     .shell {
@@ -29,8 +36,9 @@
     }
     .progress-card {
       max-width: 520px; margin: auto;
-      border: 0.5px solid var(--border); border-radius: 16px;
-      background: var(--surface-2); padding: 2rem 2rem 1.75rem;
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--surface-1); padding: 2rem 2rem 1.75rem;
+      box-shadow: var(--shadow-sm);
     }
 
     .pc-head {
@@ -39,32 +47,32 @@
     }
     .pc-spinner {
       width: 28px; height: 28px; border-radius: 50%;
-      border: 3px solid var(--border); border-top-color: var(--accent);
+      border: 3px solid var(--border); border-top-color: var(--primary);
       flex-shrink: 0; animation: spin 0.8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .pc-label { font-size: 17px; font-weight: 500; margin: 0; text-align: center; }
+    .pc-label { font-size: 17px; font-weight: 600; margin: 0; text-align: center; }
 
     .pc-segments { display: flex; align-items: center; gap: 6px; margin-bottom: 0; }
     .pc-segments .seg {
       flex: 1; height: 6px; border-radius: 3px;
       background: var(--border); transition: background 0.3s ease;
     }
-    .pc-segments .seg.done { background: var(--accent); }
-    .pc-segments .seg.active { background: var(--accent); }
+    .pc-segments .seg.done { background: var(--gradient); }
+    .pc-segments .seg.active { background: var(--gradient); }
 
     .pc-seg-labels { display: flex; justify-content: space-between; margin: 10px 0 24px; }
     .pc-seg-labels span { font-size: 11px; color: var(--text-muted); }
-    .pc-seg-labels span.active { color: var(--text-accent); font-weight: 500; }
+    .pc-seg-labels span.active { color: var(--cyan); font-weight: 500; }
 
     .pc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
-    .pc-stat { background: var(--surface-1); border-radius: var(--radius); padding: 12px; min-width: 0; }
+    .pc-stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; min-width: 0; }
     .pc-stat-label {
       font-size: 11px; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px;
     }
     .pc-stat-value {
-      font-size: 17px; font-weight: 500; margin: 0;
+      font-size: 17px; font-weight: 600; margin: 0;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .pc-stat-value.small { font-size: 14px; }
@@ -78,11 +86,31 @@
     .pc-complete { text-align: center; animation: fade-in 0.6s ease; }
     .pc-complete .complete-icon { font-size: 2.6rem; margin-bottom: 8px; }
     .pc-complete h2 {
-      font-family: Georgia, "Times New Roman", serif;
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-weight: 700;
       margin-bottom: 6px; font-size: 1.25rem;
     }
     .pc-complete p { color: var(--text-secondary); margin-bottom: 20px; font-size: 0.92rem; }
-    .pc-complete .btn { border-radius: 12px; }
+    .pc-complete .btn { border-radius: var(--radius-pill); }
+
+    .stopping-banner {
+      display: flex; align-items: center; gap: 12px;
+      margin: 0 auto 20px; max-width: 440px;
+      border: 1px solid var(--warning);
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      animation: fade-in 0.3s ease;
+    }
+    .stopping-banner .stop-spinner {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2px solid var(--warning);
+      border-top-color: transparent;
+      flex-shrink: 0; animation: spin 0.8s linear infinite;
+    }
+    .stopping-banner strong { color: var(--warning); display: block; margin-bottom: 2px; }
 
     .hidden { display: none !important; }
     @keyframes fade-in {
@@ -137,6 +165,19 @@
       <p class="pc-message" id="progressMessage">
         The analysis pipeline is running.<br>Results will appear automatically.
       </p>
+
+      <!-- Action buttons -->
+      <div class="d-flex gap-3 justify-content-center mb-4 flex-wrap">
+        <button class="btn btn-danger btn-lg" id="stopBtn">&#x2716; Stop analysis</button>
+      </div>
+
+      <div class="stopping-banner hidden" id="stoppingBanner">
+        <div class="stop-spinner"></div>
+        <div>
+          <strong>Stopping analysis...</strong>
+          <span>Running leads will finish, queued leads will not start.</span>
+        </div>
+      </div>
 
       <div class="pc-complete hidden" id="progressComplete">
         <div class="complete-icon" id="completeIcon">&#x2705;</div>
@@ -295,14 +336,20 @@
     completed = true;
     if (timerInterval) clearInterval(timerInterval);
 
+    const stopBtn = document.getElementById('stopBtn');
+    if (stopBtn) stopBtn.classList.add('hidden');
+    const stoppingBanner = document.getElementById('stoppingBanner');
+    if (stoppingBanner) stoppingBanner.classList.add('hidden');
+
     const isFailed = data.status === 'failed';
+    const isCancelled = data.status === 'cancelled';
     const success = data.status === 'completed';
 
     const processed = data.processed || 0;
     const total = data.total || processed;
     elements.leadIndex.textContent = processed + ' / ' + total;
-    elements.currentStep.textContent = success ? 'Finished' : 'Failed';
-    elements.label.textContent = success ? 'Analysis complete' : 'Analysis failed';
+    elements.currentStep.textContent = success ? 'Finished' : (isCancelled ? 'Cancelled' : 'Failed');
+    elements.label.textContent = success ? 'Analysis complete' : (isCancelled ? 'Analysis cancelled' : 'Analysis failed');
 
     if (data.completed_ts && data.started_at) {
       const dur = data.completed_ts - data.started_at;
@@ -313,13 +360,19 @@
 
     if (success) {
       setSegments({ import: true, scraping: true, scoring: true });
-      elements.spinner.style.borderTopColor = 'var(--accent)';
+      elements.spinner.style.borderTopColor = 'var(--primary)';
       elements.completeIcon.textContent = '\u2705';
       elements.completeTitle.textContent = 'Analysis complete!';
       elements.completeDetails.textContent = processed + ' lead(s) processed in ' + elements.elapsedTime.textContent + '.';
+    } else if (isCancelled) {
+      setSegments({ import: true, scraping: true, scoring: true });
+      elements.spinner.style.borderTopColor = 'var(--warning)';
+      elements.completeIcon.textContent = '\u26D4';
+      elements.completeTitle.textContent = 'Analysis stopped';
+      elements.completeDetails.textContent = processed + ' lead(s) processed before the stop.';
     } else {
       setSegments({ import: true, scraping: true, scoring: true });
-      elements.spinner.style.borderTopColor = 'var(--danger, #dc3545)';
+      elements.spinner.style.borderTopColor = 'var(--error)';
       elements.completeIcon.textContent = '\u274C';
       elements.completeTitle.textContent = 'Analysis failed';
       elements.completeDetails.textContent = data.error
@@ -335,6 +388,25 @@
     }, 5000);
   }
 
+  function stopAnalysis() {
+    const btn = document.getElementById('stopBtn');
+    if (!btn || btn.disabled) return;
+    if (!confirm('Stop the analysis in progress?')) return;
+    btn.disabled = true;
+    btn.textContent = '\u2716 Stopping...';
+    const banner = document.getElementById('stoppingBanner');
+    if (banner) banner.classList.remove('hidden');
+    fetch("{{ url_for('cancel_session', session_id=session_id) }}", {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    }).catch(function(e) {
+      console.error('Cancel request failed:', e);
+      btn.disabled = false;
+      btn.textContent = '\u2716 Stop analysis';
+      if (banner) banner.classList.add('hidden');
+    });
+  }
+
   function connectSSE() {
     const source = new EventSource(PROGRESS_URL);
 
@@ -347,7 +419,7 @@
           return;
         }
 
-        if (data.status === 'completed' || data.status === 'failed') {
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
           showCompletion(data);
           source.close();
           return;
@@ -367,6 +439,9 @@
 
   timerInterval = setInterval(updateTimer, 1000);
   connectSSE();
+
+  const stopBtn = document.getElementById('stopBtn');
+  if (stopBtn) stopBtn.addEventListener('click', stopAnalysis);
 })();
 </script>
 </body>

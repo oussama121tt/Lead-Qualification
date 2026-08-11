@@ -20,7 +20,7 @@ A PostgreSQL database is used automatically via `DATABASE_URL` (Neon). Each impo
 ## Interface features
 
 1. **CSV upload** — import an Apollo CSV into PostgreSQL (columns: first_name, last_name, title, company_name, email, website_url).
-2. **Full analysis** — ingestion + dedup + Firecrawl scraping + Claude scoring, in one click.
+2. **Full analysis** — ingestion + dedup + Firecrawl scraping + Groq (llama-3.3-70b-versatile) scoring, in one click.
 3. **Independent actions** — import only, dedup only, pipeline only.
 4. **Tables** — raw leads view and scored leads view with segment filters.
 5. **Human review** — approve/reject a lead, change its segment.
@@ -35,7 +35,7 @@ A PostgreSQL database is used automatically via `DATABASE_URL` (Neon). Each impo
 | `db.py` | PostgreSQL schema + CRUD helpers (leads, sessions, scores, exports) |
 | `dedup.py` | 3-level deduplication (exact email, domain, fuzzy name via RapidFuzz) |
 | `scraper.py` | Firecrawl scraping + extraction of deterministic technical signals |
-| `scorer.py` | Claude scoring: evaluates each lead and produces a structured JSON verdict |
+| `scorer.py` | Groq scoring: evaluates each lead and produces a structured JSON verdict |
 | `pipeline.py` | Orchestrator: chains scraping + scoring lead by lead, isolates failures |
 | `export.py` | CSV export: raw scraping, scores, and readable format for human review |
 | `app.py` | Complete Flask interface |

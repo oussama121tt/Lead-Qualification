@@ -19,10 +19,10 @@ Four input flows:
    according to their indicated weight.
 4. web_search_evidence (optional) — escalation web search results
    (LinkedIn, Product Hunt, GitHub, interviews), formatted and budgeted
-   separately from the site content: THIRD-PARTY evidence, never silently
-   merged into the site text as before (which lost title/url and the
-   reliability distinction). Persisted in the DB (lead_search_evidence) and
-   reloaded on a rescore, so this evidence is not lost between scoring runs.
+   separately from the site content with EQUAL weight (never silently
+   merged into the site text as before, which lost title/url). Persisted in
+   the DB (lead_search_evidence) and reloaded on a rescore, so this evidence
+   is not lost between scoring runs.
 
 Segments (aligned with the original spec, FR-3):
   ai_solo_founder | technical_founder | small_agency_scaling | too_big |
@@ -44,11 +44,16 @@ from constants import CONFIDENCE_THRESHOLD, VALID_SEGMENTS
 MODEL = "llama-3.3-70b-versatile"
 MAX_CONTENT_CHARS = 16000  # legacy — still used by the retry paths (site content only)
 MAX_SITE_CONTENT_CHARS = 12000  # dedicated budget for the site (first-party) content
-MAX_WEB_EVIDENCE_CHARS = 4000   # dedicated separate budget for web search (third-party) —
-                                 # never overridden by a verbose site that would consume the whole quota
+MAX_WEB_EVIDENCE_CHARS = 12000  # same dedicated budget as the site — web search carries
+                                # equal weight, not a discounted subset
 MAX_OUTPUT_TOKENS = 2048
 RETRY_MAX_CONTENT_CHARS = 6000
 RETRY_MAX_OUTPUT_TOKENS = 1024
+
+# Hard upper bound for a single Groq call. Without it, the OpenAI SDK
+# default (~600s) would leave a Stop clicked during scoring blocked for
+# minutes — the pipeline cannot abort a blocking network call from outside.
+GROQ_TIMEOUT_SECONDS = 90
 
 # Confidence capped when the LLM returns an out-of-schema segment/offer —
 # a verdict we just force-corrected cannot stay "confident".
@@ -108,13 +113,33 @@ it strictly, never treat two signals of different strength as equivalents:
   tracker, widget) — if it is isolated and nothing else corroborates it (no explicit mention
   in the visible text, no vibe-coding language), lower your confidence accordingly rather
   than treating it as a given.
-- Web search results (block "Web search results", if present) are THIRD_PARTY evidence —
-  someone else is talking about this company, it is not the company itself
-  speaking on its own site. An explicit mention found there (e.g. a post where the founder
-  himself admits to vibe-coding) is still a STRONG signal, but a vague, out-of-context
-  search snippet, or one that seems to be about another company with the same name, should
-  be treated with more caution than an equivalent mention found directly on the lead's
-  official site.
+- Both evidence blocks carry EQUAL WEIGHT: "Information collected on this lead" (the
+  official site) and "Web search results" (LinkedIn, Product Hunt, GitHub, interviews,
+  directories) — the web can be the ONLY source that reveals vibe-coding, a technical
+  team, or an agency, so NEVER discount it because it is not the official site.
+  An explicit mention found in either block (e.g. a post where the founder
+  himself admits to vibe-coding) is a STRONG signal regardless of which block it
+  comes from. Conversely, a vague, out-of-context search snippet, or one that seems to
+  be about another company with the same name, carries equal doubt whether it appears
+  in the site content or in the web results.
+- Evidence labeled "person_*" (person_linkedin, person_github) describes the founder
+  HIMSELF (his own LinkedIn profile, his own GitHub) — treat it as a PRIORITY signal
+  to distinguish technical_founder from ai_solo_founder, more reliable than a signal
+  inferred from the company's site: a founder's own profile showing engineering work,
+  commits, or a technical history points toward technical_founder; a profile with no
+  technical trace while the product is AI-built points toward ai_solo_founder.
+
+- CURSOR - SPECIAL RULE (weaker than the Lovable/Bolt/v0 fingerprints): Cursor is a
+  general-purpose IDE that leaves no detectable HTML fingerprint on the site (unlike
+  "lovable-tagger" or "v0.dev" client scripts), and it is used by BOTH non-technical
+  founders and very experienced engineers. A bare mention of Cursor ("built with
+  cursor" in the site text or in the web search results) is therefore NEVER
+  sufficient BY ITSELF to classify the lead as ai_solo_founder. It MUST be
+  corroborated by at least one of: github_check.single_commit_repo = true, OR a
+  founder's own profile (person_linkedin / person_github) showing an absence of
+  technical background. Without such corroboration, a Cursor mention alone orients
+  toward "unclear" (insufficient evidence) or "technical_founder" depending on the
+  other signals - never ai_solo_founder on its own.
 
 RULES:
 1. Every signal cited in built_with_ai_signals/technical_signals/pain_signals MUST have an
@@ -212,12 +237,11 @@ def _format_web_search_evidence(web_search_evidence: dict | None, max_chars: int
     Formats the web search results (escalation, LinkedIn/Product Hunt/
     GitHub/interviews) into a block DISTINCT from the site content.
 
-    Why separate rather than merged into `rows` as before: the site is
-    first-party evidence (the company talks about itself), the web search is
-    often third-party (someone else talks about them, or a truncated
-    out-of-context search snippet) — the LLM must be able to distinguish the
-    two reliability levels, not treat them as equivalent. `title`/`url` are
-    also preserved here (lost if simply concatenated into `rows` as before).
+    Why separate rather than merged into `rows` as before: `title`/`url`
+    are lost if simply concatenated into `rows`, so the model could not
+    point back to the source. Kept as its own block, it is presented with
+    the same weight as the site content (both are grounding sources for
+    `evidence_quotes`).
 
     Args:
         web_search_evidence: dict {source: [{"url":..,"title":..,"content":..}, ...]}
@@ -229,7 +253,14 @@ def _format_web_search_evidence(web_search_evidence: dict | None, max_chars: int
         return ""
 
     chunks = []
-    for source, hits in web_search_evidence.items():
+    # person_* sources describe the founder himself (his own LinkedIn/GitHub)
+    # — ordered FIRST, they are the priority signal for distinguishing
+    # technical_founder vs ai_solo_founder.
+    ordered_sources = sorted(
+        web_search_evidence.items(),
+        key=lambda kv: (0, kv[0]) if kv[0].startswith("person_") else (1, kv[0]),
+    )
+    for source, hits in ordered_sources:
         if not isinstance(hits, list):
             continue
         for hit in hits:
@@ -247,15 +278,29 @@ def _format_web_search_evidence(web_search_evidence: dict | None, max_chars: int
 
     joined = "\n\n".join(chunks)[:max_chars]
     return (
-        "Web search results (THIRD-PARTY evidence — someone else is talking about this "
-        "company, this is NOT the lead's official site. To be treated with more caution "
-        "than a mention found directly on the site):\n\n" + joined
+        "Web search results (LinkedIn — company page and the founder's own profile "
+        "(person_*), Product Hunt, GitHub, interviews, directories — same weight as "
+        "the site content above):\n\n" + joined
     )
 
 
 def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
-    """Concatenates the scraped pages into a single text block for the LLM prompt."""
-    chunks = [f"## Source: {source}\n{content}" for source, _url, content in rows if content]
+    """Concatenates the scraped pages into a single text block for the LLM prompt.
+
+    Accepts both (source, url, content) tuples (scraper output) and dict rows
+    ({"source": ..., "url": ..., "content": ...} — db.get_lead_content on a
+    rescore). Fixed bug: dict rows were unpacked as their KEYS when iterated,
+    so a rescore silently fed placeholder text ("## Source: source") to the LLM.
+    """
+    chunks = []
+    for row in rows:
+        if isinstance(row, dict):
+            source = row.get("source")
+            content = row.get("content")
+        else:
+            source, _url, content = row
+        if content:
+            chunks.append(f"## Source: {source}\n{content}")
     full_text = "\n\n---\n\n".join(chunks)
     return _strip_images(full_text[:max_chars])
 
@@ -347,6 +392,7 @@ def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> 
         temperature=0.2,
         max_tokens=max_output_tokens,
         response_format={"type": "json_object"},
+        timeout=GROQ_TIMEOUT_SECONDS,
     )
     return json.loads(response.choices[0].message.content)
 
@@ -388,16 +434,60 @@ def _verify_evidence_grounding(verdict: dict, source_text: str) -> dict:
     return verdict
 
 
-def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str) -> dict:
+def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False) -> dict:
     """Retries the scoring with reduced content after a JSON parsing failure."""
     try:
         shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
         verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        return _verify_evidence_grounding(verdict, shorter_text)
+        verdict = _verify_evidence_grounding(verdict, grounding_source)
+        return _apply_site_missing_guard(verdict, site_content_missing)
     except Exception as e2:
-        return _empty_verdict(f"json_parse_failed: {error_str} | retry_error: {e2}")
+        return _apply_site_missing_guard(
+            _empty_verdict(f"json_parse_failed: {error_str} | retry_error: {e2}"),
+            site_content_missing,
+        )
+
+
+def _apply_site_missing_guard(verdict: dict, site_content_missing: bool) -> dict:
+    """Structural backstop for leads scored without official site content.
+
+    A verdict computed on metadata + web evidence alone can never auto-pass:
+    human review is mandatory REGARDLESS of what the LLM says — and the
+    limitation is traced in disqualify_reason so a reviewer knows WHY the
+    review is required (previously this only happened by luck, e.g. when an
+    ungrounded evidence quote happened to trip the general confidence guard).
+
+    The note is ALWAYS appended when the flag is set — even when
+    needs_human_review is already True (the typical case: the LLM or the
+    confidence guard already flagged it). The traceability must not depend
+    on the flag being the FIRST mechanism to trip.
+    """
+    if not site_content_missing:
+        return verdict
+    note = (
+        "site_content_missing: no official site content available (empty or fetch failed) "
+        "— verdict relies on metadata and web evidence only"
+    )
+    verdict["needs_human_review"] = True
+    if note not in (verdict.get("disqualify_reason") or ""):
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+    return verdict
+
+
+SITE_MISSING_INSTRUCTION = (
+    "IMPORTANT — the official website could not be scraped properly (empty content or fetch "
+    "failure), so NO reliable site content is available for this lead.\n"
+    "- Base your verdict ONLY on the contact metadata and the web search results provided. "
+    "Do not invent or assume site content.\n"
+    "- Do NOT treat the absence of site content as a signal in either direction: a site can "
+    "be temporarily down or blocked without saying anything about the product's quality.\n"
+    "- If your verdict relies solely on web evidence with no official site content, set "
+    "needs_human_review to true REGARDLESS of confidence, and mention this limitation "
+    "explicitly in disqualify_reason."
+)
 
 
 def score_content(
@@ -407,6 +497,7 @@ def score_content(
     web_search_evidence: dict | None = None,
     scoring_criteria: list[str] | None = None,
     scoring_criteria_custom: str = "",
+    site_content_missing: bool = False,
 ) -> dict:
     """Evaluates a lead from the Apollo metadata, the scraped content, and the
     deterministic signals.
@@ -421,19 +512,27 @@ def score_content(
             "Input: lead metadata + parsed site text". Missing until now, added here.
         web_search_evidence: Dict {source: [{"url","title","content"}, ...]} of
             web search results (escalation). Formatted and budgeted separately
-            from the site content (third-party evidence, never silently merged
-            as before — see _format_web_search_evidence).
+            from the site content, with equal weight (both blocks are used for
+            evidence grounding), see _format_web_search_evidence.
         scoring_criteria: List of criteria selected by the user to guide the scoring.
         scoring_criteria_custom: Free text entered by the user for a custom criterion.
+        site_content_missing: True when the official site produced no usable
+            content (empty rows / FETCH_FAILED). The prompt is then told
+            explicitly — the LLM must not silently treat the absence as a
+            neutral omission — and the verdict is FORCED to
+            needs_human_review=True regardless of confidence, with the
+            limitation traced in disqualify_reason (see
+            _apply_site_missing_guard and SITE_MISSING_INSTRUCTION).
 
     Returns:
         Dict matching the JSON schema of the verdict (segment, confidence, etc.).
     """
     text = rows_to_text(rows, max_chars=MAX_SITE_CONTENT_CHARS)
     web_evidence_block = _format_web_search_evidence(web_search_evidence)
+    grounding_source = "\n\n---\n\n".join(p for p in (text, web_evidence_block) if p.strip())
 
     if not text.strip() and not web_evidence_block:
-        return _empty_verdict("no_content_scraped")
+        return _apply_site_missing_guard(_empty_verdict("no_content_scraped"), site_content_missing)
 
     def build_user_content(t: str) -> str:
         parts = []
@@ -447,6 +546,9 @@ def score_content(
 
         if web_evidence_block:
             parts.append(web_evidence_block)
+
+        if site_content_missing:
+            parts.append(SITE_MISSING_INSTRUCTION)
 
         has_criteria = bool(scoring_criteria) or bool(scoring_criteria_custom)
         if has_criteria:
@@ -481,19 +583,24 @@ def score_content(
         verdict = _call_llm(build_user_content(text))
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        return _verify_evidence_grounding(verdict, text)
+        verdict = _verify_evidence_grounding(verdict, grounding_source)
+        return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
-        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e))
+        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing)
     except Exception as e:
         if _is_json_parse_error(e):
-            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e))
+            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing)
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
                 verdict = _call_llm(build_user_content(shorter_text))
                 verdict = _apply_confidence_guard(verdict)
                 verdict = _validate_verdict(verdict)
-                return _verify_evidence_grounding(verdict, shorter_text)
+                verdict = _verify_evidence_grounding(verdict, grounding_source)
+                return _apply_site_missing_guard(verdict, site_content_missing)
             except Exception as e2:
-                return _empty_verdict(f"api_error_after_retry: {e2}")
+                return _apply_site_missing_guard(
+                    _empty_verdict(f"api_error_after_retry: {e2}"),
+                    site_content_missing,
+                )
         raise

@@ -31,7 +31,6 @@ from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 
 
 
-DB_PATH = os.getenv("DB_PATH", dbmod.DB_PATH_DEFAULT)
 # PostgreSQL (Neon) is required — db.get_connection() raises an error without DATABASE_URL.
 
 app = Flask(__name__)
@@ -66,10 +65,11 @@ def _map_status_label(status: str | None) -> str:
 
 @app.template_filter("badge_class")
 def _badge_class(status: str | None) -> str:
-    mapping = {"completed": "bg-success", "failed": "bg-danger", "running": "bg-warning text-dark",
-               "imported": "bg-info text-dark", "SCORED": "bg-success", "LOW_CONFIDENCE": "bg-warning text-dark",
-               "SCORE_FAILED": "bg-danger", "FETCH_FAILED": "bg-danger", "NEW": "bg-secondary"}
-    return mapping.get(status) if status and status in mapping else "bg-secondary"
+    mapping = {"completed": "badge-success", "SCORED": "badge-success",
+               "running": "badge-warning", "imported": "badge-warning", "LOW_CONFIDENCE": "badge-warning",
+               "failed": "badge-error", "SCORE_FAILED": "badge-error", "FETCH_FAILED": "badge-error",
+               "NEW": "badge-neutral"}
+    return mapping.get(status) if status and status in mapping else "badge-neutral"
 
 _MONTHS_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -120,7 +120,7 @@ def _background_rescore_pipeline(conn, session_id: int, throttle_seconds: float,
         for update in pipelinemod.run_rescore_pipeline(conn, throttle_seconds=throttle_seconds, session_id=session_id, lead_status=lead_status):
             processed += 1
             _store_progress(session_id, {"pipeline_status": "running", **update})
-        final_status = "completed"
+        final_status = "cancelled" if dbmod.is_session_cancelled(conn, session_id) else "completed"
         with _pipeline_lock:
             p = _pipeline_progress.get(session_id, {})
             p["status"] = final_status
@@ -151,7 +151,7 @@ def _background_pipeline(conn, session_id: int, throttle_seconds: float, concurr
         for update in pipelinemod.run_pipeline(conn, throttle_seconds=throttle_seconds, session_id=session_id, concurrency=concurrency):
             processed += 1
             _store_progress(session_id, {"pipeline_status": "running", **update})
-        final_status = "completed"
+        final_status = "cancelled" if dbmod.is_session_cancelled(conn, session_id) else "completed"
         with _pipeline_lock:
             p = _pipeline_progress.get(session_id, {})
             p["status"] = final_status
@@ -176,7 +176,7 @@ def _background_pipeline(conn, session_id: int, throttle_seconds: float, concurr
 
 @contextmanager
 def open_db():
-    conn = dbmod.get_connection(DB_PATH)
+    conn = dbmod.get_connection()
     try:
         # NB: init_db() is NOT called here. It must run only ONCE at app startup
         # (see _init_schema_once): calling it on every request would do ~35+
@@ -189,7 +189,7 @@ def open_db():
 
 def _init_schema_once():
     """Creates/updates the schema once at startup (idempotent)."""
-    conn = dbmod.get_connection(DB_PATH)
+    conn = dbmod.get_connection()
     try:
         dbmod.init_db(conn)
     finally:
@@ -426,7 +426,10 @@ def history():
     owner_id = None if session.get("role") == "admin" else session.get("user_id")
     with open_db() as conn:
         sessions = dbmod.list_analysis_sessions(conn, limit=50, owner_id=owner_id)
-    return render_template("history.html", sessions=sessions)
+    # Non-admin: each user's own history is numbered per user (1, 2, 3...),
+    # regardless of the other users' sessions in between. The admin's
+    # combined history keeps the global ids.
+    return render_template("history.html", sessions=sessions, show_rank=owner_id is not None)
 
 
 @app.route("/dashboard", methods=["GET"])
@@ -615,11 +618,11 @@ def start_pipeline_from_review(session_id: int):
         if not to_process:
             flash("No lead selected.", "warning")
             return redirect(url_for("import_review", session_id=session_id))
-        dbmod.update_analysis_session_status(conn, session_id, "running")
+        dbmod.resume_analysis_session(conn, session_id)
 
     threading.Thread(
         target=_background_pipeline,
-        args=(dbmod.get_connection(DB_PATH), session_id, throttle_seconds),
+        args=(dbmod.get_connection(), session_id, throttle_seconds),
         kwargs={"concurrency": concurrency},
         daemon=True,
     ).start()
@@ -650,15 +653,17 @@ def analyze_pending(session_id: int):
             dbmod.set_last_batch_ids(conn, session_id, all_now_new)
 
         to_process = dbmod.get_leads_to_process(conn, session_id=session_id)
+        if selected_ids:
+            to_process = [l for l in to_process if l["id"] in ids]
         if not to_process:
             flash("No pending leads.", "warning")
             return redirect(url_for("results_view", session_id=session_id))
-        dbmod.update_analysis_session_status(conn, session_id, "running")
+        dbmod.resume_analysis_session(conn, session_id)
 
     _clear_progress(session_id)
     threading.Thread(
         target=_background_pipeline,
-        args=(dbmod.get_connection(DB_PATH), session_id, throttle_seconds),
+        args=(dbmod.get_connection(), session_id, throttle_seconds),
         kwargs={"concurrency": concurrency},
         daemon=True,
     ).start()
@@ -683,6 +688,25 @@ def delete_session(session_id: int):
     if next_url and next_url.startswith("/") and not next_url.startswith("//"):
         return redirect(next_url)
     return redirect(url_for("history"))
+
+
+@app.route("/session/<int:session_id>/cancel", methods=["POST"])
+def cancel_session(session_id: int):
+    """Marks a running analysis session as cancelled (cooperative stop).
+
+    The pipeline (pipeline.py) checks the flag between leads and between
+    futures; leads already running finish cleanly, queued ones never
+    start. The background thread then writes 'cancelled' to both the
+    in-memory progress and the DB so the SSE stream and the history page
+    reflect the real outcome.
+    """
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+    with open_db() as conn:
+        dbmod.cancel_analysis_session(conn, session_id)
+    flash("Cancellation requested: running leads will finish, queued ones will not start.", "info")
+    return redirect(url_for("progress_view", session_id=session_id))
 
 
 def _categorize_leads(scores_data: list) -> dict:
@@ -828,9 +852,9 @@ def rescore_leads(session_id: int):
             dbmod.update_leads_status(conn, to_rescore, "RESCORE_PENDING")
             conn.execute("DELETE FROM lead_scores WHERE lead_id = ANY(%s)", (to_rescore,))
             conn.commit()
-        dbmod.update_analysis_session_status(conn, session_id, "running")
+        dbmod.resume_analysis_session(conn, session_id)
 
-    new_conn = dbmod.get_connection(DB_PATH)
+    new_conn = dbmod.get_connection()
     threading.Thread(
         target=_background_rescore_pipeline,
         args=(new_conn, session_id, 1.0),
@@ -873,7 +897,7 @@ def start_analysis():
 
         threading.Thread(
             target=_background_pipeline,
-            args=(dbmod.get_connection(DB_PATH), session_id, throttle_seconds),
+            args=(dbmod.get_connection(), session_id, throttle_seconds),
             kwargs={"concurrency": concurrency},
             daemon=True,
         ).start()
@@ -942,10 +966,11 @@ def pipeline_only():
         if not to_process:
             flash("No leads ready to be processed.", "warning")
             return redirect(url_for("dashboard", session_id=selected_session_id))
+        dbmod.resume_analysis_session(conn, selected_session_id)
 
     threading.Thread(
         target=_background_pipeline,
-        args=(dbmod.get_connection(DB_PATH), selected_session_id, throttle_seconds),
+        args=(dbmod.get_connection(), selected_session_id, throttle_seconds),
         kwargs={"concurrency": concurrency},
         daemon=True,
     ).start()
@@ -1315,7 +1340,7 @@ def admin_user_history(user_id: int):
             flash("Account not found.", "error")
             return redirect(url_for("admin_users"))
         sessions = dbmod.list_analysis_sessions(conn, owner_id=user_id)
-    return render_template("admin_user_history.html", target_user=target_user, sessions=sessions)
+    return render_template("admin_user_history.html", target_user=target_user, sessions=sessions, show_rank=True)
 
 
 if __name__ == "__main__":

@@ -481,15 +481,14 @@ def search_csv_string(conn, session_id=None) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Exports the scraping and scoring results to CSV from the SQLite database."
+        description="Exports the scraping and scoring results to CSV from the PostgreSQL database."
     )
-    parser.add_argument("--db", default=dbmod.DB_PATH_DEFAULT, help="Path to the SQLite database (default: leads.db)")
     parser.add_argument("--scraping-out", default="scraping_results.csv", help="Output path for the scraping CSV")
     parser.add_argument("--scores-out", default="scores_results.csv", help="Output path for the scoring CSV")
     parser.add_argument("--search-out", default="search_results.csv", help="Output path for the web search CSV")
     args = parser.parse_args()
 
-    conn = dbmod.get_connection(args.db)
+    conn = dbmod.get_connection()
     dbmod.init_db(conn)  # no-op if the tables already exist (CREATE TABLE IF NOT EXISTS)
 
     n_scraping = export_scraping_csv(conn, args.scraping_out)

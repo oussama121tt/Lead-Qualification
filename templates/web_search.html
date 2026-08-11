@@ -5,51 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Web search — Lead Qualification Engine</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
       padding: 16px 0; margin-bottom: 20px; gap: 12px;
+      border-bottom: 1px solid var(--border);
     }
     .topbar h1 {
-      font-family: Georgia, "Times New Roman", serif;
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-weight: 700;
       font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap;
     }
     .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: 10px; font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
-    .topbar nav a:hover { background: var(--bg-soft); }
-    .topbar nav a.primary { background: var(--accent); color: #fff; }
-    .topbar nav a.primary:hover { background: var(--accent-2); }
-    .topbar nav a:not(.primary) { color: var(--text); }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--surface-2); }
+    .topbar nav a.primary { background: var(--gradient); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--gradient); opacity: 0.9; }
+    .topbar nav a:not(.primary) { color: var(--text-primary); }
+    .topbar form { margin: 0; }
+    .topbar form button { border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); font-weight: 600; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 0.9rem; }
 
     .evidence-card {
       border: 1px solid var(--border);
-      border-radius: 14px;
-      background: var(--surface);
+      border-radius: var(--radius-lg);
+      background: var(--surface-1);
       padding: 16px;
       margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
     }
     .evidence-card h4 { margin: 0 0 8px 0; font-size: 1rem; }
     .evidence-card .source-badge {
       display: inline-block;
       padding: 2px 10px;
-      border-radius: 99px;
+      border-radius: var(--radius-pill);
       font-size: 0.75rem;
       font-weight: 600;
-      background: rgba(96,165,250,0.12);
-      color: #4a8ed9;
+      background: rgba(0, 221, 235, 0.12);
+      color: var(--cyan);
     }
     .hit-item {
       padding: 8px 12px;
       margin: 6px 0;
-      border-left: 3px solid var(--accent);
-      background: var(--bg-soft);
-      border-radius: 0 8px 8px 0;
+      border-left: 3px solid var(--primary);
+      background: var(--surface-2);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     }
-    .hit-item a { color: var(--accent); }
+    .hit-item a { color: var(--cyan); }
     .hit-item .snippet {
       font-size: 0.85rem;
-      color: var(--muted);
+      color: var(--text-secondary);
       margin-top: 4px;
     }
   </style>
@@ -66,10 +74,10 @@
       </nav>
     </div>
 
-    <div style="border:1px solid var(--border);border-radius:22px;background:var(--surface);padding:24px;margin-bottom:20px;">
-      <p style="text-transform:uppercase;letter-spacing:0.18em;color:var(--accent);font-size:0.78rem;margin-bottom:8px;">Web search</p>
-      <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:1.5rem;margin:0 0 6px;letter-spacing:-0.02em;">Web search results</h1>
-      <p style="color:var(--muted);font-size:0.92rem;margin:0 0 16px;">
+    <div style="border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-1);padding:24px;margin-bottom:20px;box-shadow:var(--shadow-sm);">
+      <p style="text-transform:uppercase;letter-spacing:0.18em;color:var(--cyan);font-size:0.78rem;margin-bottom:8px;">Web search</p>
+      <h1 style="font-family:'Inter',-apple-system,sans-serif;font-weight:700;font-size:1.5rem;margin:0 0 6px;letter-spacing:-0.02em;">Web search results</h1>
+      <p style="color:var(--text-secondary);font-size:0.92rem;margin:0 0 16px;">
         Session #{{ session.id }} &middot; {{ session.label or 'Untitled' }} &middot;
         {{ leads|length }} lead(s) with evidence
       </p>

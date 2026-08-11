@@ -36,9 +36,27 @@ def _now_ts() -> float:
 #         time.sleep(chunk)
 #         remaining -= chunk
 
-def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=None):
-    """Sleeps for the requested number of seconds."""
-    time.sleep(seconds)
+def _cancelled(conn, session_id: int | None, cancellation_check=None) -> bool:
+    """Returns True when the analysis session has been cancelled."""
+    if cancellation_check is not None:
+        return bool(cancellation_check())
+    return conn is not None and session_id is not None and dbmod.is_session_cancelled(conn, session_id)
+
+
+def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=None) -> bool:
+    """Sleeps for the requested number of seconds, checking for cancellation.
+
+    Returns True when the sleep was cut short by a cancellation request —
+    the caller should stop scheduling new leads as soon as possible.
+    """
+    remaining = seconds
+    while remaining > 0:
+        if _cancelled(conn, session_id, cancellation_check):
+            return True
+        chunk = min(remaining, 0.5)
+        time.sleep(chunk)
+        remaining -= chunk
+    return False
 
 
 def _build_lead_metadata(lead: dict) -> dict:
@@ -305,9 +323,12 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
 
     if concurrency <= 1 or total == 1:
         for i, lead in enumerate(leads, start=1):
+            if _cancelled(conn, session_id, cancellation_check):
+                return
             for ev in _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, throttle_seconds):
                 yield from _emit(ev, i)
-            _sleep_check(throttle_seconds)
+            if _sleep_check(throttle_seconds, conn, session_id, cancellation_check):
+                return
         return
 
     with ThreadPoolExecutor(max_workers=min(concurrency, total)) as pool:
@@ -319,6 +340,13 @@ def run_pipeline(conn, throttle_seconds: float = DEFAULT_THROTTLE_SECONDS, sessi
             index = futures[future]
             for ev in future.result():
                 yield from _emit(ev, index)
+            if _cancelled(conn, session_id, cancellation_check):
+                # Cancellation between two leads: futures that have NOT
+                # started yet are cancelled (they will never run); leads
+                # already in flight keep finishing cleanly, their results
+                # are simply no longer reported.
+                pool.shutdown(wait=False, cancel_futures=True)
+                return
 
 
 def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | None = None, lead_status: str = "RESCORE_PENDING", cancellation_check=None):
@@ -335,6 +363,8 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
     started_at = _now_ts()
 
     for i, lead in enumerate(leads, start=1):
+        if _cancelled(conn, session_id, cancellation_check):
+            return
         lead_id = lead["id"]
         progress = {
             "index": i,
@@ -408,9 +438,11 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
             dbmod.update_lead_progress(conn, lead_id, status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed)
             progress.update(step="scoring", status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed, ts=_now_ts())
             yield dict(progress)
-            _sleep_check(throttle_seconds)
+            if _sleep_check(throttle_seconds, conn, session_id, cancellation_check):
+                return
             continue
 
         progress.update(step="done", status=new_status, error=None, verdict=verdict, ts=_now_ts())
         yield dict(progress)
-        _sleep_check(throttle_seconds)
+        if _sleep_check(throttle_seconds, conn, session_id, cancellation_check):
+            return
