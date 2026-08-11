@@ -358,7 +358,7 @@ def _scrape_pages_in_parallel(urls_by_category: dict[str, str], throttle_seconds
         for category, url in urls_by_category.items():
             time.sleep(throttle_seconds)
             try:
-                r = _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
+                r = _firecrawl_scrape(url, formats=["markdown", "links"], only_main_content=True, timeout=10000)
                 results[category] = (url, r)
             except Exception as e:
                 results[category] = (url, e)
@@ -368,7 +368,7 @@ def _scrape_pages_in_parallel(urls_by_category: dict[str, str], throttle_seconds
     items = list(urls_by_category.items())
 
     def _worker(url: str):
-        return _firecrawl_scrape(url, formats=["markdown"], only_main_content=True, timeout=10000)
+        return _firecrawl_scrape(url, formats=["markdown", "links"], only_main_content=True, timeout=10000)
 
     results = {}
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
@@ -727,16 +727,6 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     rows = [("homepage", homepage_url, homepage_markdown[:MAX_CONTENT_CHARS_PER_PAGE])]
     seen_fingerprints = {_content_fingerprint(homepage_markdown)}
 
-    technical_signals = extract_technical_signals(
-        raw_html=getattr(homepage_result, "raw_html", None),
-        all_links=all_links,
-        homepage_text=homepage_markdown,
-    )
-
-    github_check = None
-    if technical_signals.get("github_repo_url"):
-        github_check = check_github_repo_pattern(technical_signals["github_repo_url"])
-
     failures = 0
     duplicates = 0
     other_pages = {k: v for k, v in pages.items() if k != "homepage"}
@@ -745,6 +735,17 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     # A key with exhausted quota is ignored by the pool, the others continue.
     scraped_pages = _scrape_pages_in_parallel(other_pages, throttle_seconds=throttle_seconds)
 
+    # Correction 1 - GitHub link detection was homepage-only: the links of the
+    # /about /pricing /careers /product pages were never collected, so a GitHub
+    # link present only in a sub-page footer (a frequent case) was invisible.
+    # We now ask the "links" format for those already-scraped pages (no extra
+    # Firecrawl scrape) and merge them into all_links before
+    # extract_technical_signals(). Sub-page links go through the same "real
+    # sub-page" filter as the homepage links (_is_real_subpage); key-page
+    # discovery in _find_key_pages() keeps the homepage's same-domain filter
+    # (untouched). The external GitHub link itself is NOT domain-filtered (a
+    # lead may legitimately link to a GitHub org different from its own domain).
+    subpage_links: set[str] = set()
     for category, url in other_pages.items():
         result = scraped_pages[category]
         if isinstance(result[1], Exception):
@@ -777,15 +778,39 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
 
         rows.append((category, url, content))
 
+        # Correction 1: this sub-page's own links, same filter as the homepage
+        # links (_is_real_subpage) - merged (deduplicated) into all_links below.
+        for link in (r.links or []):
+            if _is_real_subpage(link, homepage_url):
+                subpage_links.add(link)
+
+    # De-duplication of the merged set: the same GitHub repo found in the
+    # footer of several pages must never be treated as a multiplied signal.
+    all_links = list(set(all_links) | subpage_links)
+
+    technical_signals = extract_technical_signals(
+        raw_html=getattr(homepage_result, "raw_html", None),
+        all_links=all_links,
+        homepage_text=homepage_markdown,
+    )
+
+    github_check = None
+    if technical_signals.get("github_repo_url"):
+        github_check = check_github_repo_pattern(technical_signals["github_repo_url"])
     # A SPA duplicate is not a "failure" in the same way a timeout or a
     # 404 is (the page exists, it is just useless) — but it still counts
     # as "no additional useful content" when determining the final
     # status below.
     unusable = failures + duplicates
 
-    if len(rows) == 1 and other_pages:
-        status = "FETCH_PARTIAL" if unusable < len(other_pages) else "FETCH_FAILED"
-    elif unusable > 0:
+    # Status semantics: "FETCH_FAILED" is reserved for the truly dead site
+    # (homepage itself unreachable or broken -> rows == [], handled above).
+    # As soon as the homepage content EXISTS, a sub-page problem only makes
+    # the scrape PARTIAL, never FAILED — even when every sub-page was
+    # unusable (rows == [homepage] only). Without this split, a human looking
+    # at the dashboard could not tell "site totally down" apart from "site up,
+    # sub-pages poor", two situations with very different treatments.
+    if unusable > 0:
         status = "FETCH_PARTIAL"
     else:
         status = "PARSED"
@@ -814,11 +839,15 @@ _sgai_keys_lock = threading.Lock()
 _sgai_keys_dead: set[int] = set()
 
 SEARCH_QUERY_TEMPLATES: dict[str, str] = {
-    "linkedin":     '"{company}" site:linkedin.com/in OR site:linkedin.com/company',
-    "product_hunt": '"{company}" site:producthunt.com',
-    "twitter":      '"{company}" (site:twitter.com OR site:x.com) (vibe coded OR built with AI OR built in a weekend)',
-    "github":       '"{company}" site:github.com',
-    "interviews":   '"{founder}" OR "{company}" interview (vibe coding OR built with AI OR built with Cursor OR built with v0)',
+    "linkedin":         '"{company}" site:linkedin.com/in OR site:linkedin.com/company',
+    "product_hunt":     '"{company}" site:producthunt.com',
+    "twitter":          '"{company}" (site:twitter.com OR site:x.com) (vibe coded OR built with AI OR built in a weekend)',
+    "github":           '"{company}" site:github.com',
+    "interviews":       '"{founder}" OR "{company}" interview (vibe coding OR built with AI OR built with Cursor OR built with v0)',
+    # Founder's OWN profiles: only skip when no founder name is known;
+    # used to tell technical_founder vs ai_solo_founder directly.
+    "person_linkedin":  '"{founder}" site:linkedin.com/in',
+    "person_github":    '"{founder}" site:github.com',
 }
 
 
@@ -906,14 +935,23 @@ def _sgai_search_one(source: str, query: str, limit_per_query: int) -> dict:
     return results
 
 
-def _sgai_linkedin_full_scrape(results: list) -> list:
-    """Full scrape of the best LinkedIn page found (markdown + structured JSON)."""
+def _sgai_linkedin_full_scrape(results: list, prefer_profile: bool = False) -> list:
+    """Full scrape of the best LinkedIn page found (markdown + structured JSON).
+
+    Best-effort by design: if the scrape fails, the original search snippets
+    are kept — the full scrape never fails a lead on its own.
+
+    prefer_profile=False (company sources): prefer a /company/ page.
+    prefer_profile=True (person_* sources): prefer an /in/ profile — the
+    founder's OWN page, the most direct evidence about the person.
+    """
     if not results:
         return results
     best = None
     for hit in results:
         u = hit.get("url", "").lower()
-        if "/company/" in u or "/company/" in hit.get("content", "").lower():
+        needle = "/in/" if prefer_profile else "/company/"
+        if needle in u or needle in hit.get("content", "").lower():
             best = hit
             break
     if not best:
@@ -925,7 +963,13 @@ def _sgai_linkedin_full_scrape(results: list) -> list:
             "scrape",
             payload={
                 "url": lk_url,
-                "formats": [{"type": "markdown"}, {"type": "json", "prompt": "Extract company name, description, headquarters, industry, company size, number of employees, specialties, website, and founders"}],
+                "formats": [{"type": "markdown"}, {"type": "json", "prompt": (
+                    "Extract company name, description, headquarters, industry, company size, "
+                    "number of employees, specialties, website, and founders"
+                    if not prefer_profile else
+                    "Extract the person's name, current roles and company, work experience, "
+                    "education, skills, and whether they are a founder, CTO, or engineer"
+                )}],
             },
             timeout=45,
         )
@@ -953,8 +997,9 @@ def search_additional_evidence(
     throttle_seconds: float = 1.0,
 ) -> dict:
     """
-    Queries ScrapeGraphAI Search for each targeted source (LinkedIn,
-    Product Hunt, Twitter/X, GitHub, interviews). Returns raw results
+    Queries ScrapeGraphAI Search for each targeted source (LinkedIn —
+    company page AND the founder's own profile (person_*) —, Product Hunt,
+    Twitter/X, GitHub, interviews). Returns raw results
     with inline content: the scoring LLM can then quote passages
     verbatim in evidence_quotes.
 
@@ -1000,8 +1045,11 @@ def search_additional_evidence(
                 source = futures[future]
                 results_by_source[source] = future.result()
 
-    # LinkedIn: full scrape of the best URL found
-    if "linkedin" in results_by_source and isinstance(results_by_source["linkedin"], list):
+    # LinkedIn: full scrape of the best URL found (company page for the
+    # "linkedin" source, founder profile for "person_linkedin")
+    if isinstance(results_by_source.get("linkedin"), list):
         results_by_source["linkedin"] = _sgai_linkedin_full_scrape(results_by_source["linkedin"])
+    if isinstance(results_by_source.get("person_linkedin"), list):
+        results_by_source["person_linkedin"] = _sgai_linkedin_full_scrape(results_by_source["person_linkedin"], prefer_profile=True)
 
     return results_by_source

@@ -14,6 +14,8 @@ import db as dbmod
 import scraper
 import scorer
 
+from constants import CONFIDENCE_THRESHOLD
+
 DEFAULT_THROTTLE_SECONDS = 15  # Firecrawl free tier ~10 req/min
 DEFAULT_CONCURRENCY = int(os.getenv("PIPELINE_CONCURRENCY", "3") or "3")
 
@@ -52,9 +54,13 @@ def _build_lead_metadata(lead: dict) -> dict:
 
 
 def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
-    """Runs a web search (LinkedIn, Product Hunt, etc.), persists each source in
+    """Runs the web search escalation (LinkedIn, Product Hunt, GitHub,
+    founder person_* profiles, etc.), persists each source in
     the DB (lead_search_evidence), and returns the results as a dict
     {source: [hits]} — SEPARATE from the scraped site content.
+
+    Only called by _process_lead when pass 1 was ambiguous (see the caller);
+    a clear-cut lead never pays the search cost.
 
     Before: hits were merged directly into `rows` (loss of title/url, and no
     distinction of site vs web reliability in the prompt).
@@ -104,8 +110,14 @@ def _load_persisted_web_evidence(conn, lead_id: int) -> dict:
 
 
 def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, throttle_seconds):
-    """Processes a SINGLE lead end to end (Firecrawl scrape + SG web search
-    + scoring) in its own DB connection (taken from the shared pool).
+    """Processes a SINGLE lead end to end (Firecrawl scrape + scoring) in its
+    own DB connection (taken from the shared pool).
+
+    Scoring runs in two passes, separated by a CONDITIONAL web search
+    escalation (FR-3): pass 1 scores the scraped site content alone (no SGAI
+    credits spent); pass 2 re-scores with the web evidence (company + founder
+    person_* search) ONLY when pass 1 was ambiguous (confidence < 0.7 /
+    needs_human_review).
 
     Returns the list of progress dicts for the lead — same format as the
     yields of the old sequential run_pipeline. Used as-is in sequential
@@ -164,12 +176,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
 
         events.append(_base({"step": "scraping_done", "status": scrape_result["status"], "error": scrape_result.get("error"), "scrape_seconds": scrape_elapsed}))
 
-        # --- Web Search (integrated into Phase 1) ---
-        # Fetches web evidence (LinkedIn, Product Hunt, GitHub, etc.)
-        # SEPARATELY from the scraped site content.
-        web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
-
-        # --- Scoring ---
+        # --- Scoring, pass 1: site content only, NO web search yet ---
         # Groups the scraper's deterministic signals (technical_signals +
         # github_check) into a single block for the prompt.
         deterministic_signals = None
@@ -177,19 +184,63 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             deterministic_signals = dict(scrape_result["technical_signals"])
             deterministic_signals["github_check"] = scrape_result.get("github_check")
 
-        try:
-            score_t0 = _now_ts()
-            lead_metadata = _build_lead_metadata(lead)
-            verdict = scorer.score_content(
+        lead_metadata = _build_lead_metadata(lead)
+
+        # site_content_missing: the official site produced no usable content.
+        # Based on the ACTUAL rows content, not on the scraper's overall
+        # status: scraper.scrape_website() returns "FETCH_FAILED" also when the
+        # homepage was scraped but every sub-page was unusable (scraper.py:
+        # len(rows)==1 and unusable >= len(other_pages)) — real site content
+        # EXISTS then, and the flag must stay False. Previously the flag was
+        # True in that case, so the verdict wrongly said "site_content_missing"
+        # while lead_content held the scraped text.
+        site_content_missing = not any(
+            (content or "").strip() for _, _, content in scrape_result["rows"]
+        )
+
+        def _score(web_evidence):
+            return scorer.score_content(
                 scrape_result["rows"],
                 deterministic_signals=deterministic_signals,
                 lead_metadata=lead_metadata,
                 web_search_evidence=web_evidence,
                 scoring_criteria=scoring_criteria,
                 scoring_criteria_custom=scoring_criteria_custom,
+                site_content_missing=site_content_missing,
             )
-            score_elapsed = _now_ts() - score_t0
 
+        score_t0 = _now_ts()
+        try:
+            verdict = _score(None)
+        except Exception as e:
+            score_elapsed = _now_ts() - score_t0
+            dbmod.update_lead_progress(conn, lead_id, status="SCORE_FAILED", error=str(e), score_seconds=score_elapsed)
+            events.append(_base({"step": "scoring", "status": "SCORE_FAILED", "error": str(e), "score_seconds": score_elapsed}))
+            return events
+
+        # --- Web search escalation (conditional, FR-3) ---
+        # The web search (company sources + founder person_*) ONLY runs when
+        # pass 1 was ambiguous (confidence < 0.7 => needs_human_review).
+        # Clear-cut leads (too_big, wrong_field, confident verdicts) never pay
+        # the SGAI credit cost — "quality, not quantity": credits are saved
+        # on leads that would be rejected anyway.
+        web_evidence = {}
+        if verdict.get("needs_human_review") or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD:
+            events.append(_base({"step": "web_search", "status": None, "error": None}))
+            web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
+            if web_evidence:
+                try:
+                    verdict = _score(web_evidence)
+                except Exception as e:
+                    # The escalation was bonus evidence — keep the pass-1
+                    # verdict (already flagged for human review) rather than
+                    # failing a lead that was already scored.
+                    note = f"web_escalation_second_pass_failed: {e}"
+                    existing = verdict.get("disqualify_reason")
+                    verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+        score_elapsed = _now_ts() - score_t0
+
+        try:
             # domain_mismatch safeguard: if the email and the scraped site do
             # not share the same domain, the verdict may concern the WRONG
             # company. In that case we never trust the model's confidence —
@@ -312,6 +363,13 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
         if signals_row:
             deterministic_signals = dict(signals_row)
 
+        # Same structural safeguard as the main pass: a rescore without any
+        # usable site content (dict rows — db.get_lead_content) keeps
+        # needs_human_review forced by scorer._apply_site_missing_guard.
+        site_content_missing = not any(
+            (row.get("content") or "").strip() for row in existing_rows
+        )
+
         # Reloads the web evidence already collected on the first pass —
         # without this, a rescore silently lost everything the web search had
         # found (fixed bug: lead_search_evidence exists in the DB but was
@@ -328,6 +386,7 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
                 web_search_evidence=web_evidence,
                 scoring_criteria=scoring_criteria,
                 scoring_criteria_custom=scoring_criteria_custom,
+                site_content_missing=site_content_missing,
             )
             score_elapsed = _now_ts() - score_t0
 
