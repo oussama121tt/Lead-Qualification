@@ -770,7 +770,8 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
         seen_fingerprints.add(fingerprint)
 
         if category == "careers":
-            content = _format_signal_as_text("Careers", extract_careers_signal(raw_content))
+            careers_signal = extract_careers_signal(raw_content)
+            content = _format_signal_as_text("Careers", careers_signal)
         elif category == "pricing":
             content = _format_signal_as_text("Pricing", extract_pricing_signal(raw_content))
         else:
@@ -793,6 +794,12 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
         all_links=all_links,
         homepage_text=homepage_markdown,
     )
+    # Expose the deterministic careers hiring signal as a first-class
+    # technical signal (same bool extract_careers_signal already computes
+    # internally) — pipeline.py gates the web escalation on it without
+    # re-parsing the formatted text.
+    if "careers_signal" in locals() and isinstance(careers_signal, dict) and "hiring_technical" in careers_signal:
+        technical_signals["hiring_technical"] = bool(careers_signal.get("hiring_technical"))
 
     github_check = None
     if technical_signals.get("github_repo_url"):

@@ -237,13 +237,26 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             return events
 
         # --- Web search escalation (conditional, FR-3) ---
-        # The web search (company sources + founder person_*) ONLY runs when
-        # pass 1 was ambiguous (confidence < 0.7 => needs_human_review).
-        # Clear-cut leads (too_big, wrong_field, confident verdicts) never pay
-        # the SGAI credit cost — "quality, not quantity": credits are saved
-        # on leads that would be rejected anyway.
+        # The web search (company sources + founder person_*) runs when
+        # pass 1 was ambiguous (confidence < 0.7 => needs_human_review),
+        # OR for confident small_agency_scaling leads (segment by the LLM,
+        # hiring_technical by the deterministic careers signal) — the
+        # high-value confident case that was previously never verified.
+        # Clear-cut leads (too_big, wrong_field, confident non-agency
+        # verdicts) never pay the SGAI credit cost — "quality, not
+        # quantity": credits are saved on leads that would be rejected
+        # anyway.
         web_evidence = {}
-        if verdict.get("needs_human_review") or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD:
+        should_escalate_web = (
+            verdict.get("needs_human_review")
+            or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD
+            or (
+                verdict.get("segment") == "small_agency_scaling"
+                and bool(deterministic_signals and deterministic_signals.get("hiring_technical"))
+                and verdict.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD
+            )
+        )
+        if should_escalate_web:
             events.append(_base({"step": "web_search", "status": None, "error": None}))
             web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
             if web_evidence:

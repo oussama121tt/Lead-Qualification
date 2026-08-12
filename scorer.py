@@ -141,10 +141,33 @@ it strictly, never treat two signals of different strength as equivalents:
   toward "unclear" (insufficient evidence) or "technical_founder" depending on the
   other signals - never ai_solo_founder on its own.
 
+FIRST-PARTY VS. CLIENT CONTENT — CRITICAL DISTINCTION:
+Scraped site content often mixes two different voices: the company describing ITSELF,
+and the company describing ITS OWN CLIENTS (testimonials, case studies, portfolio
+items, "what we built for X"). This is especially common for agencies/studios
+(small_agency_scaling), whose entire site is often built around client success
+stories.
+- built_with_ai_signals, technical_signals, and pain_signals must describe the
+  ANALYZED COMPANY ITSELF — never a client mentioned in a testimonial, case study,
+  or portfolio entry.
+- A phrase like "we rescue broken products" or "our client's MVP was falling apart"
+  describes a SERVICE OFFERED TO OTHERS, not a problem the analyzed company itself
+  has. Do not extract this as a pain_signal for the analyzed company.
+- A testimonial quote from a named client ("I built my MVP with vibe coding...") is
+  evidence about THAT CLIENT, not about the site's owner — never attribute it to the
+  company being scored.
+- Before extracting any signal, ask: "is this text describing the company I am
+  scoring, or a business it works with / has worked with?" If it's the latter,
+  discard it for built_with_ai_signals/technical_signals/pain_signals — it can still
+  inform company_stage or segment (e.g. many detailed case studies suggest an
+  established agency), but must not be cited as if it were first-party evidence
+  about the analyzed company.
+
 RULES:
 1. Every signal cited in built_with_ai_signals/technical_signals/pain_signals MUST have an
    exact citation in evidence_quotes (except signals already verified in
-   deterministic_signals, which you can cite by their field name).
+   deterministic_signals, which you can cite by their field name), AND must pass the
+   first-party check above — never a quote describing a client or case study subject.
 2. Personalization hooks MUST be SITUATIONAL (e.g. "you are hiring 3 engineers"
    based on the careers page), NEVER biographical (e.g. never where someone studied, their
    age, their personal background).

@@ -8,3 +8,6 @@ __pycache__/
 *.csv
 .venv/
 venv/
+credentials.json
+token.json
+.code_verifier

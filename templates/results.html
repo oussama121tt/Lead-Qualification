@@ -122,6 +122,27 @@
     .flash-stack .alert-info { background: rgba(0, 221, 235, 0.12); color: var(--cyan); }
 
     .empty-state-compact { padding: 16px; color: var(--text-muted); text-align: center; font-size: 0.9rem; }
+
+    .badge-fw {
+      display: inline-block; min-width: 92px; text-align: center;
+      font-size: 12px; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 600;
+    }
+    .badge-success { background: var(--success-bg); color: var(--success); }
+    .badge-error { background: var(--error-bg); color: var(--error); }
+    .badge-warning { background: var(--warning-bg); color: var(--warning); }
+    .email-check { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+    .email-actions {
+      position: sticky; bottom: 16px; display: flex; justify-content: flex-end;
+      padding: 12px 16px; margin-top: 1rem;
+      background: var(--surface-1); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+    }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+    .list-select-row {
+      display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+      background: var(--surface-2); border-bottom: 1px solid var(--border);
+      font-size: 13px; color: var(--text-secondary);
+    }
   </style>
 </head>
 <body>
@@ -179,12 +200,20 @@
       </div>
     </div>
 
+    <form id="emailForm" action="{{ url_for('send_emails', session_id=session.id) }}" method="post"></form>
+
     <!-- Ready to approve -->
     <h3 class="section-title stat-success">Ready to approve</h3>
     {% if categories.approved %}
     <div class="list-card">
+      <div class="list-select-row">
+        <input type="checkbox" class="email-check email-master" id="selectAllEmailApproved" onchange="toggleEmailGroup(this, 'email-approved')" aria-label="Select all for emails">
+        <span class="list-row-main">Select all</span>
+        <span class="offer-cell">Email</span>
+      </div>
       {% for lead in categories.approved %}
       <div class="list-row">
+        <input type="checkbox" form="emailForm" class="email-check cb-email cb-email-approved" name="lead_ids" value="{{ lead.id }}" aria-label="Select {{ lead.company_name or '' }}">
         <div class="list-row-main">
           <p class="list-row-name">{{ lead.company_name or '--' }}</p>
           <p class="list-row-sub">
@@ -194,6 +223,13 @@
         <span class="tag-pill">{{ lead.segment|map_segment }}</span>
         <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
         <span class="offer-cell">{{ lead.recommended_offer|map_offer }}</span>
+        {% if lead.email_status == 'sent' %}
+        <span class="badge badge-fw badge-success" title="Sent with {{ lead.email_provider or '' }}">Sent</span>
+        {% elif lead.email_status == 'failed' %}
+        <span class="badge badge-fw badge-error" title="{{ lead.email_error or '' }}">Failed</span>
+        {% elif lead.email_status %}
+        <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
+        {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
         <button class="btn-icon" type="button" aria-label="Approve {{ lead.company_name or '' }}"><i class="ti ti-check" style="font-size:15px;" aria-hidden="true"></i></button>
         <button class="btn-icon" type="button" aria-label="Reject {{ lead.company_name or '' }}"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>
@@ -208,8 +244,14 @@
     <h3 class="section-title stat-warning">To review</h3>
     {% if categories.to_review %}
     <div class="list-card">
+      <div class="list-select-row">
+        <input type="checkbox" class="email-check email-master" id="selectAllEmailToReview" onchange="toggleEmailGroup(this, 'email-to-review')" aria-label="Select all for emails">
+        <span class="list-row-main">Select all</span>
+        <span class="offer-cell">Email</span>
+      </div>
       {% for lead in categories.to_review %}
       <div class="list-row">
+        <input type="checkbox" form="emailForm" class="email-check cb-email cb-email-to-review" name="lead_ids" value="{{ lead.id }}" aria-label="Select {{ lead.company_name or '' }}">
         <div class="list-row-main">
           <p class="list-row-name">{{ lead.company_name or '--' }}</p>
           <p class="list-row-sub">
@@ -220,6 +262,13 @@
         <span class="conf-pct {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(lead.confidence * 100) if lead.confidence is not none else '--' }}%</span>
         {% set reason_text = lead.disqualify_reason or lead.status|map_status_label %}
         <span class="reason-cell" title="{{ reason_text }}">{{ reason_text|truncate(160, killwords=False, end='…') }}</span>
+        {% if lead.email_status == 'sent' %}
+        <span class="badge badge-fw badge-success" title="Sent with {{ lead.email_provider or '' }}">Sent</span>
+        {% elif lead.email_status == 'failed' %}
+        <span class="badge badge-fw badge-error" title="{{ lead.email_error or '' }}">Failed</span>
+        {% elif lead.email_status %}
+        <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
+        {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
         <button class="btn-outline btn-small" type="button">Review</button>
       </div>
@@ -300,8 +349,47 @@
     </details>
     {% endif %}
 
+    <div class="email-actions">
+      <button class="btn-primary" type="submit" form="emailForm" id="sendEmailsBtn" disabled>
+        Send selected emails (<span id="selectedCount">0</span>)
+      </button>
+    </div>
+
   </div>
   <script>
+    function toggleEmailGroup(master, group) {
+      var checkboxes = document.querySelectorAll('.cb-' + group);
+      for (var i = 0; i < checkboxes.length; i++) {
+        checkboxes[i].checked = master.checked;
+      }
+      updateEmailCount();
+    }
+
+    function updateEmailCount() {
+      var n = document.querySelectorAll('.cb-email:checked').length;
+      var el = document.getElementById('selectedCount');
+      if (el) el.textContent = n;
+      var btn = document.getElementById('sendEmailsBtn');
+      if (btn) btn.disabled = (n === 0);
+    }
+
+    document.addEventListener('change', function(e) {
+      if (e.target && e.target.classList && e.target.classList.contains('cb-email')) {
+        updateEmailCount();
+      }
+    });
+
+    document.getElementById('emailForm').addEventListener('submit', function(e) {
+      var n = document.querySelectorAll('.cb-email:checked').length;
+      if (n === 0) {
+        e.preventDefault();
+        return;
+      }
+      if (!confirm('Send ' + n + ' personalized email(s)?')) {
+        e.preventDefault();
+      }
+    });
+
     function toggleAllIn(master, group) {
       var sel = '.cb-' + group;
       var checkboxes = document.querySelectorAll(sel);

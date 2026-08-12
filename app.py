@@ -709,6 +709,78 @@ def cancel_session(session_id: int):
     return redirect(url_for("progress_view", session_id=session_id))
 
 
+def _homepage_content(conn, lead_id: int) -> str:
+    """Returns the first non-empty scraped page content for the lead (the homepage)."""
+    for row in dbmod.get_lead_content(conn, lead_id):
+        if (row.get("content") or "").strip():
+            return row["content"]
+    return ""
+
+
+@app.route("/session/<int:session_id>/send_emails", methods=["POST"])
+def send_emails(session_id: int):
+    """Generates and sends personalized outreach emails for the selected leads.
+
+    Each lead is handled independently in its own try/except: a failure on
+    one lead never blocks the following ones. The explicit lead selection
+    IS the human validation step — nothing is ever sent automatically.
+    """
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+
+    lead_ids = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
+    if not lead_ids:
+        flash("Select at least one lead to email.", "warning")
+        return redirect(url_for("results_view", session_id=session_id))
+
+    import emailer
+    from gmail_sender import GmailNotConfigured, THROTTLE_SECONDS, get_credentials, send_email
+
+    try:
+        get_credentials()
+    except GmailNotConfigured as e:
+        flash(f"{e} See setup instructions in setup_gmail.py.", "error")
+        return redirect(url_for("results_view", session_id=session_id))
+
+    sent = failed = skipped = 0
+    with open_db() as conn:
+        scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
+        for i, lead_id in enumerate(lead_ids):
+            lead = scores.get(lead_id)
+            if lead is None:
+                failed += 1
+                continue
+            if lead.get("email_status") == "sent":
+                skipped += 1
+                continue
+            try:
+                email = emailer.generate_email_for_lead(lead, _homepage_content(conn, lead_id))
+                send_email(lead.get("email") or "", email["subject"], email["body"])
+                dbmod.update_lead_email_status(
+                    conn,
+                    lead_id,
+                    subject=email["subject"],
+                    body=email["body"],
+                    status="sent",
+                    provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
+                    sent_at=_db_now(),
+                )
+                sent += 1
+            except Exception as e:
+                failed += 1
+                dbmod.update_lead_email_status(conn, lead_id, status="failed", error=str(e))
+            if i < len(lead_ids) - 1:
+                time.sleep(THROTTLE_SECONDS)
+
+    message = f"{sent} email(s) sent, {failed} failed, {skipped} already sent (skipped)."
+    if failed:
+        flash(message, "warning")
+    else:
+        flash(message, "success")
+    return redirect(url_for("results_view", session_id=session_id))
+
+
 def _categorize_leads(scores_data: list) -> dict:
     """Distributes scored leads into the 5 categories.
 

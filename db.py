@@ -306,6 +306,12 @@ def get_analysis_session(conn, session_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def get_lead(conn, lead_id: int) -> dict | None:
+    """Fetches a single lead by id."""
+    row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def delete_analysis_session(conn, session_id: int) -> None:
     """Deletes a session and all of its associated data."""
     conn.execute("DELETE FROM lead_search_evidence WHERE lead_id IN (SELECT id FROM leads WHERE session_id = ?)", (session_id,))
@@ -760,6 +766,17 @@ def init_db(conn) -> None:
     ]:
         _add_column(conn, "lead_technical_signals", col, coltype)
 
+    # Outreach email columns (generated and sent from the results page)
+    for col, coltype in [
+        ("email_subject", "TEXT"),
+        ("email_body", "TEXT"),
+        ("email_status", "TEXT"),
+        ("email_provider", "TEXT"),
+        ("email_error", "TEXT"),
+        ("email_sent_at", "TIMESTAMPTZ"),
+    ]:
+        _add_column(conn, "leads", col, coltype)
+
     _ensure_sequence_housekeeping(conn)
     conn.commit()
 
@@ -936,6 +953,43 @@ def update_leads_status(conn, lead_ids: list, status: str, error: str | None = N
         "UPDATE leads SET status = ?, last_error = ? WHERE id = ?",
         [(status, error, lead_id) for lead_id in lead_ids],
     )
+    conn.commit()
+
+
+def update_lead_email_status(
+    conn,
+    lead_id: int,
+    subject: str | None = None,
+    body: str | None = None,
+    status: str | None = None,
+    provider: str | None = None,
+    error: str | None = None,
+    sent_at: str | None = None,
+) -> None:
+    """Records the generated content / sending state of a lead's outreach email."""
+    updates, params = [], []
+    if subject is not None:
+        updates.append("email_subject = ?")
+        params.append(subject)
+    if body is not None:
+        updates.append("email_body = ?")
+        params.append(body)
+    if status is not None:
+        updates.append("email_status = ?")
+        params.append(status)
+    if provider is not None:
+        updates.append("email_provider = ?")
+        params.append(provider)
+    if error is not None:
+        updates.append("email_error = ?")
+        params.append(error)
+    if sent_at is not None:
+        updates.append("email_sent_at = ?")
+        params.append(sent_at)
+    if not updates:
+        return
+    params.append(lead_id)
+    conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", params)
     conn.commit()
 
 

@@ -6,3 +6,6 @@ python-dotenv
 flask
 requests
 psycopg2-binary
+groq
+google-api-python-client
+google-auth-oauthlib

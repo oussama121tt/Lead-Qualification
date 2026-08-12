@@ -438,6 +438,7 @@ Principe (`dedup.py:1-12`) : **ne supprime jamais**, ne fait que poser le flag `
 | `ai_style_phrases_found` + `ai_style_phrase_density` | comptage sur le texte visible homepage ; ≥4 → "high", ≥2 → "medium", ==1 → "low", sinon "none" (scraper.py:622-631) |
 | `ai_authorship_disclosures_found` | (scraper.py:633-635) |
 | `github_repo_url` | premier lien contenant "github.com" hors /issues et /pull — **volontairement non filtré par domaine** (scraper.py:637-643) — collecté sur homepage ET sous-pages (Correction 1) |
+| `hiring_technical` | booléen du signal careers déterministe (`extract_careers_signal`, scraper.py:795-801), ajouté par `scrape_website` aux `technical_signals` — **lu par pipeline.py comme condition du déclencheur d'escalade web** (pipeline.py:255), à ne pas casser |
 
 Ces signaux sont persistés dans `lead_technical_signals` et passés au scorer (hiérarchie de fiabilité en [§13](#13-scoring-groq)).
 
@@ -522,14 +523,14 @@ Signature : `rows, deterministic_signals=None, lead_metadata=None, web_search_ev
 - `DEFAULT_THROTTLE_SECONDS = 15` — « Firecrawl free tier ~10 req/min » (pipeline.py:19).
 - `DEFAULT_CONCURRENCY = int(os.getenv("PIPELINE_CONCURRENCY", "3"))` (pipeline.py:20).
 
-### 14.2 `_process_lead(...)` (pipeline.py:112-274) — un lead, étape par étape
+### 14.2 `_process_lead(...)` (pipeline.py:130-292) — un lead, étape par étape
 
 1. **Connexion DB dédiée** par lead (pipeline.py:131) ; retourne des événements de progression (`_base`, pipeline.py:136-145).
 2. **Scraping** : `scraper.scrape_website(website, throttle_seconds=1.0)` (pipeline.py:153) ; exception → `FETCH_FAILED` + scrape_seconds (pipeline.py:154-159) ; sinon `update_lead_progress` avec `scrape_result["status"]` (pipeline.py:162), `save_lead_content` si rows (pipeline.py:163-164), `save_lead_technical_signals` (pipeline.py:169-175).
 3. **Pass 1 (site uniquement)** : `deterministic_signals` = technical_signals + github_check (pipeline.py:182-185) ; **`site_content_missing = not any((content or "").strip() for _, _, content in scrape_result["rows"])`** — basé sur le contenu RÉEL des rows, pas sur le statut (fix `cecc9b3`, pipeline.py:189-199) ; `_score(web_evidence={})` (pipeline.py:201-210) ; exception pass 1 → SCORE_FAILED (pipeline.py:214-219).
-4. **Escalade web conditionnelle (FR-3)** : si `needs_human_review` OU `confidence < 0.7` → `_fetch_web_search_evidence` (appel `search_additional_evidence(company_name, founder_name, limit_per_query=2)`, persistance via `save_search_evidence`) puis second `_score(web_evidence)` (pipeline.py:227-233) ; échec pass 2 → on garde le verdict pass 1 avec note `web_escalation_second_pass_failed: …` (pipeline.py:234-240).
+4. **Escalade web conditionnelle (FR-3, rule additive)** : si `needs_human_review` OU `confidence < 0.7` OU (`segment == "small_agency_scaling"` ET `technical_signals.hiring_technical == True` ET `confidence >= 0.7`) → `_fetch_web_search_evidence` (appel `search_additional_evidence(company_name, founder_name, limit_per_query=2)`, persistance via `save_search_evidence`) puis second `_score(web_evidence)` (pipeline.py:239-272) ; échec pass 2 → on garde le verdict pass 1 avec note `web_escalation_second_pass_failed: …` (pipeline.py:263-271). Le 3e bloc (agence confiante à forte valeur) s'AJOUTE au filet existant, il ne le remplace pas ; `hiring_technical` vient du signal déterministe careers (scraper.py:797-801), jamais du verdict LLM.
 5. **Sauvegarde** : garde `domain_mismatch` (→ needs_human_review forcé + note, pipeline.py:248-256) ; `save_lead_score` ; `new_status = "LOW_CONFIDENCE" if needs_human_review else "SCORED"` (pipeline.py:258-259) ; `update_lead_progress(status, error=scrape_err)` — un statut écrit toujours last_error (None l'efface, db.py:968-999) ; exception → SCORE_FAILED (pipeline.py:262-266).
-6. **Événements émis** : `scraping`, `scraping_done`, `web_search`, `done` (pipeline.py:148, 177, 229, 268).
+6. **Événements émis** : `scraping`, `scraping_done`, `web_search`, `done` (pipeline.py:166, 195, 260, 300).
 7. **Isolation des erreurs** : try/except fatal global + `finally: conn.close()` (pipeline.py:270-274) — un lead qui plante ne fait pas échouer les autres.
 
 ### 14.3 `run_pipeline(...)` (pipeline.py:277-321)
@@ -730,6 +731,7 @@ pandas, rapidfuzz, firecrawl-py, openai, python-dotenv, flask, requests, psycopg
 
 ## 22. Notes de cohérence & pièges connus
 
+- **Décision réglée (implémentée) — déclencheur d'escalade web pour `small_agency_scaling`** : la question « élargir la recherche web aux agences confiantes » (posée au moment de la validation du filet `confidence < 0.7`) est TRANCHÉE et codée : le 3e bloc du déclencheur (pipeline.py:250-258) ajoute `segment == small_agency_scaling ET hiring_technical ET confidence >= 0.7` AU filet existant, sans le remplacer. Verrouillé par test dédié (test_web_escalation_trigger.py) couvrant les deux branches du OR + les négatifs. Ne pas « simplifier » ce déclencheur en un OU exclusif.
 - **Docstring erronée** : `app.py:4` mentionne « Claude scoring » alors que le scoring utilise Groq (`llama-3.3-70b-versatile`) — à corriger.
 - **README cassé** : bloc ```bash non fermé dans la section Installation (toute la suite du rendu Markdown est affectée).
 - **Vestiges `__pycache__`** : `pipeline_phase2.cpython-311.pyc` et `test_stop_analysis.cpython-311.pyc` sans source correspondante (fichiers supprimés).
