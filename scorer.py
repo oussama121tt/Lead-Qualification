@@ -163,6 +163,32 @@ stories.
   established agency), but must not be cited as if it were first-party evidence
   about the analyzed company.
 
+STRUCTURAL DETECTION — do not rely on specific wording, rely on these PATTERNS
+(they recur across virtually every agency/services site, regardless of the exact
+vocabulary used):
+1. Markdown blockquotes (lines starting with ">") are almost always testimonials —
+   treat their content as evidence about the QUOTED PERSON/COMPANY, never about the
+   site owner, regardless of what the quote says or who appears to be "speaking".
+2. Any block immediately followed or preceded by a name + title + company line
+   (e.g. "Jane D. — Founder, Acme") is an attributed quote. The site owner is
+   never the subject of an attributed quote's content, even if grammatically
+   first-person ("I built...", "We were struggling...").
+3. Sections under headers containing words like "Testimonial", "Case Stud*",
+   "Portfolio", "What We've Built", "Client*", "What Founders/Clients Say",
+   "Success Stor*", "Our Work" describe THIRD PARTIES (past or prospective
+   clients), never the site owner.
+4. A narrative in past tense introducing an unnamed or named third party ("A
+   founder came to us with...", "A client was losing...", "One of our clients...")
+   is a case study about that third party — the problem described belongs to
+   them, not to the site owner, even when the same sentence later describes what
+   the site owner did about it.
+5. Present-tense capability statements ("We rescue X", "We fix X", "We help
+   companies that struggle with X") describe a SERVICE OFFERED, not a problem the
+   site owner has — this holds regardless of which specific problem X is named.
+Apply these five structural patterns to ANY site, not just ones matching a
+specific vocabulary — the test is the STRUCTURE (quotation, attribution, section
+header, narrative tense, capability framing), never a fixed list of phrases.
+
 RULES:
 1. Every signal cited in built_with_ai_signals/technical_signals/pain_signals MUST have an
    exact citation in evidence_quotes (except signals already verified in
@@ -170,7 +196,14 @@ RULES:
    first-party check above — never a quote describing a client or case study subject.
 2. Personalization hooks MUST be SITUATIONAL (e.g. "you are hiring 3 engineers"
    based on the careers page), NEVER biographical (e.g. never where someone studied, their
-   age, their personal background).
+   age, their personal background). Content wrapped in [ATTRIBUTED QUOTE ...] or
+   [THIRD-PARTY CONTENT SECTION ...] markers (added upstream by the scraper) has been
+   structurally flagged as a likely testimonial/case-study/portfolio block: check the
+   attributed name/company against lead_metadata — if it matches the analyzed company's
+   own founder/name, treat the content as first-party as usual; if it names someone else
+   (a different founder, a different company), it is third-party and must be excluded from
+   built_with_ai_signals/technical_signals/pain_signals exactly like any other client
+   testimonial. Never surface the literal marker text itself in evidence_quotes or hooks.
 3. If you are not sure (confidence < 0.7), set needs_human_review: true.
 4. Use the FULL confidence spectrum (0.0 to 1.0): be candid when the signal is weak
    (0.3-0.5) and assertive when the evidence is strong (0.9+). Avoid systematically using 0.8.
@@ -194,6 +227,24 @@ RULES:
    d) Agency/studio in the scaling phase? → small_agency_scaling.
    e) Size/maturity far above the target persona? → too_big.
    f) Unrelated sector? → wrong_field.
+10. Every personalization_hook MUST be an object {"hook": "...", "based_on": "..."} where
+    "based_on" is an EXACT, word-for-word quote copied from the content provided (not a
+    paraphrase) that the hook is built from. A hook without a verbatim "based_on" citation
+    will be programmatically discarded, regardless of how well-written it is — this is
+    enforced in code, not just a style preference. Test before writing a hook: could you
+    point to the exact sentence it comes from? If not, do not generate it.
+11. NEVER invert a capability statement into an assumed pain. If the site says "we do
+    X for our clients" (a service offered), that does NOT mean the analyzed company
+    itself needs X or has the problem X solves — that would be projecting the
+    company's own marketing pitch back onto itself. A personalization_hook may only
+    claim the analyzed company "has" a problem, a need, or an experience if "based_on"
+    is a quote that directly states this about the company itself (e.g. its own careers
+    page, its own tech stack, its own product state) — never derived by flipping a
+    description of what it sells or does for others. Note: even a well-formed "based_on"
+    citation gets discarded downstream if it falls inside a testimonial/case-study block
+    describing someone other than the analyzed company (see the [ATTRIBUTED QUOTE]/
+    [THIRD-PARTY CONTENT SECTION] markers in the content) — so citing such a block does
+    not satisfy rule 10 either.
 
 Respond ONLY in JSON following this schema:
 {
@@ -205,7 +256,7 @@ Respond ONLY in JSON following this schema:
   "pain_signals": [],
   "evidence_quotes": [],
   "recommended_offer": "ai_audit | general_audit | pipeline | none",
-  "personalization_hooks": [],
+  "personalization_hooks": [{"hook": "...", "based_on": "exact verbatim quote from the content"}],
   "disqualify_reason": null,
   "needs_human_review": false
 }"""
@@ -432,39 +483,197 @@ def _normalize_for_grounding(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
-def _verify_evidence_grounding(verdict: dict, source_text: str) -> dict:
-    """Checks that each evidence_quote appears word for word in the source text."""
+# Same tag names as scraper.py's _tag_attributed_content — kept in sync
+# manually since scorer.py has no import dependency on scraper.py by design
+# (scoring must be testable/runnable without the scraping stack).
+_THIRD_PARTY_BLOCK_RE = re.compile(
+    r"\[(?:ATTRIBUTED QUOTE[^\]]*|THIRD-PARTY CONTENT SECTION[^\]]*)\](.*?)"
+    r"\[/(?:ATTRIBUTED QUOTE|THIRD-PARTY CONTENT SECTION)\]",
+    re.DOTALL,
+)
+
+
+def _third_party_spans(source_text: str, lead_metadata: dict | None) -> list[tuple[int, int]]:
+    """Character spans (in the ORIGINAL, non-normalized source_text) that are
+    structurally tagged as testimonial/case-study/portfolio content (by
+    scraper.py's _tag_attributed_content) AND are not attributed to the lead
+    itself.
+
+    Two block shapes are tagged, with different attribution evidence:
+
+    - [ATTRIBUTED QUOTE ...] blockquotes: the attribution is the trailing
+      name/title/company line(s) that scraper.py pulls into the tag after the
+      quoted lines (e.g. "— Oussama, Founder, RuyaTech"). The lead's own
+      name/company must appear in that ATTRIBUTION, not merely inside the
+      quoted text: client testimonials frequently mention the founder's
+      first name in the quote body ("Oussama launched it in two weeks")
+      while being attributed to someone else — those stay excluded.
+
+    - [THIRD-PARTY CONTENT SECTION ...] heading sections: attribution
+      evidence is limited to the HEADING and the first content line. A
+      section opened by "## Testimonials"/"## Success stories"/"## Our work"
+      is third-party by structure; a founder name or company mention
+      LATER in the section (quote bodies, closing boilerplate like
+      "founded by Oussama") must NOT rescue it. Only a section that
+      names/discloses the lead up front (heading + first line,
+      e.g. "## What we've built by RuyaTech") is treated as the lead's own.
+
+    This is a code-level filter: it does not depend on the LLM having
+    correctly judged the block, so it still catches a hallucinated
+    first-party attribution even if the model's own reasoning missed it.
+    """
+    spans: list[tuple[int, int]] = []
+    own_names = set()
+    if lead_metadata:
+        for key in ("first_name", "last_name", "company_name"):
+            v = (lead_metadata.get(key) or "").strip().lower()
+            if v and len(v) > 1:
+                own_names.add(v)
+    for m in _THIRD_PARTY_BLOCK_RE.finditer(source_text):
+        block = m.group(1)
+        if m.group(0).startswith("[ATTRIBUTED QUOTE"):
+            # Attribution = the trailing non-blockquote lines after the
+            # quoted text (name/title/company). No attribution -> treat as
+            # testimonial (consistent with the structural rule "blockquotes
+            # are almost always testimonials"), never as the lead's own quote.
+            trailing = []
+            for ln in reversed(block.splitlines()):
+                if not ln.strip():
+                    continue
+                if ln.lstrip().startswith(">"):
+                    break
+                trailing.append(ln.strip())
+            attribution = " ".join(reversed(trailing)).lower()
+        else:
+            # Section: attribution evidence = heading + first content line,
+            # before any quoted block (quote bodies are third-party content,
+            # not self-attribution).
+            opening = []
+            for ln in block.splitlines():
+                stripped = ln.strip()
+                if not stripped:
+                    continue
+                if stripped.lstrip().startswith(">") or len(opening) >= 2:
+                    break
+                opening.append(stripped)
+            attribution = " ".join(opening).lower()
+        if own_names and attribution and any(name in attribution for name in own_names):
+            continue
+        spans.append((m.start(1), m.end(1)))
+    return spans
+
+
+def _quote_is_third_party(quote: str, source_text: str, spans: list[tuple[int, int]]) -> bool:
+    """True if `quote` (as found in source_text, case-insensitive) falls
+    inside one of the excluded third-party spans."""
+    if not spans or not quote:
+        return False
+    idx = source_text.lower().find(quote.lower())
+    if idx == -1:
+        return False
+    quote_end = idx + len(quote)
+    return any(start <= idx < end or start < quote_end <= end for start, end in spans)
+
+
+def _verify_evidence_grounding(verdict: dict, source_text: str, lead_metadata: dict | None = None) -> dict:
+    """Checks that each evidence_quote appears word for word in the source
+    text, AND (code-level, not prompt-dependent) that it does not fall
+    inside a testimonial/case-study block describing a third party.
+    """
     quotes = verdict.get("evidence_quotes") or []
     if not quotes:
         return verdict
 
     normalized_source = _normalize_for_grounding(source_text)
+    spans = _third_party_spans(source_text, lead_metadata)
     grounded = []
     ungrounded = []
+    third_party = []
     for q in quotes:
-        if isinstance(q, str) and _normalize_for_grounding(q) in normalized_source:
-            grounded.append(q)
-        else:
+        if not isinstance(q, str):
             ungrounded.append(q)
+            continue
+        if _normalize_for_grounding(q) not in normalized_source:
+            ungrounded.append(q)
+        elif _quote_is_third_party(q, source_text, spans):
+            third_party.append(q)
+        else:
+            grounded.append(q)
 
-    if ungrounded:
+    if ungrounded or third_party:
         verdict["evidence_quotes"] = grounded
         verdict["needs_human_review"] = True
-        note = f"ungrounded_evidence_quotes_removed: {len(ungrounded)} citation(s) not found in source text"
+        notes = []
+        if ungrounded:
+            notes.append(f"ungrounded_evidence_quotes_removed: {len(ungrounded)} citation(s) not found in source text")
+        if third_party:
+            notes.append(f"third_party_evidence_quotes_removed: {len(third_party)} citation(s) described a testimonial/case-study subject, not the analyzed company")
+        note = " | ".join(notes)
         existing = verdict.get("disqualify_reason")
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
 
     return verdict
 
 
-def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False) -> dict:
+def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict | None = None) -> dict:
+    """Checks that each personalization_hook carries a "based_on" quote that
+    (a) exists word for word in the source text, and (b) does not fall
+    inside a third-party testimonial/case-study block. A hook failing either
+    check is dropped — this is the code-level backstop for rules 10/11,
+    which does not rely on the model having followed them correctly.
+
+    Accepts both the new schema (list of {"hook", "based_on"}) and, for
+    backward compatibility with any verdict that slipped through as plain
+    strings (e.g. an older cached result, or a model that ignored the
+    schema), treats a bare string hook as ungrounded by default rather than
+    crashing — it is dropped, not silently trusted.
+    """
+    hooks = verdict.get("personalization_hooks") or []
+    if not hooks:
+        return verdict
+
+    normalized_source = _normalize_for_grounding(source_text)
+    spans = _third_party_spans(source_text, lead_metadata)
+    kept = []
+    dropped_count = 0
+    for h in hooks:
+        if not isinstance(h, dict):
+            dropped_count += 1
+            continue
+        based_on = h.get("based_on")
+        hook_text = h.get("hook")
+        if not hook_text or not isinstance(based_on, str):
+            dropped_count += 1
+            continue
+        if _normalize_for_grounding(based_on) not in normalized_source:
+            dropped_count += 1
+            continue
+        if _quote_is_third_party(based_on, source_text, spans):
+            dropped_count += 1
+            continue
+        kept.append(h)
+
+    if dropped_count:
+        verdict["personalization_hooks"] = kept
+        verdict["needs_human_review"] = True
+        note = f"ungrounded_or_third_party_hooks_removed: {dropped_count} hook(s) discarded (no valid first-party citation)"
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+
+    return verdict
+
+    return verdict
+
+
+def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None) -> dict:
     """Retries the scoring with reduced content after a JSON parsing failure."""
     try:
         shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
         verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        verdict = _verify_evidence_grounding(verdict, grounding_source)
+        verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+        verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except Exception as e2:
         return _apply_site_missing_guard(
@@ -606,20 +815,22 @@ def score_content(
         verdict = _call_llm(build_user_content(text))
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        verdict = _verify_evidence_grounding(verdict, grounding_source)
+        verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+        verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
-        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing)
+        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
     except Exception as e:
         if _is_json_parse_error(e):
-            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing)
+            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
                 verdict = _call_llm(build_user_content(shorter_text))
                 verdict = _apply_confidence_guard(verdict)
                 verdict = _validate_verdict(verdict)
-                verdict = _verify_evidence_grounding(verdict, grounding_source)
+                verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+                verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
                 return _apply_site_missing_guard(verdict, site_content_missing)
             except Exception as e2:
                 return _apply_site_missing_guard(

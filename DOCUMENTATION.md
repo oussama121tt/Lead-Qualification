@@ -426,19 +426,19 @@ Principe (`dedup.py:1-12`) : **ne supprime jamais**, ne fait que poser le flag `
 
 ## 12. Signaux techniques déterministes
 
-`extract_technical_signals(raw_html, all_links, homepage_text="")` (scraper.py:567-645) :
+`extract_technical_signals(raw_html, all_links, homepage_text="")` (scraper.py:701-823) :
 
 | Signal | Extraction |
 |---|---|
-| `generator_fingerprint` | null si aucun — testé sur raw_html (scraper.py:603-606) |
-| `generator_meta_tag` | regex `<meta ... name="generator" content="...">` (scraper.py:594-600) |
-| `vibe_language_matches` | marqueurs présents dans raw_html.lower() (scraper.py:609-612) |
-| `trend_fonts_found` | noms de polices présents (scraper.py:614-615) |
-| `visual_patterns_triggered` | noms des 9 patterns matchés (scraper.py:618-620) |
-| `ai_style_phrases_found` + `ai_style_phrase_density` | comptage sur le texte visible homepage ; ≥4 → "high", ≥2 → "medium", ==1 → "low", sinon "none" (scraper.py:622-631) |
-| `ai_authorship_disclosures_found` | (scraper.py:633-635) |
-| `github_repo_url` | premier lien contenant "github.com" hors /issues et /pull — **volontairement non filtré par domaine** (scraper.py:637-643) — collecté sur homepage ET sous-pages (Correction 1) |
-| `hiring_technical` | booléen du signal careers déterministe (`extract_careers_signal`, scraper.py:795-801), ajouté par `scrape_website` aux `technical_signals` — **lu par pipeline.py comme condition du déclencheur d'escalade web** (pipeline.py:255), à ne pas casser |
+| `generator_fingerprint` | null si aucun — testé sur raw_html (scraper.py:739-741) |
+| `generator_meta_tag` | regex `<meta ... name="generator" content="...">` (scraper.py:730-735) |
+| `vibe_language_matches` | marqueurs présents dans raw_html.lower() (scraper.py:746-750) |
+| `trend_fonts_found` | noms de polices présents (scraper.py:751-753) |
+| `visual_patterns_triggered` | noms des 9 patterns matchés (scraper.py:754-756) |
+| `ai_style_phrases_found` + `ai_style_phrase_density` | comptage sur le texte visible ; ≥4 → "high", ≥2 → "medium", ==1 → "low", sinon "none". Factorisé en `extract_text_style_signals(text)` (scraper.py:673-695) — réutilisé par le CSV scraping pour recalculer **par page** (Correction : phrases jamais répétées d'une page à l'autre) |
+| `ai_authorship_disclosures_found` | (inclus dans `extract_text_style_signals`, scraper.py:673-695) |
+| `github_repo_url` | premier lien contenant "github.com" hors /issues et /pull — **volontairement non filtré par domaine** (scraper.py:772-779) — collecté sur homepage ET sous-pages (Correction 1) |
+| `hiring_technical` | booléen du signal careers déterministe (`extract_careers_signal`, scraper.py:285-307), ajouté par `scrape_website` aux `technical_signals` (scraper.py:1023) — **lu par pipeline.py comme condition du déclencheur d'escalade web** (pipeline.py:255), à ne pas casser |
 
 Ces signaux sont persistés dans `lead_technical_signals` et passés au scorer (hiérarchie de fiabilité en [§13](#13-scoring-groq)).
 
@@ -496,16 +496,17 @@ Ces signaux sont persistés dans `lead_technical_signals` et passés au scorer (
 
 | Garde | Comportement |
 |---|---|
-| `_apply_confidence_guard` (scorer.py:394-398) | `confidence < 0.7` → `needs_human_review=True` |
-| `_validate_verdict` (scorer.py:307-341) | segment hors liste → forcé "unclear" + note `invalid_segment_fixed_to_unclear` ; offre hors liste → "none" ; stage hors liste → None ; si correction → `confidence = min(conf, 0.3)` + needs_human_review |
-| `_verify_evidence_grounding` (scorer.py:406-428) | chaque evidence_quote doit apparaître mot pour mot dans le texte source (normalisation espaces/minuscules) ; les non-grounded sont retirées + note `ungrounded_evidence_quotes_removed: N…` + needs_human_review |
-| `_apply_site_missing_guard` (scorer.py:447-471) | si `site_content_missing` → needs_human_review=True **inconditionnel** + note `site_content_missing: no official site content available…` ajoutée si absente |
+| `_apply_confidence_guard` (scorer.py:474-479) | `confidence < 0.7` → `needs_human_review=True` |
+| `_validate_verdict` (scorer.py:386-421) | segment hors liste → forcé "unclear" + note `invalid_segment_fixed_to_unclear` ; offre hors liste → "none" ; stage hors liste → None ; si correction → `confidence = min(conf, 0.3)` + needs_human_review |
+| `_verify_evidence_grounding` (scorer.py:578-616) | chaque evidence_quote doit apparaître mot pour mot dans le texte source (normalisation espaces/minuscules) ; les non-grounded sont retirées + note `ungrounded_evidence_quotes_removed: N…` + needs_human_review |
+| `_third_party_spans` (scorer.py:496-565) | spans des blocs `[ATTRIBUTED QUOTE]`/`[THIRD-PARTY CONTENT SECTION]` non attribués au lead ; exclus des citations (LOW, retirées + note + needs_human_review). **Attribution = lignes de signature APRÈS le blocquote** (nom/titre/entreprise) : le nom du fondateur cité **dans** la citation client (« Oussama launched it in two weeks ») ne suffit PAS à la garder — elle reste exclue ; sans ligne d'attribution → toujours exclue. **Sections à en-tête** (« Testimonials », « Our work »…) : preuve d'attribution limitée à l'**en-tête + 1re ligne de contenu** — un nom/la société apparaissant PLUS LOIN (corps de citation, boilerplate de fin « Founded by Oussama ») ne sauve pas la section (Correction) |
+| `_apply_site_missing_guard` (scorer.py:685-710) | si `site_content_missing` → needs_human_review=True **inconditionnel** + note `site_content_missing: no official site content available…` ajoutée si absente |
 
-- `SITE_MISSING_INSTRUCTION` (scorer.py:474-484) : instruction ajoutée au prompt quand le site officiel est indisponible (ne pas inventer de contenu, ne pas traiter l'absence comme un signal, needs_human_review=true si verdict basé seulement sur le web).
-- `_retry_after_failure` (scorer.py:431-444) : retry contenu raccourci (6000 chars) / 1024 tokens ; échec → `_empty_verdict(f"json_parse_failed: … | retry_error: …")`.
-- `_empty_verdict` (scorer.py:344-358) : segment="unclear", confidence=0.0, offer="none", needs_human_review=True.
+- `SITE_MISSING_INSTRUCTION` (scorer.py:712-722) : instruction ajoutée au prompt quand le site officiel est indisponible (ne pas inventer de contenu, ne pas traiter l'absence comme un signal, needs_human_review=true si verdict basé seulement sur le web).
+- `_retry_after_failure` (scorer.py:668-683) : retry contenu raccourci (6000 chars) / 1024 tokens ; échec → `_empty_verdict(f"json_parse_failed: … | retry_error: …")`.
+- `_empty_verdict` (scorer.py:423-438) : segment="unclear", confidence=0.0, offer="none", needs_human_review=True.
 
-### 13.5 `score_content(...)` (scorer.py:487-600)
+### 13.5 `score_content(...)` (scorer.py:725-840)
 
 Signature : `rows, deterministic_signals=None, lead_metadata=None, web_search_evidence=None, scoring_criteria=None, scoring_criteria_custom="", site_content_missing=False`.
 
@@ -565,7 +566,8 @@ Signature : `rows, deterministic_signals=None, lead_metadata=None, web_search_ev
 
 `lead_id, company_name, website_url, status, error, source, url, content_chars, content, generator_fingerprint, generator_meta_tag, trend_fonts_found, visual_patterns_triggered, vibe_language_matches, github_repo_url, github_check, ai_style_phrases_found, ai_style_phrase_density, ai_authorship_disclosures_found`
 
-- `_iter_scraping_rows` (export.py:64-106) : une ligne par page ; leads sans contenu → une ligne vide (source/url vides, content_chars 0) pour **ne perdre aucun lead** ; encodage `utf-8-sig`.
+- `_iter_scraping_rows` (export.py:64-128) : une ligne par page ; leads sans contenu → une ligne vide (source/url vides, content_chars 0) pour **ne perdre aucun lead** ; encodage `utf-8-sig`.
+- **Signaux par page (Correction)** : les 3 signaux de style écriture (`ai_style_phrases_found`, `ai_style_phrase_density`, `ai_authorship_disclosures_found`) sont **recalculés sur le texte de chaque page** (via `scraper.extract_text_style_signals`), jamais hérités de la homepage ; les signaux HTML/DOM (`generator_fingerprint`, `generator_meta_tag`, `trend_fonts_found`, `visual_patterns_triggered`, `vibe_language_matches`) ne sont reportés **que sur la ligne homepage** (source != "homepage" → vides) — ils ne sont calculés que sur le raw HTML de la homepage.
 
 ### 16.2 Scoring CSV — `SCORE_FIELDS`, 23 colonnes (export.py:144-151)
 

@@ -78,6 +78,112 @@ BROKEN_PAGE_PATTERNS = [
 MIN_VALID_CONTENT_CHARS = 50  # below this, content too trivial to be a real page
 
 # ---------------------------------------------------------------------------
+# Structural tagging of third-party content (testimonials, case studies,
+# portfolio items) — deterministic, no LLM involved. This does NOT decide
+# whether a block is first-party or third-party (scraper.py has no reliable
+# way to know if an attributed name is the lead's own founder or someone
+# else's client — it lacks that context here). It only marks the STRUCTURAL
+# pattern (blockquote, or a section under a testimonial/case-study/portfolio
+# header) so scorer.py's LLM does not have to rediscover it from wording
+# alone, which failed in practice on marketing copy phrased at first person
+# ("We rescue broken products"). The LLM still makes the final call, now
+# helped by an explicit marker instead of having to infer it from style.
+# ---------------------------------------------------------------------------
+
+THIRD_PARTY_SECTION_HEADERS = re.compile(
+    r"^#{1,4}\s*.*\b("
+    r"testimonials?|case\s+stud(?:y|ies)|portfolio|success\s+stor(?:y|ies)|"
+    r"what\s+(?:we'?ve\s+built|clients?\s+say|founders?\s+say|our\s+clients?\s+say)|"
+    r"our\s+work|client\s+(?:stories|reviews)"
+    r")\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Any other markdown heading (#, ##, ###...), used to find where a
+# third-party section ends (next heading of any level).
+ANY_HEADING = re.compile(r"^#{1,6}\s+.*$", re.MULTILINE)
+
+QUOTE_TAG_OPEN = "[ATTRIBUTED QUOTE — check the name/company below against lead_metadata before treating as first-party]"
+QUOTE_TAG_CLOSE = "[/ATTRIBUTED QUOTE]"
+SECTION_TAG_OPEN = "[THIRD-PARTY CONTENT SECTION — likely describes clients/case studies, check attribution before treating as first-party]"
+SECTION_TAG_CLOSE = "[/THIRD-PARTY CONTENT SECTION]"
+
+
+def _tag_attributed_content(markdown: str) -> str:
+    """Wraps structurally-detected testimonial/case-study content with
+    explicit markers, so the scoring LLM gets a structural hint instead of
+    having to infer "is this about the site owner or a client?" purely from
+    wording — which proved unreliable on agency sites phrasing their
+    services as first-person capability statements ("We rescue broken
+    products"). Best-effort: regex on markdown conventions (blockquotes,
+    heading text), not a full parse — a testimonial rendered without a
+    leading ">" or an unusual heading phrasing can still slip through
+    untagged, scorer.py's own structural-pattern rules remain the
+    second line of defense, not a replacement for this.
+    """
+    if not markdown:
+        return markdown
+
+    # 1. Tag contiguous blockquote blocks (lines starting with ">"), plus up
+    #    to 3 following non-empty lines (the attribution: name / title / company
+    #    usually appears right after the quote in scraped markdown).
+    lines = markdown.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith(">"):
+            block = [line]
+            i += 1
+            while i < len(lines) and lines[i].lstrip().startswith(">"):
+                block.append(lines[i])
+                i += 1
+            # Pull in the attribution lines that typically follow (name,
+            # title/company) — short lines, not headings, not another quote.
+            trailing = []
+            trail_count = 0
+            while i < len(lines) and trail_count < 4:
+                nxt = lines[i]
+                if not nxt.strip():
+                    trailing.append(nxt)
+                    i += 1
+                    continue
+                if nxt.lstrip().startswith(">") or nxt.lstrip().startswith("#"):
+                    break
+                if len(nxt) > 120:  # long line -> new paragraph, not an attribution
+                    break
+                trailing.append(nxt)
+                i += 1
+                trail_count += 1
+            out.append(QUOTE_TAG_OPEN)
+            out.extend(block)
+            out.extend(trailing)
+            out.append(QUOTE_TAG_CLOSE)
+            continue
+        out.append(line)
+        i += 1
+    markdown = "\n".join(out)
+
+    # 2. Tag sections opened by a testimonial/case-study/portfolio heading,
+    #    up to the next heading of any level (or end of document).
+    matches = list(THIRD_PARTY_SECTION_HEADERS.finditer(markdown))
+    if not matches:
+        return markdown
+    result = []
+    cursor = 0
+    for m in matches:
+        result.append(markdown[cursor:m.start()])
+        section_start = m.start()
+        next_heading = ANY_HEADING.search(markdown, m.end())
+        section_end = next_heading.start() if next_heading else len(markdown)
+        result.append(SECTION_TAG_OPEN + "\n")
+        result.append(markdown[section_start:section_end])
+        result.append("\n" + SECTION_TAG_CLOSE)
+        cursor = section_end
+    result.append(markdown[cursor:])
+    return "".join(result)
+
+# ---------------------------------------------------------------------------
 # Deterministic signatures — checklist from the monitoring (Design Slop Cop,
 # isthatvibecoded.com, detectvibecode.com...). Each entry = a simple regex
 # on the raw HTML. None of these values is judged by an LLM.
@@ -564,6 +670,34 @@ def _match_any(patterns: list, text: str) -> bool:
     return any(re.search(p, text, flags=re.IGNORECASE) for p in patterns)
 
 
+def extract_text_style_signals(text: str) -> dict:
+    """
+    Text-only style signals (AI-sounding marketing phrases + explicit
+    authorship disclosures), computed identically for ANY page of the site —
+    the homepage during scraping, and each individual page in the CSV export.
+
+    Shared by extract_technical_signals and export.py so that a phrase found
+    on one page is never reported on another page of the same site.
+    """
+    lowered = (text or "").lower()
+    found_phrases = [phrase for phrase in AI_STYLE_PHRASES if phrase in lowered]
+    if len(found_phrases) >= 4:
+        density = "high"
+    elif len(found_phrases) >= 2:
+        density = "medium"
+    elif len(found_phrases) == 1:
+        density = "low"
+    else:
+        density = "none"
+    return {
+        "ai_style_phrases_found": found_phrases,
+        "ai_style_phrase_density": density,
+        "ai_authorship_disclosures_found": [
+            disclosure for disclosure in AI_AUTHORSHIP_DISCLOSURES if disclosure in lowered
+        ],
+    }
+
+
 def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str = "") -> dict:
     """
     Step 3bis. Computes only deterministic signals (no LLM).
@@ -586,6 +720,8 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
         "visual_patterns_triggered": [],
         "generator_meta_tag": None,
         "github_repo_url": None,
+        "linkedin_company_url": None,
+        "linkedin_person_urls": [],
         "ai_style_phrases_found": [],
         "ai_style_phrase_density": "none",
         "ai_authorship_disclosures_found": [],
@@ -619,30 +755,100 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
         name for name, patterns in VISUAL_PATTERNS.items() if _match_any(patterns, raw_html)
     ]
 
-    # Writing style: scanned on visible text, not raw HTML.
-    lowered_text = homepage_text.lower()
-    found_phrases = [phrase for phrase in AI_STYLE_PHRASES if phrase in lowered_text]
-    signals["ai_style_phrases_found"] = found_phrases
-    if len(found_phrases) >= 4:
-        signals["ai_style_phrase_density"] = "high"
-    elif len(found_phrases) >= 2:
-        signals["ai_style_phrase_density"] = "medium"
-    elif len(found_phrases) == 1:
-        signals["ai_style_phrase_density"] = "low"
-
-    signals["ai_authorship_disclosures_found"] = [
-        disclosure for disclosure in AI_AUTHORSHIP_DISCLOSURES if disclosure in lowered_text
-    ]
+    # Writing style: scanned on visible text, not raw HTML. Shared with
+    # export.py (per-page recomputation), via extract_text_style_signals.
+    signals.update(extract_text_style_signals(homepage_text))
 
     # Public GitHub link, for the git check. Deliberately NOT
     # restricted to the same domain: a lead may legitimately link to an
     # external GitHub repo (GitHub org different from the site's domain).
+    #
+    # LinkedIn links declared BY THE COMPANY ITSELF (footer, about/team
+    # page) are the most reliable disambiguation source we have: a
+    # name-based search for "RuyaTech" can return an unrelated homonymous
+    # company (e.g. a different "Ruyatech AI" in another country) — a link
+    # the company put on its own site cannot be confused with a homonym.
+    # linkedin_company_url keeps only the FIRST match (one company page is
+    # enough); linkedin_person_urls keeps ALL /in/ links found (a team/about
+    # page can legitimately link several team members).
+    person_urls: list[str] = []
     for link in all_links or []:
-        if "github.com" in link.lower() and "/issues" not in link and "/pull" not in link:
-            signals["github_repo_url"] = link
-            break
+        link_lower = link.lower()
+        if "github.com" in link_lower and "/issues" not in link_lower and "/pull" not in link_lower:
+            if signals["github_repo_url"] is None:
+                signals["github_repo_url"] = link
+        if "linkedin.com/company/" in link_lower:
+            if signals["linkedin_company_url"] is None:
+                signals["linkedin_company_url"] = link
+        elif "linkedin.com/in/" in link_lower:
+            person_urls.append(link)
+    signals["linkedin_person_urls"] = sorted(set(person_urls))
 
     return signals
+
+
+FOUNDER_NAME_PATTERNS = [
+    # "founded by John Smith" / "co-founded by John Smith"
+    r"(?i:co[\-\s]?founded\s+by)\s+([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2})",
+    r"(?i:founded\s+by)\s+([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2})",
+    # "John Smith, founder" / "John Smith is the founder/CEO"
+    r"([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2}),?\s+(?i:(?:is\s+|was\s+)?(?:the\s+)?(?:co[\-\s]?)?founder)",
+    r"([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2})\s+(?i:(?:is|was)\s+(?:the\s+)?(?:co[\-\s]?)?(?:founder|ceo))",
+    # "Meet the founder, John Smith" / "Founder & CEO: John Smith"
+    r"(?i:meet\s+(?:the\s+)?founder,?)\s+([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2})",
+    r"(?i:(?:co[\-\s]?)?founder\s*(?:&|and)?\s*(?:ceo)?\s*[:\-])\s*([A-Z][a-zA-Z'\-]+(?:\s[A-Z][a-zA-Z'\-]+){0,2})",
+]
+
+# Words a name-shaped regex match can accidentally pick up (generic role
+# nouns, common sentence starters right before "Founder") — filtered out so
+# they never get treated as a person's name.
+FOUNDER_NAME_STOPWORDS = {
+    "the", "our", "we", "this", "meet", "hi", "hello", "team", "company",
+    "about", "welcome", "introducing",
+}
+
+
+def extract_founder_name_candidates(text: str) -> list[str]:
+    """
+    Best-effort, deterministic extraction of a founder's name mentioned in
+    the site's own copy (bio, testimonial, "meet the founder" section).
+
+    Why this exists: the CRM-provided contact name (Apollo CSV) is not
+    always trustworthy — it can be a placeholder/test value, stale, or
+    simply wrong. A name the company mentions about itself, on its own
+    site, is independent corroborating evidence and is often MORE reliable
+    for finding the right LinkedIn profile than blindly trusting the CSV.
+
+    Honest limitation: this is regex-based pattern matching, not NLP. It
+    only catches a handful of common explicit phrasings ("founded by X",
+    "X, founder", "meet the founder, X"...). A sentence like "Oussama
+    launched it in two weeks" (a founder's name used in a testimonial
+    without the word "founder" nearby) will NOT be caught — no attempt is
+    made to guess names from context alone, to avoid false positives on
+    ordinary capitalized words (product names, place names, etc.).
+
+    Returns a short, deduplicated list of candidate names (order of first
+    appearance) — a list, not a single "best" pick, because disambiguating
+    between several real candidates (e.g. co-founders) is not something a
+    regex can safely decide; that choice belongs to the caller/pipeline.
+    """
+    if not text:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for pattern in FOUNDER_NAME_PATTERNS:
+        for m in re.finditer(pattern, text):
+            name = m.group(1).strip()
+            first_word = name.split()[0].lower() if name.split() else ""
+            if first_word in FOUNDER_NAME_STOPWORDS:
+                continue
+            if len(name) < 3 or len(name) > 60:
+                continue
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(name)
+    return candidates[:5]
 
 
 def check_github_repo_pattern(repo_url: str) -> dict:
@@ -724,7 +930,7 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
             "error": "homepage_render_error_or_empty_content",
         }
 
-    rows = [("homepage", homepage_url, homepage_markdown[:MAX_CONTENT_CHARS_PER_PAGE])]
+    rows = [("homepage", homepage_url, _tag_attributed_content(homepage_markdown[:MAX_CONTENT_CHARS_PER_PAGE]))]
     seen_fingerprints = {_content_fingerprint(homepage_markdown)}
 
     failures = 0
@@ -746,6 +952,7 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     # (untouched). The external GitHub link itself is NOT domain-filtered (a
     # lead may legitimately link to a GitHub org different from its own domain).
     subpage_links: set[str] = set()
+    founder_bio_text_parts = [homepage_markdown]
     for category, url in other_pages.items():
         result = scraped_pages[category]
         if isinstance(result[1], Exception):
@@ -769,13 +976,20 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
             continue
         seen_fingerprints.add(fingerprint)
 
+        # Founder bios most commonly live on "about" or "product" pages
+        # (a "meet the team"/"meet the founder" section) — collected here,
+        # on the RAW content, before careers/pricing get replaced below by
+        # their compact formatted signal (which would strip any bio text).
+        if category in ("about", "product"):
+            founder_bio_text_parts.append(raw_content)
+
         if category == "careers":
             careers_signal = extract_careers_signal(raw_content)
             content = _format_signal_as_text("Careers", careers_signal)
         elif category == "pricing":
             content = _format_signal_as_text("Pricing", extract_pricing_signal(raw_content))
         else:
-            content = raw_content
+            content = _tag_attributed_content(raw_content)
 
         rows.append((category, url, content))
 
@@ -793,6 +1007,13 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
         raw_html=getattr(homepage_result, "raw_html", None),
         all_links=all_links,
         homepage_text=homepage_markdown,
+    )
+    # Founder name(s) mentioned in the site's own copy (homepage + about/
+    # product pages) — see extract_founder_name_candidates() docstring for
+    # why this exists (a more trustworthy source than a CRM field that can
+    # be a placeholder) and its honest limitations (regex, not NLP).
+    technical_signals["founder_name_candidates"] = extract_founder_name_candidates(
+        "\n\n".join(founder_bio_text_parts)
     )
     # Expose the deterministic careers hiring signal as a first-class
     # technical signal (same bool extract_careers_signal already computes
@@ -942,28 +1163,15 @@ def _sgai_search_one(source: str, query: str, limit_per_query: int) -> dict:
     return results
 
 
-def _sgai_linkedin_full_scrape(results: list, prefer_profile: bool = False) -> list:
-    """Full scrape of the best LinkedIn page found (markdown + structured JSON).
+def _sgai_scrape_linkedin_url(lk_url: str, title: str, prefer_profile: bool = False) -> dict:
+    """Full scrape of ONE LinkedIn URL (markdown + structured JSON).
 
-    Best-effort by design: if the scrape fails, the original search snippets
-    are kept — the full scrape never fails a lead on its own.
-
-    prefer_profile=False (company sources): prefer a /company/ page.
-    prefer_profile=True (person_* sources): prefer an /in/ profile — the
-    founder's OWN page, the most direct evidence about the person.
+    Shared by both callers below: the "best guess from a name search"
+    path and the "known URL taken directly from the scraped site" path.
+    Best-effort by design: on failure, returns a minimal hit with just
+    url/title so the caller can still keep something rather than crash.
     """
-    if not results:
-        return results
-    best = None
-    for hit in results:
-        u = hit.get("url", "").lower()
-        needle = "/in/" if prefer_profile else "/company/"
-        if needle in u or needle in hit.get("content", "").lower():
-            best = hit
-            break
-    if not best:
-        best = results[0]
-    lk_url = best["url"]
+    hit = {"url": lk_url, "title": title, "content": ""}
     try:
         resp = _sgai_request(
             "scrape",
@@ -989,11 +1197,41 @@ def _sgai_linkedin_full_scrape(results: list, prefer_profile: bool = False) -> l
             import json as _json
             full += "\n\n--- Structured ---\n" + _json.dumps(json_part, ensure_ascii=False)
         if full:
-            best["content"] = full
-            best["title"] = f"{best['title']} (full scrape)"
+            hit["content"] = full
+            hit["title"] = f"{title} (full scrape)"
     except Exception as scrape_err:
         print(f"[scraper] LinkedIn full scrape failed {lk_url}: {scrape_err}")
-        # Keep the search content, it is already decent
+        # Best-effort: return the minimal hit, the caller decides what to do with it
+    return hit
+
+
+def _sgai_linkedin_full_scrape(results: list, prefer_profile: bool = False) -> list:
+    """Full scrape of the best LinkedIn page found among SEARCH results
+    (name-based query — can be wrong on a homonym company/person, see
+    scrape_website_linkedin() for the more reliable known-URL path).
+
+    Best-effort by design: if the scrape fails, the original search snippets
+    are kept — the full scrape never fails a lead on its own.
+
+    prefer_profile=False (company sources): prefer a /company/ page.
+    prefer_profile=True (person_* sources): prefer an /in/ profile — the
+    founder's OWN page, the most direct evidence about the person.
+    """
+    if not results:
+        return results
+    best = None
+    for hit in results:
+        u = hit.get("url", "").lower()
+        needle = "/in/" if prefer_profile else "/company/"
+        if needle in u or needle in hit.get("content", "").lower():
+            best = hit
+            break
+    if not best:
+        best = results[0]
+    scraped = _sgai_scrape_linkedin_url(best["url"], best.get("title", ""), prefer_profile=prefer_profile)
+    if scraped.get("content"):
+        best["content"] = scraped["content"]
+        best["title"] = scraped["title"]
     return results
 
 
@@ -1002,6 +1240,8 @@ def search_additional_evidence(
     founder_name: str | None = None,
     limit_per_query: int = 3,
     throttle_seconds: float = 1.0,
+    known_linkedin_company_url: str | None = None,
+    known_linkedin_person_url: str | None = None,
 ) -> dict:
     """
     Queries ScrapeGraphAI Search for each targeted source (LinkedIn —
@@ -1010,9 +1250,34 @@ def search_additional_evidence(
     with inline content: the scoring LLM can then quote passages
     verbatim in evidence_quotes.
 
-    Each source = one distinct query, executed IN PARALLEL (1 thread
-    per SGAI key). A key with exhausted quota is ignored by the pool,
-    the others keep going.
+    known_linkedin_company_url: optional, from
+    scraper.extract_technical_signals(...)["linkedin_company_url"] — a
+    LinkedIn company URL the site itself links to (footer, about page).
+    When present, the "linkedin" company source is scraped DIRECTLY from
+    this URL instead of a name-based search: a search for "RuyaTech" can
+    return a same-named but unrelated company (confirmed case: a UAE
+    defense-AI "Ruyatech AI" outranked the real, smaller "RuyaTech" in
+    search results). A link the company put on its own site cannot be
+    confused with a homonym, so it is strictly more reliable and skips
+    that query entirely (saves one SGAI call too).
+
+    known_linkedin_person_url: optional, typically
+    technical_signals["linkedin_person_urls"][0] passed by the CALLER only
+    when that list has exactly one entry — deciding "which team member is
+    THE founder" among several is a judgment call this function does not
+    make; pass None when there is more than one candidate and let the
+    name-based person_linkedin search run instead.
+
+    founder_name: prefer a name found on the SITE ITSELF (see
+    scraper.extract_founder_name_candidates()) over a CRM-provided one when
+    available — the CRM field can be a placeholder/test value (confirmed
+    case: "Wael Test" led this search to a completely unrelated LinkedIn
+    profile). Passing the right value here is the caller's responsibility;
+    this function just uses whatever string it is given.
+
+    Each remaining source = one distinct query, executed IN PARALLEL (1
+    thread per SGAI key). A key with exhausted quota is ignored by the
+    pool, the others keep going.
 
     Returns:
         {
@@ -1027,36 +1292,56 @@ def search_additional_evidence(
     founder_name = founder_name or ""
     queries = {}
     for source, template in SEARCH_QUERY_TEMPLATES.items():
+        if source == "linkedin" and known_linkedin_company_url:
+            continue  # known URL from the site itself, no need to guess-search
+        if source == "person_linkedin" and known_linkedin_person_url:
+            continue  # known URL from the site itself, no need to guess-search
         if "{founder}" in template and not founder_name:
             continue
         queries[source] = template.format(company=company_name, founder=founder_name)
 
-    if not queries:
-        return {}
-
-    n_workers = max(1, min(len(_get_sgai_keys()), len(queries)))
     results_by_source: dict = {}
 
-    if n_workers == 1:
-        # Single key: sequential, with the original throttle between sources
-        for source, query in queries.items():
-            time.sleep(throttle_seconds)
-            results_by_source[source] = _sgai_search_one(source, query, limit_per_query)
-    else:
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futures = {
-                pool.submit(_sgai_search_one, source, query, limit_per_query): source
-                for source, query in queries.items()
-            }
-            for future in as_completed(futures):
-                source = futures[future]
-                results_by_source[source] = future.result()
+    if queries:
+        n_workers = max(1, min(len(_get_sgai_keys()), len(queries)))
+        if n_workers == 1:
+            # Single key: sequential, with the original throttle between sources
+            for source, query in queries.items():
+                time.sleep(throttle_seconds)
+                results_by_source[source] = _sgai_search_one(source, query, limit_per_query)
+        else:
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {
+                    pool.submit(_sgai_search_one, source, query, limit_per_query): source
+                    for source, query in queries.items()
+                }
+                for future in as_completed(futures):
+                    source = futures[future]
+                    results_by_source[source] = future.result()
 
-    # LinkedIn: full scrape of the best URL found (company page for the
-    # "linkedin" source, founder profile for "person_linkedin")
-    if isinstance(results_by_source.get("linkedin"), list):
+    # LinkedIn company: known URL from the site itself takes priority over
+    # any name-based search (see docstring above for why).
+    if known_linkedin_company_url:
+        hit = _sgai_scrape_linkedin_url(
+            known_linkedin_company_url,
+            title="LinkedIn company page (from site link)",
+            prefer_profile=False,
+        )
+        results_by_source["linkedin"] = [hit]
+    elif isinstance(results_by_source.get("linkedin"), list):
+        # Fallback: only reached when the site had no declared LinkedIn link
+        # — best-effort name search, can be wrong on a homonym (see above).
         results_by_source["linkedin"] = _sgai_linkedin_full_scrape(results_by_source["linkedin"])
-    if isinstance(results_by_source.get("person_linkedin"), list):
+
+    # LinkedIn person: same priority order as the company case above.
+    if known_linkedin_person_url:
+        hit = _sgai_scrape_linkedin_url(
+            known_linkedin_person_url,
+            title="LinkedIn profile (from site link)",
+            prefer_profile=True,
+        )
+        results_by_source["person_linkedin"] = [hit]
+    elif isinstance(results_by_source.get("person_linkedin"), list):
         results_by_source["person_linkedin"] = _sgai_linkedin_full_scrape(results_by_source["person_linkedin"], prefer_profile=True)
 
     return results_by_source

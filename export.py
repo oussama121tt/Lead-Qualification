@@ -63,6 +63,8 @@ SCRAPING_FIELDS = [
 
 def _iter_scraping_rows(conn, session_id=None):
     """Row generator for the scraping CSV. Factored out for file and memory use."""
+    from scraper import extract_text_style_signals
+
     leads = dbmod.get_leads(conn, include_duplicates=True, session_id=session_id)
     lead_ids = [lead["id"] for lead in leads]
     pages_map = dbmod.get_lead_content_map(conn, lead_ids)
@@ -97,13 +99,35 @@ def _iter_scraping_rows(conn, session_id=None):
 
         for page in pages:
             content = page.get("content") or ""
-            yield {
-                **base_row,
-                "source": page.get("source", ""),
+            # The design/DOM signals (fingerprint, fonts, visual patterns,
+            # vibe language) are computed from the homepage raw HTML only —
+            # reported on the homepage row, left blank on the other pages.
+            source = page.get("source", "")
+            if source != "homepage":
+                row = {
+                    **base_row,
+                    "generator_fingerprint": "",
+                    "generator_meta_tag": "",
+                    "trend_fonts_found": "",
+                    "visual_patterns_triggered": "",
+                    "vibe_language_matches": "",
+                }
+            else:
+                row = dict(base_row)
+            # Writing style is recomputed from THIS page's own text, so a
+            # phrase found on the homepage is never repeated onto another
+            # page's row (and vice-versa).
+            style = extract_text_style_signals(content)
+            row.update({
+                "source": source,
                 "url": page.get("url", ""),
                 "content_chars": len(content),
                 "content": content,
-            }
+                "ai_style_phrases_found": _flatten(style["ai_style_phrases_found"]),
+                "ai_style_phrase_density": style["ai_style_phrase_density"],
+                "ai_authorship_disclosures_found": _flatten(style["ai_authorship_disclosures_found"]),
+            })
+            yield row
 
 
 def export_scraping_csv(conn, output_path: str, session_id=None) -> int:

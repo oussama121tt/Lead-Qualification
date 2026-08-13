@@ -71,7 +71,7 @@ def _build_lead_metadata(lead: dict) -> dict:
     }
 
 
-def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
+def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals: dict | None = None) -> dict:
     """Runs the web search escalation (LinkedIn, Product Hunt, GitHub,
     founder person_* profiles, etc.), persists each source in
     the DB (lead_search_evidence), and returns the results as a dict
@@ -85,16 +85,38 @@ def _fetch_web_search_evidence(conn, lead_id: int, lead: dict) -> dict:
     Now: `scorer.score_content()` receives this dict via its own
     `web_search_evidence` parameter, formatted and budgeted separately (see
     scorer._format_web_search_evidence).
+
+    technical_signals: the scraper's deterministic signals for this lead
+    (scrape_result["technical_signals"]). When available, the site's own
+    LinkedIn links and founder-name mentions take priority over the CRM
+    fields below — a CRM field can be a placeholder/test value (confirmed
+    case: "Wael Test" as the Apollo contact name sent the person search to
+    a completely unrelated LinkedIn profile), while a link or name the
+    company put on its own site cannot be confused with a homonym.
     """
     company_name = lead.get("company_name", "")
     if not company_name:
         return {}
-    founder_name = " ".join(filter(None, [lead.get("first_name"), lead.get("last_name")])).strip() or None
+    technical_signals = technical_signals or {}
+
+    site_founder_candidates = technical_signals.get("founder_name_candidates") or []
+    csv_founder_name = " ".join(filter(None, [lead.get("first_name"), lead.get("last_name")])).strip() or None
+    founder_name = site_founder_candidates[0] if site_founder_candidates else csv_founder_name
+
+    known_linkedin_company_url = technical_signals.get("linkedin_company_url")
+    person_urls = technical_signals.get("linkedin_person_urls") or []
+    # Only trust it when there is EXACTLY ONE candidate — with several
+    # /in/ links (a team page listing multiple people), picking one would
+    # be a guess, same risk as the name-search bug this is meant to avoid.
+    known_linkedin_person_url = person_urls[0] if len(person_urls) == 1 else None
+
     try:
         search_results = scraper.search_additional_evidence(
             company_name=company_name,
             founder_name=founder_name,
             limit_per_query=2,
+            known_linkedin_company_url=known_linkedin_company_url,
+            known_linkedin_person_url=known_linkedin_person_url,
         )
         if "_error" in search_results:
             return {}
@@ -258,7 +280,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         )
         if should_escalate_web:
             events.append(_base({"step": "web_search", "status": None, "error": None}))
-            web_evidence = _fetch_web_search_evidence(conn, lead_id, lead)
+            web_evidence = _fetch_web_search_evidence(conn, lead_id, lead, technical_signals=scrape_result.get("technical_signals"))
             if web_evidence:
                 try:
                     verdict = _score(web_evidence)
