@@ -9,60 +9,71 @@ import json
 
 from llm_provider import get_llm_provider
 
-EMAIL_PROMPT_TEMPLATE = """Tu rédiges un email de prospection court et personnalisé pour RuyaTech,
-une agence technique qui construit, sauve et fait évoluer des produits SaaS pour des fondateurs.
+EMAIL_PROMPT_TEMPLATE = """You write a short, personalized outreach email for RuyaTech,
+a technical agency that builds, rescues, and scales SaaS products for founders.
 
-Entreprise : {company_name}
-Prénom du contact (s'il est vide, utilise "Bonjour," sans prénom) : {contact_first_name}
-Segment détecté : {segment}
-Offre recommandée : {recommended_offer}
-Hooks de personnalisation déjà identifiés par le scoring : {personalization_hooks}
-Preuves/citations tirées du site : {evidence_quotes}
-Extrait du contenu de la homepage : {homepage_content}
+Company: {company_name}
+Contact first name (leave "Greetings," without a name if empty): {contact_first_name}
+Detected segment: {segment}
+Recommended offer: {recommended_offer}
+Personalization hooks already identified by the scoring: {personalization_hooks}
+Evidence/quotes taken from the site: {evidence_quotes}
+Excerpt from the homepage content: {homepage_content}
 
-Contexte des offres RuyaTech (choisis celle qui correspond à recommended_offer, reste fidèle au
-positionnement exact ci-dessous — ne généralise pas, ne réinvente pas ce qu'on propose) :
+Context of the RuyaTech offers (pick the one matching recommended_offer, stay faithful to the
+exact positioning below — do not generalize, do not reinvent what we offer):
 
-- ai_audit → service "Product Rescue & Scale-Up" : pour les fondateurs non-techniques dont le
-  produit a été construit avec l'IA (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) et
-  commence à craquer sous de vrais utilisateurs. Audit complet du code, stabilisation,
-  refactoring, et remise en état de marche — généralement en 4 à 8 semaines. Exemple concret à
-  réutiliser si pertinent : on a repris un SaaS AI-généré qui s'effondrait, relancé en 2
-  semaines, 600 membres payants 6 mois après (case study Bake Genie).
+- ai_audit → "Product Rescue & Scale-Up" service: for non-technical founders whose product was
+  built with AI (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) and starts breaking under
+  real users. Full code audit, stabilization, refactoring, and getting it back on track —
+  typically in 4 to 8 weeks. Concrete example to reuse if relevant: we took over an AI-generated
+  SaaS that was collapsing, relaunched it in 2 weeks, 600 paying members 6 months later
+  (Bake Genie case study).
 
-- general_audit → même service "Product Rescue & Scale-Up", version pour une équipe technique :
-  audit de sécurité et d'architecture, recommandations concrètes, priorisation des correctifs.
+- general_audit → same "Product Rescue & Scale-Up" service, for a technical team:
+  security and architecture audit, concrete recommendations, fix prioritization.
 
-- pipeline → service "AI Agents & Automation" : agents IA et automatisations sur-mesure branchés
-  sur l'existant (triage de leads, traitement de documents, workflows), pas des "gadgets IA".
-  Exemple concret à réutiliser si pertinent : pipeline de tri de leads livré à un cabinet B2B
-  débordé — 5h/semaine de business dev au lieu de plusieurs heures par jour, 30K$+ de nouveaux
-  contrats en 30 jours.
+- pipeline → "AI Agents & Automation" service: custom AI agents and automations plugged into
+  existing systems (lead triage, document processing, workflows), not "AI gadgets".
+  Concrete example to reuse if relevant: lead triage pipeline delivered to an overwhelmed B2B
+  firm — 5h/week of business dev instead of several hours a day, 30K$+ in new contracts in
+  30 days.
 
-Preuves générales sur RuyaTech, à utiliser avec parcimonie (une seule si besoin, jamais toutes
-d'un coup) pour donner de la crédibilité sans que l'email ressemble à une plaquette commerciale :
-prix fixe annoncé avant de coder (pas de facturation à l'heure), 10+ projets livrés, 100% du
-code appartient au client dès le premier jour, réponse sous 4h ouvrées.
+General RuyaTech proof points, to use sparingly (one if needed, never all at once) to add
+credibility without making the email sound like a sales brochure: fixed price announced before
+coding (no hourly billing), 10+ delivered projects, 100% of the code belongs to the client
+from day one, reply within 4 business hours.
 
-Consignes strictes :
-- Objet court et spécifique à cette entreprise (pas générique, pas de template visible) — jamais vide, obligatoire dans toutes les réponses.
-- Structure du corps, dans cet ordre, avec un retour à la ligne entre chaque bloc :
-  1. Formule d'appel courte et directe (ex. "Bonjour," ou "Bonjour [prénom]," si un prénom de contact est disponible dans le contexte, sinon "Bonjour,").
-  2. Accroche personnalisée (1-2 phrases) : le détail situationnel concret repéré sur leur site.
-  3. Présentation de l'offre (1-2 phrases) : le lien entre ce détail et le service RuyaTech recommandé, avec au maximum une preuve concrète (case study/chiffre) si elle apporte une vraie crédibilité.
-  4. Call-to-action (1 phrase) : une seule action claire (ex. proposer un échange rapide).
-  5. Formule de politesse + signature (ex. "Bien à vous," puis un saut de ligne, puis "Oussama Ibrahim — RuyaTech").
-- 4 à 6 phrases au total pour les blocs 1 à 4 (hors signature), en français, ton direct et professionnel, pas de superlatifs creux.
-- N'écris jamais le corps comme un seul bloc de texte continu — les 5 parties ci-dessus doivent rester visuellement séparées par des sauts de ligne dans le champ "body".
-- Personnalisation SITUATIONNELLE uniquement (ce que l'entreprise fait/utilise/a publié) — jamais biographique (rien sur la personne elle-même).
-- Réutilise les hooks déjà fournis plutôt que d'en inventer de nouveaux non vérifiés.
-- N'utilise les preuves RuyaTech (case studies, chiffres) que si elles apportent une vraie
-  crédibilité au message — jamais comme remplissage, jamais plus d'une par email.
-- Un seul call-to-action clair, vers l'offre recommandée.
-- N'invente aucun fait qui n'est pas dans le contexte fourni ci-dessus.
-- Réponds uniquement avec ce JSON, rien d'autre : {{"subject": "...", "body": "..."}}
-  Le champ "subject" ne doit jamais être vide. Le champ "body" doit contenir les sauts de ligne
-  ("\\n\\n" entre chaque bloc) qui structurent l'email tel que décrit ci-dessus.
+Strict instructions:
+- Short subject line specific to this company (not generic, no visible template) — never empty,
+  mandatory in every response.
+- Body structure, in this order, with a line break between each block:
+  1. Short, direct greeting (e.g. "Greetings," or "Hi [first name]," if a contact first name is
+     available in the context, otherwise "Greetings,").
+  2. Personalized opener (1-2 sentences): the concrete situational detail spotted on their site.
+  3. Offer presentation (1-2 sentences): the link between that detail and the recommended
+     RuyaTech service, with at most one concrete proof point (case study/figure) if it adds real
+     credibility.
+  4. Call-to-action (1 sentence): one single clear action (e.g. propose a quick call).
+  5. Sign-off + signature (e.g. "Best regards," then a line break, then "Oussama Ibrahim — RuyaTech").
+- 4 to 6 sentences total for blocks 1 to 4 (excluding the signature), in English, direct and
+  professional tone, no empty superlatives.
+- Never write the body as one continuous block of text — the 5 parts above must stay visually
+  separated by line breaks in the "body" field.
+- SITUATIONAL personalization only (what the company does/uses/publishes) — never biographical
+  (nothing about the person themselves).
+- Reuse the hooks already provided rather than inventing new unverified ones.
+- ONE SINGLE LANGUAGE throughout the email (subject + body): English. The hooks, quotes, and
+  content provided may be in French (scraped from the site): translate and adapt them into
+  English in the email, never paste them verbatim in their original language. The final email
+  must not contain any word, phrase, or quote in a language other than English.
+- Use the RuyaTech proof points (case studies, figures) only if they add real credibility to the
+  message — never as filler, never more than one per email.
+- One single clear call-to-action, toward the recommended offer.
+- Do not invent any fact that is not in the context provided above.
+- Respond only with this JSON, nothing else: {{"subject": "...", "body": "..."}}
+  The "subject" field must never be empty. The "body" field must contain the line breaks
+  ("\\n\\n" between each block) that structure the email as described above.
 """
 
 MAX_HOOK_CHARS = 800
@@ -77,7 +88,7 @@ def _as_text(value) -> str:
     already-parsed and the still-string forms are handled here.
     """
     if not value:
-        return "aucun"
+        return "none"
     if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False)[:MAX_HOOK_CHARS]
     if isinstance(value, str):
@@ -94,9 +105,9 @@ def _as_text(value) -> str:
 
 def build_prompt(lead: dict, homepage_content: str) -> str:
     return EMAIL_PROMPT_TEMPLATE.format(
-        company_name=lead["company_name"] or "cette entreprise",
+        company_name=lead["company_name"] or "this company",
         contact_first_name=lead.get("first_name") or "",
-        segment=lead.get("segment") or "inconnu",
+        segment=lead.get("segment") or "unknown",
         recommended_offer=lead.get("recommended_offer") or "none",
         personalization_hooks=_as_text(lead.get("personalization_hooks")),
         evidence_quotes=_as_text(lead.get("evidence_quotes")),

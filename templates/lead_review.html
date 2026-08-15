@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead review — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; margin-bottom: 20px; gap: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar h1 { font-family: 'Inter', -apple-system, sans-serif; font-weight: 700; font-size: 1.85rem; margin: 0; letter-spacing: -0.02em; white-space: nowrap; }
+    .topbar nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .topbar nav a { text-decoration: none; font-weight: 600; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 0.9rem; transition: background 0.12s, color 0.12s; }
+    .topbar nav a:hover { background: var(--surface-2); }
+    .topbar nav a.primary { background: var(--gradient); color: #fff; }
+    .topbar nav a.primary:hover { background: var(--gradient); opacity: 0.9; }
+    .topbar nav a:not(.primary) { color: var(--text-primary); }
+
+    .back-link { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 18px; }
+    .back-link:hover { color: var(--cyan); }
+
+    .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+    .card-pad { padding: 20px; }
+    .card + .card, .card + .section-title, .section-title + .card { margin-top: 24px; }
+    .card-title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 1.02rem; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+    .card-title i { color: var(--text-muted); font-size: 18px; }
+
+    .lead-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .lead-head .lead-name { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; }
+    .lead-head .lead-site { color: var(--text-muted); font-size: 14px; text-decoration: none; }
+    .lead-head .lead-site:hover { color: var(--cyan); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1.4fr; gap: 24px; align-items: start; }
+    @media (max-width: 960px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .verdict-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .conf-gauge { display: flex; flex-direction: column; align-items: center; min-width: 130px; }
+    .conf-num { font-size: 2.3rem; font-weight: 700; line-height: 1; }
+    .conf-success { color: var(--success); } .conf-warning { color: var(--warning); } .conf-danger { color: var(--error); }
+    .conf-bar { width: 130px; height: 8px; border-radius: 99px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
+    .conf-bar > div { height: 100%; border-radius: 99px; }
+    .conf-bar.success > div { background: var(--success); } .conf-bar.warning > div { background: var(--warning); } .conf-bar.danger > div { background: var(--error); }
+    .conf-caption { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    .verdict-dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; flex: 1; min-width: 220px; }
+    .verdict-dl dt { font-size: 12.5px; color: var(--text-muted); font-weight: 500; }
+    .verdict-dl dd { font-size: 14px; font-weight: 600; margin: 0; color: var(--text-primary); }
+
+    .badge { display: inline-block; font-size: 12px; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 600; }
+    .badge-success { background: var(--success-bg); color: var(--success); }
+    .badge-error { background: var(--error-bg); color: var(--error); }
+    .badge-warning { background: var(--warning-bg); color: var(--warning); }
+    .badge-neutral { background: var(--muted-bg); color: var(--text-secondary); }
+
+    .points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+    .point { display: flex; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
+    .point i { font-size: 17px; margin-top: 1px; flex: none; }
+    .point .p-title { font-weight: 600; font-size: 13.5px; color: var(--text-primary); margin: 0; }
+    .point .p-detail { font-size: 13px; color: var(--text-secondary); margin: 2px 0 0; line-height: 1.5; }
+    .point.error { border-color: var(--error); } .point.error i, .point.error .p-title { color: var(--error); }
+    .point.warning { border-color: var(--warning); } .point.warning i, .point.warning .p-title { color: var(--warning); }
+    .point.info { border-color: var(--cyan); } .point.info i, .point.info .p-title { color: var(--cyan); }
+    .point.success { border-color: var(--success); } .point.success i, .point.success .p-title { color: var(--success); }
+
+    .reason-block { margin-top: 14px; padding: 12px 14px; background: var(--warning-bg); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; color: var(--text-secondary); line-height: 1.55; white-space: pre-wrap; }
+
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; font-size: 13.5px; }
+    .kv dt { color: var(--text-muted); font-weight: 500; white-space: nowrap; }
+    .kv dd { margin: 0; color: var(--text-primary); }
+    .kv dd ul { margin: 0; padding-left: 18px; }
+    .kv dd li { margin-bottom: 4px; line-height: 1.5; }
+
+    .quote { position: relative; padding: 10px 12px 10px 14px; margin: 8px 0; border-left: 3px solid var(--cyan); background: var(--surface-2); border-radius: 0 var(--radius-md) var(--radius-md) 0; font-size: 13px; color: var(--text-primary); }
+    .quote .q-label { font-size: 11.5px; color: var(--text-muted); margin-bottom: 3px; }
+
+    .evidence-group + .evidence-group { margin-top: 18px; }
+    .evidence-src { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .evidence-src .src-name { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+    .evidence-src .src-query { font-size: 12.5px; color: var(--text-muted); font-style: italic; }
+    .evidence-hit { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); margin-top: 8px; }
+    .evidence-hit .hit-title { font-size: 13.5px; font-weight: 600; margin: 0; }
+    .evidence-hit .hit-title a { color: var(--text-primary); text-decoration: none; }
+    .evidence-hit .hit-title a:hover { color: var(--cyan); }
+    .evidence-hit .hit-url { font-size: 12px; color: var(--text-muted); word-break: break-all; }
+    .evidence-hit .hit-content { font-size: 13px; color: var(--text-secondary); margin: 6px 0 0; line-height: 1.55; white-space: pre-wrap; }
+
+    .page-row { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); margin-bottom: 10px; overflow: hidden; }
+    .page-row > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 10px 12px; list-style: none; font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+    .page-row > summary::-webkit-details-marker { display: none; }
+    .page-row > summary .page-src { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--muted-bg); color: var(--text-secondary); font-weight: 600; }
+    .page-row > summary .page-url { font-size: 12px; color: var(--text-muted); font-weight: 400; }
+    .page-row .page-content { padding: 0 12px 12px; font-size: 12.5px; color: var(--text-secondary); max-height: 420px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5; border-top: 1px dashed var(--border); }
+
+    .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
+    .btn { font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: var(--radius-pill); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); transition: border-color 0.12s, color 0.12s, background 0.12s; }
+    .btn:hover { border-color: var(--border-strong); background: var(--surface-2); }
+    .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+    .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); box-shadow: var(--shadow-glow-primary); }
+
+    .flash-stack .alert { padding: 12px 16px; margin-bottom: 14px; border-radius: var(--radius-lg); border: 1px solid var(--border); }
+    .flash-stack .alert-success { background: var(--success-bg); color: var(--success); }
+    .flash-stack .alert-danger { background: var(--error-bg); color: var(--error); }
+    .flash-stack .alert-warning { background: var(--warning-bg); color: var(--warning); }
+    .flash-stack .alert-info { background: rgba(0, 221, 235, 0.12); color: var(--cyan); }
+
+    .empty { font-size: 13px; color: var(--text-muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+
+    <div class="topbar">
+      <h1>Lead review</h1>
+      <nav>
+        <a class="primary" href="{{ url_for('home') }}#dropzone">New analysis</a>
+        <a href="{{ url_for('results_view', session_id=session.id) }}">Results</a>
+        <a href="{{ url_for('history') }}">History</a>
+      </nav>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <a class="back-link" href="{{ url_for('results_view', session_id=session.id) }}"><i class="ti ti-arrow-left" aria-hidden="true"></i>Back to results</a>
+
+    <div class="card card-pad">
+      <div class="lead-head">
+        <div>
+          <h2 class="lead-name">{{ lead.company_name or '--' }}</h2>
+          {% if lead.website_url %}
+          <a class="lead-site" href="{{ lead.website_url }}" target="_blank" rel="noopener">{{ lead.website_url }} <i class="ti ti-external-link" style="font-size:13px;" aria-hidden="true"></i></a>
+          {% endif %}
+        </div>
+        <div style="text-align:right;">
+          <span class="badge {{ lead.status|badge_class }}">{{ lead.status|map_status_label }}</span>
+          {% if lead.already_exported %}<span class="badge badge-neutral" style="margin-left:6px;">Already exported</span>{% endif %}
+          {% if lead.email_status %}<span class="badge badge-warning" style="margin-left:6px;">Email: {{ lead.email_status }}</span>{% endif %}
+          <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0;">Scored {{ lead.scored_at|format_datetime }}</p>
+        </div>
+      </div>
+      {% if lead.domain_mismatch %}
+      <div class="reason-block" style="background:var(--error-bg);border-color:var(--error);margin-top:14px;">
+        <strong style="color:var(--error);">Domain mismatch:</strong> {{ lead.domain_mismatch_reason }}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="grid-2" style="margin-top:24px;">
+
+      <!-- Left: verdict + decision rationale -->
+      <div>
+        <div class="card card-pad">
+          <p class="card-title"><i class="ti ti-gauge" aria-hidden="true"></i>Verdict</p>
+          <div class="verdict-row">
+            <div class="conf-gauge">
+              {% set conf = lead.confidence if lead.confidence is not none else 0 %}
+              <span class="conf-num {{ lead.confidence|confidence_class }}">{{ "%.0f"|format(conf * 100) }}%</span>
+              <div class="conf-bar {{ lead.confidence|confidence_class }}">
+                <div style="width: {{ conf * 100 }}%;"></div>
+              </div>
+              <span class="conf-caption">{{ lead.confidence|confidence_class|replace('conf-', '') }}</span>
+            </div>
+            <dl class="verdict-dl">
+              <dt>Segment</dt><dd>{{ lead.segment|map_segment }}</dd>
+              <dt>Stage</dt><dd>{{ lead.company_stage or '—' }}</dd>
+              <dt>Recommended offer</dt><dd>{{ lead.recommended_offer|map_offer }}</dd>
+              <dt>Status</dt><dd>{{ lead.status|map_status_label }}</dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card card-pad">
+          <p class="card-title"><i class="ti ti-list-check" aria-hidden="true"></i>Decision rationale</p>
+          <ul class="points">
+            {% if lead.domain_mismatch %}
+            <li class="point error">
+              <i class="ti ti-alert-octagon" aria-hidden="true"></i>
+              <div>
+                <p class="p-title">Domain mismatch guard</p>
+                <p class="p-detail">The email domain and the website domain do not match. The verdict may describe the wrong company — confirm the target before proceeding.</p>
+              </div>
+            </li>
+            {% endif %}
+            {% if lead.needs_human_review == 1 %}
+            <li class="point warning">
+              <i class="ti ti-alert-triangle" aria-hidden="true"></i>
+              <div>
+                <p class="p-title">Flagged for manual review</p>
+                <p class="p-detail">The scoring pipeline (or the domain guard above) asked for a human decision before this lead is used.</p>
+              </div>
+            </li>
+            {% endif %}
+            {% if lead.confidence is not none and lead.confidence < 0.7 %}
+            <li class="point warning">
+              <i class="ti ti-arrow-down-right-circle" aria-hidden="true"></i>
+              <div>
+                <p class="p-title">Confidence below threshold ({{ "%.0f"|format(lead.confidence * 100) }}% &lt; 70%)</p>
+                <p class="p-detail">The verdict was too uncertain to approve automatically, so a web search escalation was triggered to gather more evidence.</p>
+              </div>
+            </li>
+            {% endif %}
+            {% if search_evidence %}
+            <li class="point info">
+              <i class="ti ti-world-search" aria-hidden="true"></i>
+              <div>
+                <p class="p-title">Web search escalation ran</p>
+                <p class="p-detail">{{ search_evidence|length }} search source(s) were queried; the results are shown below in the evidence section.</p>
+              </div>
+            </li>
+            {% endif %}
+            {% if not lead.domain_mismatch and lead.needs_human_review != 1 and (lead.confidence is none or lead.confidence >= 0.7) %}
+            <li class="point success">
+              <i class="ti ti-circle-check" aria-hidden="true"></i>
+              <div>
+                <p class="p-title">No blocking flags</p>
+                <p class="p-detail">This lead can be approved from this page if the evidence below matches your judgment.</p>
+              </div>
+            </li>
+            {% endif %}
+          </ul>
+          {% if lead.disqualify_reason %}
+          <div class="reason-block"><strong>Disqualification reason:</strong> {{ lead.disqualify_reason }}</div>
+          {% endif %}
+        </div>
+
+        <div class="actions">
+          <form action="{{ url_for('rescore_lead', lead_id=lead.id) }}" method="post"
+                onsubmit="return confirm('Re-score this lead with the LLM? The current score will be replaced.');">
+            <button class="btn" type="submit"><i class="ti ti-refresh" aria-hidden="true"></i>Re-score</button>
+          </form>
+          {% if lead.needs_human_review == 1 %}
+          <form action="{{ url_for('approve_lead', lead_id=lead.id) }}" method="post"
+                onsubmit="return confirm('Approve this lead? It will move to \'Ready to approve\'.');">
+            <button class="btn btn-primary" type="submit"><i class="ti ti-circle-check" aria-hidden="true"></i>Approve &amp; mark ready</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Right: score details -->
+      <div>
+        <div class="card card-pad">
+          <p class="card-title"><i class="ti ti-chart-histogram" aria-hidden="true"></i>Score details</p>
+          <dl class="kv">
+            {% if lead.built_with_ai_signals %}
+            <dt>Built with AI</dt>
+            <dd>
+              <ul>
+                {% for s in lead.built_with_ai_signals %}<li>{{ s }}</li>{% else %}<li class="empty">None found</li>{% endfor %}
+              </ul>
+            </dd>
+            {% endif %}
+            {% if lead.technical_signals %}
+            <dt>Technical signals</dt>
+            <dd>
+              <ul>
+                {% for s in lead.technical_signals %}<li>{{ s }}</li>{% else %}<li class="empty">None found</li>{% endfor %}
+              </ul>
+            </dd>
+            {% endif %}
+            {% if lead.pain_signals %}
+            <dt>Pain signals</dt>
+            <dd>
+              <ul>
+                {% for s in lead.pain_signals %}<li>{{ s }}</li>{% else %}<li class="empty">None found</li>{% endfor %}
+              </ul>
+            </dd>
+            {% endif %}
+            {% if lead.evidence_quotes %}
+            <dt>Evidence quotes</dt>
+            <dd>
+              {% for q in lead.evidence_quotes %}
+              <div class="quote">
+                {% if q is mapping %}<div class="q-label">{{ q.get('context') or q.get('source') or 'quote' }}</div>{{ q.get('quote') or q }}{% else %}{{ q }}{% endif %}
+              </div>
+              {% else %}<span class="empty">No quotes</span>{% endfor %}
+            </dd>
+            {% endif %}
+            {% if lead.personalization_hooks %}
+            <dt>Personalization hooks</dt>
+            <dd>
+              <ul>
+                {% for h in lead.personalization_hooks %}
+                <li>
+                  {% if h is mapping %}<strong>{{ h.get('hook', '') }}</strong>{% if h.get('based_on') %}<br><span style="color:var(--text-muted);font-size:12.5px;">based on: {{ h.get('based_on') }}</span>{% endif %}{% else %}{{ h }}{% endif %}
+                </li>
+                {% endfor %}
+              </ul>
+            </dd>
+            {% endif %}
+            {% if not lead.built_with_ai_signals and not lead.technical_signals and not lead.pain_signals and not lead.evidence_quotes and not lead.personalization_hooks %}
+            <span class="empty">No score details recorded for this lead.</span>
+            {% endif %}
+          </dl>
+        </div>
+
+        {% if technical %}
+        <div class="card card-pad">
+          <p class="card-title"><i class="ti ti-binary" aria-hidden="true"></i>Deterministic technical signals (site fingerprint)</p>
+          <dl class="kv">
+            {% if technical.get('generator_fingerprint') %}<dt>Generator fingerprint</dt><dd>{{ technical.get('generator_fingerprint') }}</dd>{% endif %}
+            {% if technical.get('generator_meta_tag') %}<dt>Meta generator</dt><dd>{{ technical.get('generator_meta_tag') }}</dd>{% endif %}
+            {% if technical.get('github_repo_url') %}<dt>GitHub repo</dt><dd><a href="{{ technical.get('github_repo_url') }}" target="_blank" rel="noopener" style="color:var(--cyan);">{{ technical.get('github_repo_url') }}</a></dd>{% endif %}
+            {% if technical.get('github_check') %}
+            <dt>GitHub check</dt>
+            <dd><ul>{% for item in technical.get('github_check') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('vibe_language_matches') %}
+            <dt>Vibe language matches</dt>
+            <dd><ul>{% for item in technical.get('vibe_language_matches') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('trend_fonts_found') %}
+            <dt>Trend fonts</dt>
+            <dd><ul>{% for item in technical.get('trend_fonts_found') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('visual_patterns_triggered') %}
+            <dt>Visual patterns</dt>
+            <dd><ul>{% for item in technical.get('visual_patterns_triggered') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('ai_style_phrases_found') %}
+            <dt>AI-style phrases</dt>
+            <dd><ul>{% for item in technical.get('ai_style_phrases_found') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('ai_style_phrase_density') %}
+            <dt>AI-style phrase density</dt><dd>{{ technical.get('ai_style_phrase_density') }}</dd>
+            {% endif %}
+            {% if technical.get('ai_authorship_disclosures_found') %}
+            <dt>AI authorship disclosures</dt>
+            <dd><ul>{% for item in technical.get('ai_authorship_disclosures_found') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% endif %}
+            {% if technical.get('computed_at') %}<dt>Computed at</dt><dd>{{ technical.get('computed_at') }}</dd>{% endif %}
+          </dl>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Evidence: scraped pages -->
+    {% if content_rows %}
+    <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-file-text" aria-hidden="true"></i>Scraped pages</h3>
+    <div class="card card-pad">
+      {% for row in content_rows %}
+      <details class="page-row">
+        <summary>
+          <span class="page-src">{{ row.source }}</span>
+          <span class="page-url">{{ row.url }}</span>
+        </summary>
+        <div class="page-content">{{ row.content[:6000] }}{% if row.content|length > 6000 %} …{% endif %}</div>
+      </details>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Evidence: web search -->
+    {% if search_evidence %}
+    <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-world-search" aria-hidden="true"></i>Web search evidence (ScrapeGraphAI)</h3>
+    <div class="card card-pad">
+      {% for ev in search_evidence %}
+      <div class="evidence-group">
+        <div class="evidence-src">
+          <span class="badge badge-neutral" style="min-width:92px;text-align:center;">{{ ev.source }}</span>
+          {% if ev.query %}<span class="src-query">"{{ ev.query }}"</span>{% endif %}
+        </div>
+        {% if ev.results %}
+          {% for hit in ev.results %}
+          <div class="evidence-hit">
+            <p class="hit-title">
+              {% if hit.url %}<a href="{{ hit.url }}" target="_blank" rel="noopener">{{ hit.title or hit.url }}</a>
+              {% else %}{{ hit.title or 'Untitled' }}{% endif %}
+            </p>
+            {% if hit.url %}<p class="hit-url">{{ hit.url }}</p>{% endif %}
+            {% if hit.content %}<p class="hit-content">{{ hit.content[:1500] }}{% if hit.content|length > 1500 %} …{% endif %}</p>{% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+          <span class="empty">No results for this source.</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  </div>
+</body>
+</html>

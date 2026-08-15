@@ -77,12 +77,6 @@
     .conf-muted { color: var(--text-secondary); }
     .offer-cell { font-size: 13px; color: var(--text-secondary); min-width: 100px; }
     .reason-cell { font-size: 12px; color: var(--text-muted); max-width: 320px; }
-    .btn-icon {
-      font-size: 12px; padding: 6px 10px; background: var(--surface-2);
-      border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--text-secondary);
-      cursor: pointer; transition: border-color 0.12s, color 0.12s;
-    }
-    .btn-icon:hover { border-color: var(--border-strong); color: var(--cyan); }
 
     .collapse-card {
       border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -200,7 +194,7 @@
       </div>
     </div>
 
-    <form id="emailForm" action="{{ url_for('send_emails', session_id=session.id) }}" method="post"></form>
+    <form id="emailForm" action="{{ url_for('prepare_emails', session_id=session.id) }}" method="post"></form>
 
     <!-- Ready to approve -->
     <h3 class="section-title stat-success">Ready to approve</h3>
@@ -231,8 +225,6 @@
         <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
         {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
-        <button class="btn-icon" type="button" aria-label="Approve {{ lead.company_name or '' }}"><i class="ti ti-check" style="font-size:15px;" aria-hidden="true"></i></button>
-        <button class="btn-icon" type="button" aria-label="Reject {{ lead.company_name or '' }}"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>
       </div>
       {% endfor %}
     </div>
@@ -270,7 +262,7 @@
         <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
         {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
-        <button class="btn-outline btn-small" type="button">Review</button>
+        <a class="btn-outline btn-small" href="{{ url_for('lead_review_view', lead_id=lead.id) }}"><i class="ti ti-eye" style="font-size:14px;vertical-align:-2px;" aria-hidden="true"></i>Review</a>
       </div>
       {% endfor %}
     </div>
@@ -351,7 +343,7 @@
 
     <div class="email-actions">
       <button class="btn-primary" type="submit" form="emailForm" id="sendEmailsBtn" disabled>
-        Send selected emails (<span id="selectedCount">0</span>)
+        Generate email drafts (<span id="selectedCount">0</span>)
       </button>
     </div>
 
@@ -385,7 +377,7 @@
         e.preventDefault();
         return;
       }
-      if (!confirm('Send ' + n + ' personalized email(s)?')) {
+      if (!confirm('Generate ' + n + ' personalized email draft(s)? You will review and confirm each one before sending.')) {
         e.preventDefault();
       }
     });

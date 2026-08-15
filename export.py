@@ -441,7 +441,7 @@ SEARCH_FIELDS = [
 
 def _iter_search_rows(conn, session_id=None):
     """Row generator for the web search CSV — one row per result."""
-    leads = dbmod.get_leads(conn, session_id=session_id, include_duplicates=False)
+    leads = dbmod.get_leads(conn, session_id=session_id)
     evidence_map = dbmod.get_lead_search_evidence_map(conn, [lead["id"] for lead in leads])
     for lead in leads:
         evidence = evidence_map.get(lead["id"], [])

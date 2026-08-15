@@ -717,13 +717,13 @@ def _homepage_content(conn, lead_id: int) -> str:
     return ""
 
 
-@app.route("/session/<int:session_id>/send_emails", methods=["POST"])
-def send_emails(session_id: int):
-    """Generates and sends personalized outreach emails for the selected leads.
+@app.route("/session/<int:session_id>/prepare_emails", methods=["POST"])
+def prepare_emails(session_id: int):
+    """Generates a DRAFT email for each selected lead (no sending yet).
 
-    Each lead is handled independently in its own try/except: a failure on
-    one lead never blocks the following ones. The explicit lead selection
-    IS the human validation step — nothing is ever sent automatically.
+    Each draft (subject + body) is saved in the DB with status 'draft',
+    then the user is redirected to the review page where they can read,
+    edit, and confirm the send — nothing is sent here.
     """
     _, denied = _require_session(session_id)
     if denied is not None:
@@ -735,13 +735,83 @@ def send_emails(session_id: int):
         return redirect(url_for("results_view", session_id=session_id))
 
     import emailer
+
+    generated = failed = skipped = 0
+    with open_db() as conn:
+        scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
+        for lead_id in lead_ids:
+            lead = scores.get(lead_id)
+            if lead is None:
+                failed += 1
+                continue
+            if lead.get("email_status") == "sent":
+                skipped += 1
+                continue
+            if lead.get("email_status") == "draft":
+                skipped += 1
+                continue
+            try:
+                email = emailer.generate_email_for_lead(lead, _homepage_content(conn, lead_id))
+                dbmod.update_lead_email_status(
+                    conn,
+                    lead_id,
+                    subject=email["subject"],
+                    body=email["body"],
+                    status="draft",
+                    provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
+                )
+                generated += 1
+            except Exception as e:
+                failed += 1
+                dbmod.update_lead_email_status(conn, lead_id, status="failed", error=str(e))
+
+    message = f"{generated} email draft(s) generated, {failed} failed, {skipped} already drafted/sent (skipped)."
+    flash(message, "success" if not failed else "warning")
+    return redirect(url_for("email_review_view", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/email_review")
+def email_review_view(session_id: int):
+    """Review page: shows every drafted email with editable subject/body.
+
+    The user reads each generated email, edits it if necessary, then
+    confirms the send — the review IS the human validation step.
+    """
+    session_row, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+
+    with open_db() as conn:
+        scores_data = dbmod.get_leads_with_scores(conn, session_id=session_id)
+    drafts = [l for l in scores_data if l.get("email_status") == "draft"]
+
+    return render_template("email_review.html", session=session_row, drafts=drafts)
+
+
+@app.route("/session/<int:session_id>/send_emails", methods=["POST"])
+def send_emails(session_id: int):
+    """Sends the (possibly edited) drafted emails for the selected leads.
+
+    The review page posts the edited subject/body per lead — what is sent
+    is exactly what the user saw and approved. Nothing is ever sent
+    without this explicit confirmation.
+    """
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+
+    lead_ids = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
+    if not lead_ids:
+        flash("Select at least one email to send.", "warning")
+        return redirect(url_for("email_review_view", session_id=session_id))
+
     from gmail_sender import GmailNotConfigured, THROTTLE_SECONDS, get_credentials, send_email
 
     try:
         get_credentials()
     except GmailNotConfigured as e:
         flash(f"{e} See setup instructions in setup_gmail.py.", "error")
-        return redirect(url_for("results_view", session_id=session_id))
+        return redirect(url_for("email_review_view", session_id=session_id))
 
     sent = failed = skipped = 0
     with open_db() as conn:
@@ -754,14 +824,21 @@ def send_emails(session_id: int):
             if lead.get("email_status") == "sent":
                 skipped += 1
                 continue
+            # The edited content posted by the review form is authoritative;
+            # fall back to the stored draft when a field is missing.
+            subject = request.form.get(f"subject_{lead_id}") or lead.get("email_subject") or ""
+            body = request.form.get(f"body_{lead_id}") or lead.get("email_body") or ""
+            if not subject or not body:
+                failed += 1
+                dbmod.update_lead_email_status(conn, lead_id, status="failed", error="empty email content")
+                continue
             try:
-                email = emailer.generate_email_for_lead(lead, _homepage_content(conn, lead_id))
-                send_email(lead.get("email") or "", email["subject"], email["body"])
+                send_email(lead.get("email") or "", subject, body)
                 dbmod.update_lead_email_status(
                     conn,
                     lead_id,
-                    subject=email["subject"],
-                    body=email["body"],
+                    subject=subject,
+                    body=body,
                     status="sent",
                     provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
                     sent_at=_db_now(),
@@ -937,6 +1014,89 @@ def rescore_leads(session_id: int):
     flash(f"{len(to_rescore)} lead(s) marked for re-scoring.", "info")
     return redirect(url_for("progress_view", session_id=session_id))
 
+
+@app.route("/lead/<int:lead_id>/review", methods=["GET"])
+def lead_review_view(lead_id: int):
+    """Structured per-lead review page: verdict, decision rationale and all evidence."""
+    with open_db() as conn:
+        all_scored = dbmod.get_leads_with_scores(conn)
+        lead = next((l for l in all_scored if l.get("id") == lead_id), None)
+        if lead is None:
+            flash("Lead not found.", "error")
+            return redirect(url_for("home"))
+        session_row, denied = _require_session(lead["session_id"])
+        if denied is not None:
+            return denied
+        for field in (
+            "evidence_quotes", "personalization_hooks", "built_with_ai_signals",
+            "technical_signals", "pain_signals",
+        ):
+            val = lead.get(field)
+            if isinstance(val, str):
+                try:
+                    lead[field] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        content_rows = dbmod.get_lead_content(conn, lead_id)
+        technical = dbmod.get_lead_technical_signals(conn, lead_id)
+        search_evidence = dbmod.get_lead_search_evidence(conn, lead_id)
+    return render_template(
+        "lead_review.html",
+        session=session_row,
+        lead=lead,
+        content_rows=content_rows,
+        technical=technical,
+        search_evidence=search_evidence,
+    )
+
+
+@app.route("/lead/<int:lead_id>/approve", methods=["POST"])
+def approve_lead(lead_id: int):
+    """Manual review outcome: clear the review flag so the lead moves to 'Ready to approve'."""
+    with open_db() as conn:
+        row = conn.execute(
+            "SELECT session_id, company_name FROM leads WHERE id = ?", (lead_id,)
+        ).fetchone()
+        if row is None:
+            flash("Lead not found.", "error")
+            return redirect(url_for("home"))
+        _, denied = _require_session(row["session_id"])
+        if denied is not None:
+            return denied
+        conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lead_id,))
+        conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lead_id,))
+        conn.commit()
+        flash(f"{row['company_name'] or 'Lead'} marked as ready to approve.", "success")
+    return redirect(url_for("lead_review_view", lead_id=lead_id))
+
+
+@app.route("/lead/<int:lead_id>/rescore", methods=["POST"])
+def rescore_lead(lead_id: int):
+    """Manual review outcome: re-run the LLM scoring on this lead (no re-scraping)."""
+    with open_db() as conn:
+        row = conn.execute(
+            "SELECT session_id FROM leads WHERE id = ?", (lead_id,)
+        ).fetchone()
+        if row is None:
+            flash("Lead not found.", "error")
+            return redirect(url_for("home"))
+        _, denied = _require_session(row["session_id"])
+        if denied is not None:
+            return denied
+        conn.execute("UPDATE leads SET status = 'RESCORE_PENDING' WHERE id = ?", (lead_id,))
+        conn.execute("DELETE FROM lead_scores WHERE lead_id = ?", (lead_id,))
+        conn.commit()
+        session_id = row["session_id"]
+        dbmod.resume_analysis_session(conn, session_id)
+    new_conn = dbmod.get_connection()
+    threading.Thread(
+        target=_background_rescore_pipeline,
+        args=(new_conn, session_id, 1.0),
+        kwargs={"lead_status": "RESCORE_PENDING"},
+        daemon=True,
+    ).start()
+    flash("Lead marked for re-scoring.", "info")
+    return redirect(url_for("progress_view", session_id=session_id))
 
 
 @app.route("/start-analysis", methods=["POST"])
