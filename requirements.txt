@@ -9,3 +9,4 @@ psycopg2-binary
 groq
 google-api-python-client
 google-auth-oauthlib
+gunicorn==26.1.0
