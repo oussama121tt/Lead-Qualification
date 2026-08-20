@@ -1,5 +1,6 @@
 """
-AI lead scoring via the Groq API (OpenAI SDK compatible).
+AI lead scoring via the llm_provider abstraction (Groq by default; switch to
+Claude with SCORING_LLM_PROVIDER=anthropic in .env — no code change).
 
 Evaluates each lead from Apollo metadata, the scraped site content,
 and the deterministic signals computed by scraper.py. Produces a structured
@@ -35,13 +36,13 @@ import json
 import os
 import re
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv()
 
 from constants import CONFIDENCE_THRESHOLD, VALID_SEGMENTS
+from llm_provider import get_llm_provider
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "llama-3.3-70b-versatile"  # informational default; the actual model comes from llm_provider
 MAX_CONTENT_CHARS = 16000  # legacy — still used by the retry paths (site content only)
 MAX_SITE_CONTENT_CHARS = 12000  # dedicated budget for the site (first-party) content
 MAX_WEB_EVIDENCE_CHARS = 12000  # same dedicated budget as the site — web search carries
@@ -261,16 +262,6 @@ Respond ONLY in JSON following this schema:
   "needs_human_review": false
 }"""
 
-_client = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
-    return _client
-
-
 def _strip_images(text: str) -> str:
     """Removes image and media markers from the text before sending it to the LLM."""
     text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
@@ -454,21 +445,26 @@ def _is_json_parse_error(e: Exception) -> bool:
     return False
 
 
-def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict:
-    """Calls Groq and parses the JSON response."""
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS,
+              cost_cb=None) -> dict:
+    """Calls the configured scoring LLM (llm_provider) and parses the JSON
+    response. cost_cb, when provided, receives (meta, latency_ms) after every
+    call — including retries — so no LLM spend is ever unlogged (FR-7)."""
+    import time as _time
+    provider = get_llm_provider("scoring")
+    t0 = _time.monotonic()
+    data, meta = provider.generate_json(
+        user_content,
+        system=SYSTEM_PROMPT,
         temperature=0.2,
         max_tokens=max_output_tokens,
-        response_format={"type": "json_object"},
-        timeout=GROQ_TIMEOUT_SECONDS,
     )
-    return json.loads(response.choices[0].message.content)
+    if cost_cb is not None:
+        try:
+            cost_cb(meta, int((_time.monotonic() - t0) * 1000))
+        except Exception:
+            pass  # cost logging must never fail a scoring call
+    return data
 
 
 def _apply_confidence_guard(verdict: dict) -> dict:
@@ -665,11 +661,11 @@ def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict
     return verdict
 
 
-def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None) -> dict:
+def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None, cost_cb=None) -> dict:
     """Retries the scoring with reduced content after a JSON parsing failure."""
     try:
         shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS)
+        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS, cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
         verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
@@ -730,6 +726,7 @@ def score_content(
     scoring_criteria: list[str] | None = None,
     scoring_criteria_custom: str = "",
     site_content_missing: bool = False,
+    cost_cb=None,
 ) -> dict:
     """Evaluates a lead from the Apollo metadata, the scraped content, and the
     deterministic signals.
@@ -755,6 +752,10 @@ def score_content(
             needs_human_review=True regardless of confidence, with the
             limitation traced in disqualify_reason (see
             _apply_site_missing_guard and SITE_MISSING_INSTRUCTION).
+        cost_cb: optional callable (meta, latency_ms) invoked after EVERY LLM
+            call this evaluation makes (retries included) — the pipeline uses
+            it to log tokens/cost per lead and enforce the session budget cap
+            (FR-7). Never raises into the scoring path.
 
     Returns:
         Dict matching the JSON schema of the verdict (segment, confidence, etc.).
@@ -812,21 +813,21 @@ def score_content(
         return "\n\n---\n\n".join(parts)
 
     try:
-        verdict = _call_llm(build_user_content(text))
+        verdict = _call_llm(build_user_content(text), cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
         verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
-        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
+        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
     except Exception as e:
         if _is_json_parse_error(e):
-            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
+            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-                verdict = _call_llm(build_user_content(shorter_text))
+                verdict = _call_llm(build_user_content(shorter_text), cost_cb=cost_cb)
                 verdict = _apply_confidence_guard(verdict)
                 verdict = _validate_verdict(verdict)
                 verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)

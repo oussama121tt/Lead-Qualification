@@ -192,6 +192,13 @@
         <p class="stat-label">Waiting</p>
         <p class="stat-value">{{ summary.pending }}</p>
       </div>
+      {% if summary.llm_spend %}
+      <div class="stat-card">
+        <p class="stat-label">LLM spend (session)</p>
+        <p class="stat-value">${{ '%.4f'|format(summary.llm_spend.cost_usd) }}</p>
+        <p class="stat-label">{{ summary.llm_spend.calls }} call(s) · {{ summary.llm_spend.tokens_in }} in / {{ summary.llm_spend.tokens_out }} out</p>
+      </div>
+      {% endif %}
     </div>
 
     <form id="emailForm" action="{{ url_for('prepare_emails', session_id=session.id) }}" method="post"></form>

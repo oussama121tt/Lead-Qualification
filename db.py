@@ -74,6 +74,9 @@ COLUMN_ALIASES = {
     "company_name": ["company_name", "company", "company name", "organization"],
     "email": ["email", "email address", "work email"],
     "website_url": ["website_url", "website", "company website", "website url"],
+    # Optional in the spec (FR-1) — used by the LinkedIn founder lane when
+    # present, so the person harvest never has to guess a profile by name.
+    "linkedin_url": ["linkedin_url", "linkedin url", "person linkedin url", "linkedin"],
 }
 
 FREE_EMAIL_PROVIDERS = {
@@ -624,6 +627,25 @@ def _schema_sql() -> str:
             FOREIGN KEY (lead_id) REFERENCES leads(id)
         );
 
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            {pk},
+            session_id INTEGER,
+            lead_id INTEGER,
+            purpose TEXT,
+            provider TEXT,
+            model TEXT,
+            tokens_in INTEGER,
+            tokens_out INTEGER,
+            cost_usd {real_col},
+            latency_ms INTEGER,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS li_daily_counter (
+            day TEXT PRIMARY KEY,
+            profiles_done INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON analysis_sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -633,6 +655,7 @@ def _schema_sql() -> str:
         CREATE INDEX IF NOT EXISTS idx_scores_session ON lead_scores(session_id);
         CREATE INDEX IF NOT EXISTS idx_technical_signals_lead ON lead_technical_signals(lead_id);
         CREATE INDEX IF NOT EXISTS idx_export_history_domain ON export_history(domain_normalized);
+        CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
         """
 
 
@@ -777,6 +800,15 @@ def init_db(conn) -> None:
     ]:
         _add_column(conn, "leads", col, coltype)
 
+    # Merge additions: the founder's LinkedIn URL from the Apollo CSV
+    # (optional column, FR-1), and per-lead evidence coverage notes (JSON
+    # list) so no data gap is ever silent.
+    for col, coltype in [
+        ("linkedin_url", "TEXT"),
+        ("coverage_notes", "TEXT"),
+    ]:
+        _add_column(conn, "leads", col, coltype)
+
     _ensure_sequence_housekeeping(conn)
     conn.commit()
 
@@ -864,6 +896,7 @@ def insert_leads_from_csv(
                     email_domain,
                     domain_mismatch,
                     domain_mismatch_reason,
+                    _pick_column(row, "linkedin_url"),
                     "NEW",
                     batch_id,
                     now,
@@ -875,8 +908,8 @@ def insert_leads_from_csv(
         INSERT INTO leads
             (session_id, first_name, last_name, title, company_name, email, website_url,
              domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-             status, batch_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             linkedin_url, status, batch_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows_to_insert,
     )
@@ -1363,3 +1396,61 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY l.id"
     return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+def get_lead_with_score(conn, lead_id: int) -> dict | None:
+    """One lead + its latest verdict, fetched directly by id.
+
+    Replaces the previous pattern of loading EVERY lead in the database and
+    scanning for one id (app.py lead_review_view) — that worked at demo
+    volume and would crawl at a few thousand leads.
+    """
+    row = conn.execute(
+        """
+        SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+               s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+               s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+               s.pain_signals, s.scored_at
+        FROM leads l
+        LEFT JOIN lead_scores s ON s.lead_id = l.id
+            AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+        WHERE l.id = ?
+        """,
+        (lead_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def append_coverage_notes(conn, lead_id: int, notes: list[str]) -> None:
+    """Appends data-quality/coverage notes to a lead (JSON list column).
+
+    Coverage notes are the merge's "nothing fails silently" rule: which
+    evidence lanes ran, which were skipped/capped/failed, what was thin or
+    truncated. Duplicate notes are not re-appended.
+    """
+    if not notes:
+        return
+    row = conn.execute("SELECT coverage_notes FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    existing: list = []
+    if row and row["coverage_notes"]:
+        try:
+            existing = json.loads(row["coverage_notes"])
+        except (json.JSONDecodeError, TypeError):
+            existing = [str(row["coverage_notes"])]
+    for n in notes:
+        if n and n not in existing:
+            existing.append(n)
+    conn.execute(
+        "UPDATE leads SET coverage_notes = ? WHERE id = ?",
+        (json.dumps(existing, ensure_ascii=False), lead_id),
+    )
+    conn.commit()
+
+
+def get_coverage_notes(conn, lead_id: int) -> list[str]:
+    row = conn.execute("SELECT coverage_notes FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row or not row["coverage_notes"]:
+        return []
+    try:
+        return json.loads(row["coverage_notes"])
+    except (json.JSONDecodeError, TypeError):
+        return [str(row["coverage_notes"])]

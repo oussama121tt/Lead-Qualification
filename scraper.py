@@ -605,23 +605,12 @@ def _content_fingerprint(markdown: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _find_key_pages(homepage_url: str):
-    # rawHtml in addition to markdown/links: needed for deterministic
-    # signal extraction, markdown alone is not enough.
-    result = _firecrawl_scrape(homepage_url, formats=["markdown", "rawHtml", "links"], timeout=10000)
-    all_links = [
-        link for link in (result.links or [])
-        if _is_real_subpage(link, homepage_url)
-    ]
-
-    # Fix bug #2: only keep same-domain links for keyword matching.
-    # An external link (g2.com, a review site, LinkedIn...) whose URL
-    # contains "product" or "about" must never be chosen as the lead's
-    # "product"/"about" page.
-    same_domain_links = [
-        link for link in all_links if _is_same_domain(link, homepage_url)
-    ]
-
+def _choose_key_pages(same_domain_links: list, homepage_url: str) -> dict:
+    """Selects the key pages (about/pricing/careers/product) from a list of
+    same-domain links: keyword matching, then common standard paths (verified
+    with a free HEAD/GET before any paid scrape), then a catch-all for
+    "product" only. Shared by the Firecrawl path and the free-first path so
+    both discover pages identically."""
     found_pages = {"homepage": homepage_url}
     for category, keywords in KEYWORDS.items():
         for link in same_domain_links:
@@ -631,12 +620,9 @@ def _find_key_pages(homepage_url: str):
                 break
 
     # Automatic fallback: for any category not found through the homepage
-    # links (JS nav not exposed to Firecrawl, site with no direct link,
-    # etc.), try the most common standard paths. They are only scraped if
-    # they actually exist (_url_exists, free) — never spend a Firecrawl
-    # credit blindly on a 404.
-    # (These candidates are built on the homepage domain, so they are
-    # always "same domain" by construction — no need to re-filter here.)
+    # links (JS nav not exposed, site with no direct link, etc.), try the
+    # most common standard paths. Only kept if they actually exist
+    # (_url_exists, free) — never spend a paid credit blindly on a 404.
     base = homepage_url.rstrip("/")
     for category, candidate_paths in COMMON_PATH_CANDIDATES.items():
         if category in found_pages:
@@ -648,16 +634,37 @@ def _find_key_pages(homepage_url: str):
                 break
 
     # Catch-all for "product" only: if the category is still empty after
-    # keywords + standard paths (e.g. Linear uses /intake, /plan,
-    # /build instead of /product), take the first unassigned link.
-    # Only done for product (not about/careers/pricing) because it is the
-    # only category vague enough to have a thousand different names.
+    # keywords + standard paths (e.g. Linear uses /intake, /plan, /build
+    # instead of /product), take the first unassigned link. Only done for
+    # product because it is the only category vague enough to have a
+    # thousand different names.
     if "product" not in found_pages:
         assigned = set(found_pages.values())
         for link in same_domain_links:
             if link not in assigned and link != homepage_url:
                 found_pages["product"] = link
                 break
+
+    return found_pages
+
+
+def _find_key_pages(homepage_url: str):
+    # rawHtml in addition to markdown/links: needed for deterministic
+    # signal extraction, markdown alone is not enough.
+    result = _firecrawl_scrape(homepage_url, formats=["markdown", "rawHtml", "links"], timeout=10000)
+    all_links = [
+        link for link in (result.links or [])
+        if _is_real_subpage(link, homepage_url)
+    ]
+
+    # Only keep same-domain links for keyword matching. An external link
+    # (g2.com, a review site, LinkedIn...) whose URL contains "product" or
+    # "about" must never be chosen as the lead's "product"/"about" page.
+    same_domain_links = [
+        link for link in all_links if _is_same_domain(link, homepage_url)
+    ]
+
+    found_pages = _choose_key_pages(same_domain_links, homepage_url)
 
     # all_links (from any origin) is returned as-is for
     # extract_technical_signals, which needs to find an external GitHub
@@ -896,6 +903,12 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
     Scrapes the homepage + up to 4 key pages discovered automatically,
     and computes the deterministic technical signals on the homepage.
 
+    FREE-FIRST (merge addition): pages are fetched with plain requests +
+    BeautifulSoup first (zero credits — see site_fetcher.py); Firecrawl is
+    only used as a fallback for JS-heavy/app-shell pages the free fetch
+    cannot read. Disable with [website].free_first=false in config.toml to
+    restore the all-Firecrawl behavior.
+
     Returns:
         {
             "status": "PARSED" | "FETCH_PARTIAL" | "FETCH_FAILED",
@@ -903,8 +916,156 @@ def scrape_website(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
             "technical_signals": {...} | None,
             "github_check": {...} | None,
             "error": str | None,
+            "fetch_notes": [str, ...],   # coverage notes: how each page was fetched
         }
     """
+    notes: list[str] = []
+    try:
+        from runconfig import load_config
+        free_first = load_config().website.free_first
+    except Exception:
+        free_first = True
+
+    if free_first:
+        result = _scrape_website_free(homepage_url, notes)
+        if result is not None:
+            result["fetch_notes"] = notes
+            return result
+        # Free path unusable for this site — escalate the whole lead to
+        # Firecrawl (the note explaining why is already in `notes`).
+
+    result = _scrape_website_firecrawl(homepage_url, throttle_seconds=throttle_seconds)
+    result["fetch_notes"] = notes + ["fetched via Firecrawl (paid)"]
+    return result
+
+
+def _scrape_website_free(homepage_url: str, notes: list) -> dict | None:
+    """Free-first scrape of a whole site. Returns the same contract as
+    scrape_website, or None when the free path cannot handle this site
+    (JS-heavy homepage, network failure) and the caller must escalate to
+    Firecrawl. Individual sub-pages that fail the free fetch are escalated
+    to Firecrawl one by one — never the whole site."""
+    import site_fetcher
+
+    try:
+        from runconfig import load_config
+        cfg_web = load_config().website
+        page_timeout = cfg_web.page_timeout
+        per_domain_delay = cfg_web.per_domain_delay
+    except Exception:
+        page_timeout, per_domain_delay = 15.0, 1.0
+
+    home = site_fetcher.fetch_page(homepage_url, timeout=page_timeout,
+                                   per_domain_delay=per_domain_delay)
+    if not home["ok"]:
+        notes.append(f"free homepage fetch failed ({home['error']}); escalated to Firecrawl")
+        return None
+    if home["js_heavy"]:
+        notes.append("homepage is a JS-heavy app shell; escalated to Firecrawl")
+        return None
+    homepage_text = home["text"]
+    if _looks_broken(homepage_text):
+        notes.append("free homepage content looked broken/empty; escalated to Firecrawl")
+        return None
+    notes.append("homepage fetched free (requests)")
+
+    all_links = [l for l in home["links"] if _is_real_subpage(l, homepage_url)]
+    same_domain_links = [l for l in all_links if _is_same_domain(l, homepage_url)]
+    pages = _choose_key_pages(same_domain_links, homepage_url)
+
+    rows = [("homepage", homepage_url,
+             _tag_attributed_content(homepage_text[:MAX_CONTENT_CHARS_PER_PAGE]))]
+    seen_fingerprints = {_content_fingerprint(homepage_text)}
+
+    failures = 0
+    duplicates = 0
+    founder_bio_text_parts = [homepage_text]
+    careers_signal = None
+    subpage_links: set[str] = set()
+    other_pages = {k: v for k, v in pages.items() if k != "homepage"}
+
+    for category, url in other_pages.items():
+        raw_content = None
+        page = site_fetcher.fetch_page(url, timeout=page_timeout,
+                                       per_domain_delay=per_domain_delay)
+        if page["ok"] and not page["js_heavy"]:
+            raw_content = page["text"][:MAX_CONTENT_CHARS_PER_PAGE]
+            for l in page["links"]:
+                if _is_real_subpage(l, homepage_url):
+                    subpage_links.add(l)
+        else:
+            # Per-page paid fallback: only THIS page costs a credit.
+            why = "JS-heavy" if page["ok"] else f"failed: {page['error']}"
+            try:
+                r = _firecrawl_scrape(url, formats=["markdown", "links"],
+                                      only_main_content=True, timeout=10000)
+                raw_content = (r.markdown or "")[:MAX_CONTENT_CHARS_PER_PAGE]
+                notes.append(f"{category} page escalated to Firecrawl (free fetch {why})")
+                for l in (r.links or []):
+                    if _is_real_subpage(l, homepage_url):
+                        subpage_links.add(l)
+            except Exception as e:
+                failures += 1
+                notes.append(f"{category} page unusable (free fetch {why}; Firecrawl: {e})")
+                continue
+
+        if _looks_broken(raw_content):
+            failures += 1
+            notes.append(f"{category} page ignored (broken/empty content)")
+            continue
+
+        fingerprint = _content_fingerprint(raw_content)
+        if fingerprint in seen_fingerprints:
+            duplicates += 1
+            notes.append(f"{category} page ignored (identical to an already kept page)")
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        if category in ("about", "product"):
+            founder_bio_text_parts.append(raw_content)
+
+        if category == "careers":
+            careers_signal = extract_careers_signal(raw_content)
+            content = _format_signal_as_text("Careers", careers_signal)
+        elif category == "pricing":
+            content = _format_signal_as_text("Pricing", extract_pricing_signal(raw_content))
+        else:
+            content = _tag_attributed_content(raw_content)
+
+        rows.append((category, url, content))
+
+    all_links = list(set(all_links) | subpage_links)
+
+    technical_signals = extract_technical_signals(
+        raw_html=home["html"],
+        all_links=all_links,
+        homepage_text=homepage_text,
+    )
+    technical_signals["founder_name_candidates"] = extract_founder_name_candidates(
+        "\n\n".join(founder_bio_text_parts)
+    )
+    if isinstance(careers_signal, dict) and "hiring_technical" in careers_signal:
+        technical_signals["hiring_technical"] = bool(careers_signal.get("hiring_technical"))
+
+    github_check = None
+    if technical_signals.get("github_repo_url"):
+        github_check = check_github_repo_pattern(technical_signals["github_repo_url"])
+
+    unusable = failures + duplicates
+    status = "FETCH_PARTIAL" if unusable > 0 else "PARSED"
+
+    return {
+        "status": status,
+        "rows": rows,
+        "technical_signals": technical_signals,
+        "github_check": github_check,
+        "error": None,
+    }
+
+
+def _scrape_website_firecrawl(homepage_url: str, throttle_seconds: float = 1.0) -> dict:
+    """All-Firecrawl scrape path (the original behavior) — used when the
+    free-first path cannot handle a site, or when free_first is disabled."""
     try:
         pages, homepage_result, all_links = _find_key_pages(homepage_url)
     except Exception as e:
@@ -1242,6 +1403,7 @@ def search_additional_evidence(
     throttle_seconds: float = 1.0,
     known_linkedin_company_url: str | None = None,
     known_linkedin_person_url: str | None = None,
+    skip_person_linkedin: bool = False,
 ) -> dict:
     """
     Queries ScrapeGraphAI Search for each targeted source (LinkedIn —
@@ -1294,8 +1456,8 @@ def search_additional_evidence(
     for source, template in SEARCH_QUERY_TEMPLATES.items():
         if source == "linkedin" and known_linkedin_company_url:
             continue  # known URL from the site itself, no need to guess-search
-        if source == "person_linkedin" and known_linkedin_person_url:
-            continue  # known URL from the site itself, no need to guess-search
+        if source == "person_linkedin" and (known_linkedin_person_url or skip_person_linkedin):
+            continue  # known URL, or already deep-harvested by linkedin_lane
         if "{founder}" in template and not founder_name:
             continue
         queries[source] = template.format(company=company_name, founder=founder_name)
@@ -1334,7 +1496,11 @@ def search_additional_evidence(
         results_by_source["linkedin"] = _sgai_linkedin_full_scrape(results_by_source["linkedin"])
 
     # LinkedIn person: same priority order as the company case above.
-    if known_linkedin_person_url:
+    # skip_person_linkedin: the caller already deep-harvested the profile
+    # (linkedin_lane) — do not spend another scrape on it here.
+    if skip_person_linkedin:
+        pass
+    elif known_linkedin_person_url:
         hit = _sgai_scrape_linkedin_url(
             known_linkedin_person_url,
             title="LinkedIn profile (from site link)",
