@@ -646,6 +646,34 @@ def _schema_sql() -> str:
             profiles_done INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS apollo_usage (
+            month TEXT PRIMARY KEY,
+            credits_used INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS apollo_recipes (
+            {pk},
+            name TEXT,
+            filters TEXT,
+            created_at TEXT,
+            runs INTEGER NOT NULL DEFAULT 0,
+            leads_pulled INTEGER NOT NULL DEFAULT 0,
+            qualified INTEGER NOT NULL DEFAULT 0,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            sent INTEGER NOT NULL DEFAULT 0,
+            replies INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS do_not_contact (
+            {pk},
+            email TEXT,
+            domain TEXT,
+            reason TEXT,
+            added_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnc_email ON do_not_contact(email);
+        CREATE INDEX IF NOT EXISTS idx_dnc_domain ON do_not_contact(domain);
+
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON analysis_sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -861,61 +889,94 @@ def insert_leads_from_csv(
 
     with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        rows_to_insert = []
-        for row in reader:
-            website = _pick_column(row, "website_url")
-            if not website:
-                skipped += 1
-                continue
+        normalized = [
+            {
+                "first_name": _pick_column(row, "first_name"),
+                "last_name": _pick_column(row, "last_name"),
+                "title": _pick_column(row, "title"),
+                "company_name": _pick_column(row, "company_name"),
+                "email": _pick_column(row, "email"),
+                "website_url": _pick_column(row, "website_url"),
+                "linkedin_url": _pick_column(row, "linkedin_url"),
+            }
+            for row in reader
+        ]
+    return insert_leads_from_rows(conn, normalized, batch_id, session_id=session_id)
 
-            email = _pick_column(row, "email")
-            email_domain = _email_domain(email)
-            site_domain = _normalize_domain(website)
 
-            domain_mismatch = 0
-            domain_mismatch_reason = None
-            if (
-                email_domain
-                and email_domain not in FREE_EMAIL_PROVIDERS
-                and site_domain
-                and not _domains_related(email_domain, site_domain)
-            ):
-                domain_mismatch = 1
-                domain_mismatch_reason = f"email domain '{email_domain}' does not match website domain '{site_domain}'"
+def _build_lead_insert_row(row: dict, session_id, now):
+    """Shared lead-row builder for CSV and Apollo-API ingestion. Returns the
+    insert tuple, or None when the row has no website (skipped)."""
+    website = (row.get("website_url") or "").strip()
+    if not website:
+        return None
+    email = (row.get("email") or "").strip()
+    email_domain = _email_domain(email)
+    site_domain = _normalize_domain(website)
 
-            rows_to_insert.append(
-                (
-                    session_id,
-                    _pick_column(row, "first_name"),
-                    _pick_column(row, "last_name"),
-                    _pick_column(row, "title"),
-                    _pick_column(row, "company_name"),
-                    email,
-                    website,
-                    site_domain,
-                    email_domain,
-                    domain_mismatch,
-                    domain_mismatch_reason,
-                    _pick_column(row, "linkedin_url"),
-                    "NEW",
-                    batch_id,
-                    now,
-                )
-            )
+    domain_mismatch = 0
+    domain_mismatch_reason = None
+    if (
+        email_domain
+        and email_domain not in FREE_EMAIL_PROVIDERS
+        and site_domain
+        and not _domains_related(email_domain, site_domain)
+    ):
+        domain_mismatch = 1
+        domain_mismatch_reason = f"email domain '{email_domain}' does not match website domain '{site_domain}'"
 
-    conn.executemany(
-        """
-        INSERT INTO leads
-            (session_id, first_name, last_name, title, company_name, email, website_url,
-             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-             linkedin_url, status, batch_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows_to_insert,
+    return (
+        session_id,
+        (row.get("first_name") or "").strip(),
+        (row.get("last_name") or "").strip(),
+        (row.get("title") or "").strip(),
+        (row.get("company_name") or "").strip(),
+        email,
+        website,
+        site_domain,
+        email_domain,
+        domain_mismatch,
+        domain_mismatch_reason,
+        (row.get("linkedin_url") or "").strip(),
+        "NEW",
+        batch_id_placeholder := None,  # replaced below
+        now,
     )
-    conn.commit()
-    inserted = len(rows_to_insert)
-    return {"inserted": inserted, "skipped_no_website": skipped}
+
+
+def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
+                           session_id: int | None = None) -> dict:
+    """Insert leads from a list of normalized dicts (keys: first_name,
+    last_name, title, company_name, email, website_url, linkedin_url). Shared
+    by the CSV ingester and the Apollo sourcing pipeline. Rows without a
+    website are skipped and counted."""
+    now = _now()
+    if session_id is None:
+        session_id = get_latest_session_id(conn)
+    skipped = 0
+    to_insert = []
+    for row in rows:
+        built = _build_lead_insert_row(row, session_id, now)
+        if built is None:
+            skipped += 1
+            continue
+        built = list(built)
+        built[-2] = batch_id  # fill batch_id
+        to_insert.append(tuple(built))
+
+    if to_insert:
+        conn.executemany(
+            """
+            INSERT INTO leads
+                (session_id, first_name, last_name, title, company_name, email, website_url,
+                 domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                 linkedin_url, status, batch_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            to_insert,
+        )
+        conn.commit()
+    return {"inserted": len(to_insert), "skipped_no_website": skipped}
 
 
 def get_leads(

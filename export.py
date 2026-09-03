@@ -526,3 +526,92 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ---------------------------------------------------------------------------
+# 5) Instantly / Smartlead export — approval-gated, with the hook as a
+#    custom variable ({{first_line}}). This is the volume send path: the app
+#    owns qualification + drafting, the sending tool owns SMTP.
+# ---------------------------------------------------------------------------
+
+INSTANTLY_FIELDS = [
+    "email", "first_name", "last_name", "company_name", "website_url",
+    "linkedin_url", "segment", "recommended_offer",
+    "first_line", "email_subject", "email_body", "hooks_used",
+]
+
+
+def _first_line_from(lead: dict) -> str:
+    """The personalized first line for the sending tool's {{first_line}}
+    variable. Prefer an explicit generated email opener; else fall back to the
+    first personalization hook text."""
+    body = (lead.get("email_body") or "").strip()
+    if body:
+        # First non-greeting line of the drafted email.
+        for line in body.splitlines():
+            s = line.strip()
+            if s and not s.lower().startswith(("hi ", "hello", "greetings", "dear ")):
+                return s
+    hooks = lead.get("personalization_hooks")
+    if isinstance(hooks, str):
+        try:
+            hooks = json.loads(hooks)
+        except (json.JSONDecodeError, TypeError):
+            hooks = []
+    if isinstance(hooks, list) and hooks:
+        first = hooks[0]
+        if isinstance(first, dict):
+            return str(first.get("hook") or "")
+        return str(first)
+    return ""
+
+
+def _iter_instantly_rows(conn, session_id=None, approved_only=True):
+    """One row per APPROVED lead (segment in target buckets and no pending
+    review), ready for Instantly/Smartlead. approved_only=False exports every
+    scored lead (escape hatch)."""
+    import db as dbmod
+    from constants import TARGET_SEGMENTS
+
+    leads = dbmod.get_leads_with_scores(conn, session_id=session_id)
+    for lead in leads:
+        if lead.get("is_duplicate"):
+            continue
+        approved = (lead.get("segment") in TARGET_SEGMENTS
+                    and not lead.get("needs_human_review"))
+        # An explicit human APPROVED review always counts as approved.
+        if lead.get("review_status") == "APPROVED":
+            approved = True
+        if lead.get("review_status") == "REJECTED":
+            continue
+        if approved_only and not approved:
+            continue
+        if not (lead.get("email") or "").strip():
+            continue
+        yield {
+            "email": lead.get("email", ""),
+            "first_name": lead.get("first_name", ""),
+            "last_name": lead.get("last_name", ""),
+            "company_name": lead.get("company_name", ""),
+            "website_url": lead.get("website_url", ""),
+            "linkedin_url": lead.get("linkedin_url", ""),
+            "segment": lead.get("segment", ""),
+            "recommended_offer": lead.get("recommended_offer", ""),
+            "first_line": _first_line_from(lead),
+            "email_subject": lead.get("email_subject", ""),
+            "email_body": lead.get("email_body", ""),
+            "hooks_used": _flatten(lead.get("personalization_hooks")),
+        }
+
+
+def instantly_csv_string(conn, session_id=None, approved_only=True) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=INSTANTLY_FIELDS)
+    writer.writeheader()
+    for row in _iter_instantly_rows(conn, session_id=session_id, approved_only=approved_only):
+        writer.writerow(row)
+    return buf.getvalue()
+
+
+def instantly_rows(conn, session_id=None, approved_only=True) -> list:
+    """List form (for recording DNC / export history after an Instantly export)."""
+    return list(_iter_instantly_rows(conn, session_id=session_id, approved_only=approved_only))

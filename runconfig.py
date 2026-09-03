@@ -49,11 +49,28 @@ class BudgetCfg:
 
 
 @dataclass
+class ApolloCfg:
+    monthly_credit_cap: int
+    search_page_size: int
+    max_people_per_run: int
+
+
+@dataclass
+class PrefilterCfg:
+    enabled: bool
+    use_llm: bool
+    max_headcount: int
+    min_headcount: int
+
+
+@dataclass
 class Config:
     fast: bool
     linkedin: LinkedInCfg
     website: WebsiteCfg
     budget: BudgetCfg
+    apollo: ApolloCfg
+    prefilter: PrefilterCfg
 
 
 _cached: Config | None = None
@@ -98,6 +115,17 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
         ),
         budget=BudgetCfg(
             session_cap_usd=float(raw.get("budget", {}).get("session_cap_usd", 0.0)),
+        ),
+        apollo=ApolloCfg(
+            monthly_credit_cap=int(raw.get("apollo", {}).get("monthly_credit_cap", 0)),
+            search_page_size=int(raw.get("apollo", {}).get("search_page_size", 100)),
+            max_people_per_run=int(raw.get("apollo", {}).get("max_people_per_run", 500)),
+        ),
+        prefilter=PrefilterCfg(
+            enabled=bool(raw.get("prefilter", {}).get("enabled", True)),
+            use_llm=bool(raw.get("prefilter", {}).get("use_llm", False)),
+            max_headcount=int(raw.get("prefilter", {}).get("max_headcount", 50)),
+            min_headcount=int(raw.get("prefilter", {}).get("min_headcount", 0)),
         ),
     )
     if path is None:

@@ -48,3 +48,23 @@ long_pause_every_max = 1000
 long_pause_min = 3
 long_pause_max = 5
 bypass_caps = true
+
+[apollo]
+# Monthly Apollo enrichment credit cap. Enrichment (people bulk_match) costs
+# 1 credit per person; people SEARCH is free. The credit governor blocks any
+# enrichment that would push the running monthly total past this cap. 0 = off.
+monthly_credit_cap = 3600
+# Max people fetched per search page (Apollo max is 100).
+search_page_size = 100
+# Hard ceiling on people pulled in one recipe run (safety net).
+max_people_per_run = 500
+
+[prefilter]
+# Stage-0 runs on free Apollo search fields BEFORE any enrichment or website
+# fetch. deterministic-only by default; set use_llm = true to send the
+# leftover "unclear" leads to a cheap Groq pass. min_headcount/max_headcount
+# bound the target persona (0 = no bound).
+enabled = true
+use_llm = false
+max_headcount = 50
+min_headcount = 0

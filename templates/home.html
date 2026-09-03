@@ -114,6 +114,7 @@
       <nav>
         <a class="primary" href="#" onclick="document.getElementById('dropzone').scrollIntoView({behavior:'smooth'}); return false;">New analysis</a>
         <a href="{{ url_for('history') }}">History</a>
+        <a href="{{ url_for('sourcing_view') }}">Apollo sourcing</a>
         {% if session.get('role') == 'admin' %}
           <a href="{{ url_for('admin_users') }}">Users</a>
         {% endif %}

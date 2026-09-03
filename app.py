@@ -24,8 +24,11 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db as dbmod
 from db import _now as _db_now
 import dedup as dedupmod
+import dnc as dncmod
 import export as exportmod
 import pipeline as pipelinemod
+import recipes as recipesmod
+import sourcing as sourcingmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 
@@ -551,6 +554,9 @@ def upload_and_review():
         )
         batch_id, ingest_summary = _run_ingest(conn, uploaded_file, session_id=session_id)
         dedup_summary = dedupmod.run_dedup(conn, fuzzy_threshold=fuzzy_threshold, session_id=session_id)
+        dnc_flagged = dncmod.flag_batch_on_import(conn, session_id)
+        if dnc_flagged:
+            flash(f"{dnc_flagged} lead(s) on the do-not-contact registry were excluded.", "info")
 
     flash(
         f"{ingest_summary['inserted']} row(s) imported, {ingest_summary['skipped_no_website']} ignored. "
@@ -904,6 +910,10 @@ def _background_send_emails(session_id: int, payload: list[dict]):
                     provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
                     sent_at=_db_now(),
                 )
+                # A sent email is permanent do-not-contact — the next import
+                # cannot re-contact this person (the 22-person-re-email fix).
+                dncmod.add(conn, email=lead.get("email"),
+                           domain=lead.get("domain_normalized"), reason="sent")
                 sent += 1
             except Exception as e:
                 failed += 1
@@ -1180,6 +1190,138 @@ def lead_review_view(lead_id: int):
     )
 
 
+@app.route("/session/<int:session_id>/bulk_approve", methods=["POST"])
+def bulk_approve(session_id: int):
+    """Bulk-approve the selected leads (clears the review flag) — the volume
+    review path. Posts lead_ids[]; with confidence_min set, approves all
+    to-review leads at or above that confidence in one click."""
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+    selected = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
+    conf_min = request.form.get("confidence_min", type=float)
+    with open_db() as conn:
+        if not selected and conf_min is not None:
+            rows = dbmod.get_leads_with_scores(conn, session_id=session_id)
+            selected = [
+                l["id"] for l in rows
+                if not l.get("is_duplicate")
+                and l.get("needs_human_review")
+                and (l.get("confidence") or 0) >= conf_min
+            ]
+        n = 0
+        for lid in selected:
+            conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lid,))
+            conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lid,))
+            dbmod.set_lead_review(conn, lid, "APPROVED")
+            n += 1
+        conn.commit()
+    flash(f"{n} lead(s) approved.", "success")
+    return redirect(url_for("results_view", session_id=session_id))
+
+
+@app.route("/download/instantly.csv", methods=["GET"])
+def download_instantly_csv():
+    """Approval-gated Instantly/Smartlead export with {{first_line}}. Records
+    every exported lead in the do-not-contact registry so the next import
+    cannot re-contact them."""
+    selected_session_id, denied = _resolve_accessible_session(request.args.get("session_id", type=int))
+    if denied is not None:
+        return denied
+    approved_only = request.args.get("all") != "1"
+    with open_db() as conn:
+        rows = exportmod.instantly_rows(conn, session_id=selected_session_id, approved_only=approved_only)
+        csv_text = exportmod.instantly_csv_string(conn, session_id=selected_session_id, approved_only=approved_only)
+        # DNC + export history: never contact these again.
+        dnc_rows = [{"email": r["email"],
+                     "domain_normalized": dbmod._normalize_domain(r.get("website_url", ""))}
+                    for r in rows]
+        dncmod.add_many_from_leads(conn, dnc_rows, reason="instantly_export")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    if not rows:
+        flash("No approved leads to export. Approve leads first (or use ?all=1).", "warning")
+        return redirect(url_for("results_view", session_id=selected_session_id))
+    return _csv_response(f"instantly_{timestamp}.csv", csv_text)
+
+
+# ---------------------------------------------------------------------------
+# Apollo sourcing — search + Stage-0 pre-filter + credit-gated enrich
+# ---------------------------------------------------------------------------
+
+_sourcing_jobs: dict[int, dict] = {}
+_sourcing_lock = threading.Lock()
+
+
+def _set_sourcing_job(job_id, **f):
+    with _sourcing_lock:
+        j = _sourcing_jobs.get(job_id, {})
+        j.update(f)
+        _sourcing_jobs[job_id] = j
+
+
+@app.route("/sourcing", methods=["GET"])
+def sourcing_view():
+    with open_db() as conn:
+        recipe_list = recipesmod.list_all(conn)
+        import apollo_client
+        apollo_client.ensure_usage_table(conn)
+        used = apollo_client.credits_used_this_month(conn)
+    from runconfig import load_config
+    cfg = load_config()
+    return render_template("sourcing.html", recipes=recipe_list,
+                           credits_used=used, credit_cap=cfg.apollo.monthly_credit_cap,
+                           apollo_ready=bool(os.getenv("APOLLO_API_KEY")))
+
+
+@app.route("/sourcing/recipe", methods=["POST"])
+def sourcing_create_recipe():
+    name = (request.form.get("name") or "").strip()
+    filters_raw = (request.form.get("filters") or "").strip()
+    if not name or not filters_raw:
+        flash("Recipe needs a name and a filters JSON.", "error")
+        return redirect(url_for("sourcing_view"))
+    try:
+        filters = json.loads(filters_raw)
+    except json.JSONDecodeError as e:
+        flash(f"Filters must be valid JSON: {e}", "error")
+        return redirect(url_for("sourcing_view"))
+    with open_db() as conn:
+        recipesmod.create(conn, name, filters)
+    flash(f"Recipe '{name}' saved.", "success")
+    return redirect(url_for("sourcing_view"))
+
+
+def _background_sourcing(job_id, recipe_id, owner_id, dry_run):
+    conn = dbmod.get_connection()
+    try:
+        _set_sourcing_job(job_id, status="running")
+        summary = sourcingmod.run_recipe(conn, recipe_id=recipe_id, owner_id=owner_id, dry_run=dry_run)
+        _set_sourcing_job(job_id, status="done", summary=summary)
+    except Exception as e:
+        _set_sourcing_job(job_id, status="failed", error=str(e))
+    finally:
+        conn.close()
+
+
+@app.route("/sourcing/run/<int:recipe_id>", methods=["POST"])
+def sourcing_run(recipe_id: int):
+    dry_run = request.form.get("dry_run") == "1"
+    owner_id = session.get("user_id")
+    job_id = recipe_id
+    _set_sourcing_job(job_id, status="running")
+    threading.Thread(target=_background_sourcing,
+                     args=(job_id, recipe_id, owner_id, dry_run), daemon=True).start()
+    flash("Sourcing run started" + (" (dry run — no credits spent)" if dry_run else "") +
+          ". Watch its status below.", "info")
+    return redirect(url_for("sourcing_view"))
+
+
+@app.route("/sourcing/job/<int:recipe_id>", methods=["GET"])
+def sourcing_job_status(recipe_id: int):
+    with _sourcing_lock:
+        return jsonify(_sourcing_jobs.get(recipe_id) or {"status": "idle"})
+
+
 @app.route("/lead/<int:lead_id>/approve", methods=["POST"])
 def approve_lead(lead_id: int):
     """Manual review outcome: clear the review flag so the lead moves to 'Ready to approve'."""
@@ -1256,6 +1398,9 @@ def start_analysis():
         )
         batch_id, ingest_summary = _run_ingest(conn, uploaded_file, session_id=session_id)
         dedup_summary = dedupmod.run_dedup(conn, fuzzy_threshold=fuzzy_threshold, session_id=session_id)
+        dnc_flagged = dncmod.flag_batch_on_import(conn, session_id)
+        if dnc_flagged:
+            flash(f"{dnc_flagged} lead(s) on the do-not-contact registry were excluded.", "info")
 
         threading.Thread(
             target=_background_pipeline,

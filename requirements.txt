@@ -19,3 +19,4 @@ lxml>=5.0
 anthropic>=1.0
 # Tests
 pytest>=8.0
+# Apollo sourcing uses requests (already pinned above)

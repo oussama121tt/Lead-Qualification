@@ -168,6 +168,7 @@
         <a class="btn-outline" href="{{ url_for('download_scores_csv', session_id=session.id) }}">
           <i class="ti ti-download" style="font-size:16px;vertical-align:-2px;" aria-hidden="true"></i>CSV
         </a>
+        <a class="btn-outline" href="{{ url_for('download_instantly_csv', session_id=session.id) }}">Export to Instantly/Smartlead ({{ summary.approved }} approved)</a>
         <a class="btn-outline" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">Scraping CSV</a>
         {% if has_search_evidence %}
         <a class="btn-outline" href="{{ url_for('download_search_csv', session_id=session.id) }}">Web search CSV</a>
