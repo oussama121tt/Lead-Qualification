@@ -1502,7 +1502,57 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY l.id"
-    return [dict(r) for r in conn.execute(query, params).fetchall()]
+    try:
+        return [dict(r) for r in conn.execute(query, params).fetchall()]
+    except psycopg2.errors.UndefinedColumn:
+        # Render DB not yet migrated (CREATE TABLE IF NOT EXISTS left old
+        # lead_scores without new columns and _add_column not yet run
+        # before first GET). Roll back aborted tx, ensure columns, retry
+        # with legacy SELECT so the page renders instead of 500.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        for col, coltype in [
+            ("sensitive_data_categories", "TEXT"),
+            ("data_sensitivity_score", "INTEGER"),
+            ("budget_signal", "TEXT"),
+            ("budget_evidence", "TEXT"),
+            ("budget_blockers", "TEXT"),
+        ]:
+            _add_column(conn, "lead_scores", col, coltype)
+        # retry legacy projection (new cols will be NULL until next score)
+        legacy = """
+            SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+                   s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+                   s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+                   s.pain_signals, s.scored_at
+            FROM leads l
+            LEFT JOIN lead_scores s ON s.lead_id = l.id
+                AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+        """
+        if session_id is not None or owner_id is not None:
+            # reuse same conditions/params logic on legacy base
+            legacy_conditions = []
+            if session_id is not None:
+                legacy_conditions.append("l.session_id = ?")
+            if owner_id is not None:
+                legacy = legacy + " JOIN analysis_sessions a ON a.id = l.session_id"
+                legacy_conditions.append("a.owner_id = ?")
+            if legacy_conditions:
+                legacy += " WHERE " + " AND ".join(legacy_conditions)
+            legacy += " ORDER BY l.id"
+        else:
+            legacy += " ORDER BY l.id"
+        rows = [dict(r) for r in conn.execute(legacy, params).fetchall()]
+        # inject missing keys so callers (export/UI/budget demote) don't KeyError
+        for r in rows:
+            r.setdefault("sensitive_data_categories", None)
+            r.setdefault("data_sensitivity_score", None)
+            r.setdefault("budget_signal", None)
+            r.setdefault("budget_evidence", None)
+            r.setdefault("budget_blockers", None)
+        return rows
 
 def get_lead_with_score(conn, lead_id: int) -> dict | None:
     """One lead + its latest verdict, fetched directly by id.
@@ -1511,8 +1561,7 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
     scanning for one id (app.py lead_review_view) — that worked at demo
     volume and would crawl at a few thousand leads.
     """
-    row = conn.execute(
-        """
+    query = """
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
@@ -1522,9 +1571,42 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
         LEFT JOIN lead_scores s ON s.lead_id = l.id
             AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
         WHERE l.id = ?
-        """,
-        (lead_id,),
-    ).fetchone()
+        """
+    try:
+        row = conn.execute(query, (lead_id,)).fetchone()
+    except psycopg2.errors.UndefinedColumn:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        for col, coltype in [
+            ("sensitive_data_categories", "TEXT"),
+            ("data_sensitivity_score", "INTEGER"),
+            ("budget_signal", "TEXT"),
+            ("budget_evidence", "TEXT"),
+            ("budget_blockers", "TEXT"),
+        ]:
+            _add_column(conn, "lead_scores", col, coltype)
+        legacy = """
+            SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+                   s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+                   s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+                   s.pain_signals, s.scored_at
+            FROM leads l
+            LEFT JOIN lead_scores s ON s.lead_id = l.id
+                AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+            WHERE l.id = ?
+            """
+        row = conn.execute(legacy, (lead_id,)).fetchone()
+        if row is not None:
+            d = dict(row)
+            d.setdefault("sensitive_data_categories", None)
+            d.setdefault("data_sensitivity_score", None)
+            d.setdefault("budget_signal", None)
+            d.setdefault("budget_evidence", None)
+            d.setdefault("budget_blockers", None)
+            return d
+        return None
     return dict(row) if row else None
 
 
