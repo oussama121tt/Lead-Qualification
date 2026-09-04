@@ -570,6 +570,10 @@ def _schema_sql() -> str:
             {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
+            app_builder_fingerprint TEXT,
+            site_builder_fingerprint TEXT,
+            on_builder_subdomain INTEGER,
+            on_builder_subdomain_builder TEXT,
             generator_fingerprint TEXT,
             vibe_language_matches TEXT,
             trend_fonts_found TEXT,
@@ -596,6 +600,11 @@ def _schema_sql() -> str:
             technical_signals TEXT,
             pain_signals TEXT,
             evidence_quotes TEXT,
+            sensitive_data_categories TEXT,
+            data_sensitivity_score INTEGER,
+            budget_signal TEXT,
+            budget_evidence TEXT,
+            budget_blockers TEXT,
             recommended_offer TEXT,
             personalization_hooks TEXT,
             disqualify_reason TEXT,
@@ -811,11 +820,25 @@ def init_db(conn) -> None:
         _add_column(conn, "leads", col, coltype)
 
     for col, coltype in [
+        ("app_builder_fingerprint", "TEXT"),
+        ("site_builder_fingerprint", "TEXT"),
+        ("on_builder_subdomain", "INTEGER"),
+        ("on_builder_subdomain_builder", "TEXT"),
+        ("traction_signals", "TEXT"),
         ("ai_style_phrases_found", "TEXT"),
         ("ai_style_phrase_density", "TEXT"),
         ("ai_authorship_disclosures_found", "TEXT"),
     ]:
         _add_column(conn, "lead_technical_signals", col, coltype)
+
+    for col, coltype in [
+        ("sensitive_data_categories", "TEXT"),
+        ("data_sensitivity_score", "INTEGER"),
+        ("budget_signal", "TEXT"),
+        ("budget_evidence", "TEXT"),
+        ("budget_blockers", "TEXT"),
+    ]:
+        _add_column(conn, "lead_scores", col, coltype)
 
     # Outreach email columns (generated and sent from the results page)
     for col, coltype in [
@@ -1207,22 +1230,27 @@ def save_lead_technical_signals(
     conn.execute(
         """
         INSERT INTO lead_technical_signals
-            (session_id, lead_id, generator_fingerprint, vibe_language_matches, trend_fonts_found,
-             visual_patterns_triggered, generator_meta_tag, github_repo_url, github_check,
-             ai_style_phrases_found, ai_style_phrase_density, ai_authorship_disclosures_found,
+              (session_id, lead_id, app_builder_fingerprint, site_builder_fingerprint,
+               on_builder_subdomain, on_builder_subdomain_builder, generator_fingerprint,
+               vibe_language_matches, trend_fonts_found, generator_meta_tag, github_repo_url, github_check,
+             traction_signals, ai_style_phrases_found, ai_style_phrase_density, ai_authorship_disclosures_found,
              computed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             lead_id,
+            technical_signals.get("app_builder_fingerprint"),
+            technical_signals.get("site_builder_fingerprint"),
+            1 if technical_signals.get("on_builder_subdomain") else 0,
+            technical_signals.get("on_builder_subdomain_builder"),
             technical_signals.get("generator_fingerprint"),
             as_json(technical_signals.get("vibe_language_matches", [])),
             as_json(technical_signals.get("trend_fonts_found", [])),
-            as_json(technical_signals.get("visual_patterns_triggered", [])),
             technical_signals.get("generator_meta_tag"),
             technical_signals.get("github_repo_url"),
             as_json(github_check),
+            as_json(technical_signals.get("traction_signals", [])),
             as_json(technical_signals.get("ai_style_phrases_found", [])),
             technical_signals.get("ai_style_phrase_density"),
             as_json(technical_signals.get("ai_authorship_disclosures_found", [])),
@@ -1247,6 +1275,7 @@ def get_lead_technical_signals(conn, lead_id: int) -> dict | None:
     for json_field in (
         "vibe_language_matches",
         "trend_fonts_found",
+        "traction_signals",
         "visual_patterns_triggered",
         "github_check",
         "ai_style_phrases_found",
@@ -1270,9 +1299,10 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
         """
         INSERT INTO lead_scores
             (session_id, lead_id, segment, confidence, company_stage, built_with_ai_signals,
-             technical_signals, pain_signals, evidence_quotes, recommended_offer,
+                             technical_signals, pain_signals, sensitive_data_categories, data_sensitivity_score,
+                             budget_signal, budget_evidence, budget_blockers, evidence_quotes, recommended_offer,
              personalization_hooks, disqualify_reason, needs_human_review, scored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -1283,6 +1313,11 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
             as_json(verdict.get("built_with_ai_signals", [])),
             as_json(verdict.get("technical_signals", [])),
             as_json(verdict.get("pain_signals", [])),
+            as_json(verdict.get("sensitive_data_categories", [])),
+            verdict.get("data_sensitivity_score", 0),
+            verdict.get("budget_signal", "none"),
+            as_json(verdict.get("budget_evidence", [])),
+            as_json(verdict.get("budget_blockers", [])),
             as_json(verdict.get("evidence_quotes", [])),
             verdict.get("recommended_offer"),
             as_json(verdict.get("personalization_hooks", [])),
@@ -1384,6 +1419,7 @@ def get_lead_technical_signals_map(conn, lead_ids: list) -> dict:
         for json_field in (
             "vibe_language_matches",
             "trend_fonts_found",
+            "traction_signals",
             "visual_patterns_triggered",
             "github_check",
             "ai_style_phrases_found",

@@ -53,8 +53,10 @@ def _flatten(value):
 SCRAPING_FIELDS = [
     "lead_id", "company_name", "website_url", "status", "error",
     "source", "url", "content_chars", "content",
+    "app_builder_fingerprint", "site_builder_fingerprint",
+    "on_builder_subdomain", "on_builder_subdomain_builder",
     "generator_fingerprint", "generator_meta_tag",
-    "trend_fonts_found", "visual_patterns_triggered",
+    "trend_fonts_found", "traction_signals",
     "vibe_language_matches", "github_repo_url", "github_check",
     "ai_style_phrases_found", "ai_style_phrase_density",
     "ai_authorship_disclosures_found",
@@ -81,10 +83,14 @@ def _iter_scraping_rows(conn, session_id=None):
             "website_url": lead.get("website_url", ""),
             "status": lead.get("status", ""),
             "error": lead.get("error", ""),
+            "app_builder_fingerprint": signals.get("app_builder_fingerprint", ""),
+            "site_builder_fingerprint": signals.get("site_builder_fingerprint", ""),
+            "on_builder_subdomain": signals.get("on_builder_subdomain", ""),
+            "on_builder_subdomain_builder": signals.get("on_builder_subdomain_builder", ""),
             "generator_fingerprint": signals.get("generator_fingerprint", ""),
             "generator_meta_tag": signals.get("generator_meta_tag", ""),
             "trend_fonts_found": _flatten(signals.get("trend_fonts_found")),
-            "visual_patterns_triggered": _flatten(signals.get("visual_patterns_triggered")),
+            "traction_signals": _flatten(signals.get("traction_signals")),
             "vibe_language_matches": _flatten(signals.get("vibe_language_matches")),
             "github_repo_url": signals.get("github_repo_url", ""),
             "github_check": _flatten(signals.get("github_check")),
@@ -106,10 +112,14 @@ def _iter_scraping_rows(conn, session_id=None):
             if source != "homepage":
                 row = {
                     **base_row,
+                    "app_builder_fingerprint": "",
+                    "site_builder_fingerprint": "",
+                    "on_builder_subdomain": "",
+                    "on_builder_subdomain_builder": "",
                     "generator_fingerprint": "",
                     "generator_meta_tag": "",
                     "trend_fonts_found": "",
-                    "visual_patterns_triggered": "",
+                    "traction_signals": "",
                     "vibe_language_matches": "",
                 }
             else:
@@ -171,6 +181,8 @@ SCORE_FIELDS = [
     "segment", "confidence", "needs_human_review", "company_stage",
     "recommended_offer", "disqualify_reason",
     "built_with_ai_signals", "technical_signals", "pain_signals",
+    "sensitive_data_categories", "data_sensitivity_score",
+    "budget_signal", "budget_evidence", "budget_blockers",
     "evidence_quotes", "personalization_hooks", "scored_at",
 ]
 
@@ -203,6 +215,11 @@ def _iter_score_rows(conn, session_id=None):
             "built_with_ai_signals": _flatten(lead.get("built_with_ai_signals")),
             "technical_signals": _flatten(lead.get("technical_signals")),
             "pain_signals": _flatten(lead.get("pain_signals")),
+            "sensitive_data_categories": _flatten(lead.get("sensitive_data_categories")),
+            "data_sensitivity_score": lead.get("data_sensitivity_score", ""),
+            "budget_signal": lead.get("budget_signal", ""),
+            "budget_evidence": _flatten(lead.get("budget_evidence")),
+            "budget_blockers": _flatten(lead.get("budget_blockers")),
             "evidence_quotes": _flatten(lead.get("evidence_quotes")),
             "personalization_hooks": _flatten(lead.get("personalization_hooks")),
             "scored_at": lead.get("scored_at", ""),
@@ -296,9 +313,9 @@ def _format_signals_summary(signals: dict) -> str:
     if fonts:
         parts.append(f"Trend fonts: {', '.join(fonts)}")
 
-    patterns = signals.get("visual_patterns_triggered") or []
-    if patterns:
-        parts.append(f"Visual patterns ({len(patterns)}/9): {', '.join(patterns)}")
+    traction = signals.get("traction_signals") or []
+    if traction:
+        parts.append(f"Traction signals: {', '.join(traction)}")
 
     vibe = signals.get("vibe_language_matches") or []
     if vibe:

@@ -52,7 +52,7 @@ class GroqProvider(LLMProvider):
 
         self.client = OpenAI(api_key=os.environ["GROQ_API_KEY"],
                              base_url="https://api.groq.com/openai/v1")
-        self.model = os.getenv("GROQ_SCORING_MODEL", "openai/gpt-oss-120b")
+        self.model = os.getenv("GROQ_SCORING_MODEL") or os.getenv("GROQ_EMAIL_MODEL") or "openai/gpt-oss-120b"
 
     def generate_json(self, prompt: str, *, system: str | None = None,
                       temperature: float | None = None,

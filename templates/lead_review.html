@@ -280,6 +280,22 @@
               </ul>
             </dd>
             {% endif %}
+            {% if lead.sensitive_data_categories %}
+            <dt>Sensitive data</dt>
+            <dd>
+              {{ lead.sensitive_data_categories|join(', ') }}
+              {% if lead.data_sensitivity_score is not none %}
+              <span class="badge badge-warning">{{ lead.data_sensitivity_score }}/100</span>
+              {% endif %}
+            </dd>
+            {% endif %}
+            {% if lead.budget_signal %}
+            <dt>Budget signal</dt>
+            <dd>
+              {{ lead.budget_signal }}
+              {% if lead.budget_blockers %}<ul>{% for item in lead.budget_blockers %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+            </dd>
+            {% endif %}
             {% if lead.evidence_quotes %}
             <dt>Evidence quotes</dt>
             <dd>
@@ -327,9 +343,9 @@
             <dt>Trend fonts</dt>
             <dd><ul>{% for item in technical.get('trend_fonts_found') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
             {% endif %}
-            {% if technical.get('visual_patterns_triggered') %}
-            <dt>Visual patterns</dt>
-            <dd><ul>{% for item in technical.get('visual_patterns_triggered') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
+            {% if technical.get('traction_signals') %}
+            <dt>Traction signals</dt>
+            <dd><ul>{% for item in technical.get('traction_signals') %}<li>{{ item }}</li>{% endfor %}</ul></dd>
             {% endif %}
             {% if technical.get('ai_style_phrases_found') %}
             <dt>AI-style phrases</dt>

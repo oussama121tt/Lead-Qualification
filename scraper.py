@@ -189,29 +189,42 @@ def _tag_attributed_content(markdown: str) -> str:
 # on the raw HTML. None of these values is judged by an LLM.
 # ---------------------------------------------------------------------------
 
-GENERATOR_FINGERPRINTS = {
-    # builder name → patterns searched in the raw HTML / meta / links
+APP_BUILDER_FINGERPRINTS = {
     "lovable": [r"lovable\.dev", r"lovable-tagger", r"gpteng\.co"],
-    "v0": [r"v0\.dev", r"vusercontent\.net"],
     "bolt": [r"bolt\.new", r"stackblitz"],
+    "v0": [r"v0\.dev", r"vusercontent\.net"],
     "replit": [r"replit\.com", r"replit\.dev"],
+    "bubble": [r"bubble\.io", r"bubbleapps\.io"],
+    "flutterflow": [r"flutterflow\.io", r"flutterflow\.app"],
+    "glide": [r"glideapps\.com", r"glide\.page"],
+    "adalo": [r"adalo\.com"],
+    "softr": [r"softr\.io"],
+    "base44": [r"base44\.app"],
     "cursor": [r"built with cursor", r"cursor\.sh"],
+}
+
+SITE_BUILDER_FINGERPRINTS = {
+    "framer": [r"framer\.com", r"framerusercontent"],
+    "webflow": [r"webflow\.io", r"assets\.website-files\.com"],
+    "squarespace": [r"squarespace\.com", r"static1\.squarespace"],
+    "wix": [r"wix\.com", r"wixstatic"],
+    "carrd": [r"carrd\.co"],
+}
+
+BUILDER_SUBDOMAIN_SUFFIXES = {
+    "lovable": ".lovable.app",
+    "bolt": ".bolt.host",
+    "replit": ".replit.app",
+    "bubble": ".bubbleapps.io",
+    "vercel": ".vercel.app",
 }
 
 TREND_FONTS = [
     "Space Grotesk", "Instrument Serif", "Geist", "Syne", "Fraunces",
 ]
 
-VISUAL_PATTERNS = {
-    "purple_accent": [r"(?:bg|text|border)-(?:indigo|violet|purple)-[4-7]00"],
-    "gradient": [r"bg-gradient-to-\w+", r"from-\w+-\d{3}\s+to-\w+-\d{3}"],
-    "glassmorphism": [r"backdrop-blur", r"backdrop-filter"],
-    "colored_glow": [r"shadow-(?:indigo|violet|purple|blue)-\d{3}"],
-    "numbered_steps": [r"step[\s\-_]?[1-3]", r"how[\s\-]it[\s\-]works"],
+TRACTION_PATTERNS = {
     "stat_banner": [r"\d[\d,\.]*\s?(?:\+|k\+)\s*(?:users|customers|clients)"],
-    "headline_badge": [r"rounded-full[^\"']*(?:badge|pill|eyebrow)"],
-    "faq_accordion": [r"frequently asked questions", r"faq[\s\-_]accordion"],
-    "shadcn_ui": [r"data-radix-", r"class=\"[^\"]*\bring-offset-background\b"],
 }
 
 VIBE_LANGUAGE_MARKERS = [
@@ -705,7 +718,12 @@ def extract_text_style_signals(text: str) -> dict:
     }
 
 
-def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str = "") -> dict:
+def extract_technical_signals(
+    raw_html: str,
+    all_links: list,
+    homepage_text: str = "",
+    homepage_url: str = "",
+) -> dict:
     """
     Step 3bis. Computes only deterministic signals (no LLM).
     Returns a dict ready to be injected as-is into the scoring prompt
@@ -721,10 +739,14 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
     raw_html = raw_html or ""
     homepage_text = homepage_text or ""
     signals = {
+        "app_builder_fingerprint": None,
+        "site_builder_fingerprint": None,
+        "on_builder_subdomain": False,
+        "on_builder_subdomain_builder": None,
         "generator_fingerprint": None,
         "vibe_language_matches": [],
         "trend_fonts_found": [],
-        "visual_patterns_triggered": [],
+        "traction_signals": [],
         "generator_meta_tag": None,
         "github_repo_url": None,
         "linkedin_company_url": None,
@@ -742,10 +764,22 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
     if generator_match:
         signals["generator_meta_tag"] = generator_match.group(1)
 
-    # Builder fingerprint (the strongest signal, cf. isthatvibecoded.com)
-    for builder, patterns in GENERATOR_FINGERPRINTS.items():
+    # Product builders are strong signals; site builders are metadata only.
+    for builder, patterns in APP_BUILDER_FINGERPRINTS.items():
         if _match_any(patterns, raw_html):
+            signals["app_builder_fingerprint"] = builder
             signals["generator_fingerprint"] = builder
+            break
+    for builder, patterns in SITE_BUILDER_FINGERPRINTS.items():
+        if _match_any(patterns, raw_html):
+            signals["site_builder_fingerprint"] = builder
+            break
+
+    host = _normalize_domain(homepage_url)
+    for builder, suffix in BUILDER_SUBDOMAIN_SUFFIXES.items():
+        if host.endswith(suffix) and host != suffix[1:]:
+            signals["on_builder_subdomain"] = True
+            signals["on_builder_subdomain_builder"] = builder
             break
 
     # Explicit language ("built with X") — searched as-is, not inferred
@@ -757,9 +791,8 @@ def extract_technical_signals(raw_html: str, all_links: list, homepage_text: str
     # Trending fonts
     signals["trend_fonts_found"] = [f for f in TREND_FONTS if f.lower() in lowered]
 
-    # Visual patterns (14 categories in the Design Slop Cop style)
-    signals["visual_patterns_triggered"] = [
-        name for name, patterns in VISUAL_PATTERNS.items() if _match_any(patterns, raw_html)
+    signals["traction_signals"] = [
+        name for name, patterns in TRACTION_PATTERNS.items() if _match_any(patterns, raw_html)
     ]
 
     # Writing style: scanned on visible text, not raw HTML. Shared with
@@ -1168,6 +1201,7 @@ def _scrape_website_firecrawl(homepage_url: str, throttle_seconds: float = 1.0) 
         raw_html=getattr(homepage_result, "raw_html", None),
         all_links=all_links,
         homepage_text=homepage_markdown,
+        homepage_url=homepage_url,
     )
     # Founder name(s) mentioned in the site's own copy (homepage + about/
     # product pages) — see extract_founder_name_candidates() docstring for
