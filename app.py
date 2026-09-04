@@ -381,7 +381,7 @@ def _load_dashboard_data(conn, session_id=None, selected_lead_id=None, segment_f
             selected_lead_id = int(scores.iloc[0]["id"])
         lead_detail = scores[scores["id"] == selected_lead_id].iloc[0].to_dict()
         # Parse JSON fields from DB text columns
-        for field in ("evidence_quotes", "personalization_hooks", "built_with_ai_signals", "technical_signals", "pain_signals"):
+        for field in ("evidence_quotes", "personalization_hooks", "built_with_ai_signals", "technical_signals", "pain_signals", "sensitive_data_categories", "budget_evidence", "budget_blockers"):
             val = lead_detail.get(field)
             if isinstance(val, str):
                 try:
@@ -1033,6 +1033,12 @@ def _categorize_leads(scores_data: list) -> dict:
         else:
             to_review.append(lead)
 
+        if lead in approved and lead.get("budget_signal") == "none" and lead.get("budget_blockers"):
+            approved.remove(lead)
+            reason = lead.get("disqualify_reason") or ""
+            lead["disqualify_reason"] = f"{reason} | budget blocker" if reason else "budget blocker"
+            to_review.append(lead)
+
     return {
         "approved": approved,
         "not_selected": not_selected,
@@ -1167,7 +1173,7 @@ def lead_review_view(lead_id: int):
             return denied
         for field in (
             "evidence_quotes", "personalization_hooks", "built_with_ai_signals",
-            "technical_signals", "pain_signals",
+            "technical_signals", "pain_signals", "sensitive_data_categories", "budget_evidence", "budget_blockers",
         ):
             val = lead.get(field)
             if isinstance(val, str):
