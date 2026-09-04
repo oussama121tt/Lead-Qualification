@@ -147,6 +147,15 @@ class _PgConnection:
     def execute(self, sql, params=None):
         try:
             return self._execute(sql, params)
+        except psycopg2.errors.InFailedSqlTransaction:
+            # Previous statement in this transaction failed and left it aborted
+            # (e.g. Neon pool reuse after a prior error, or a concurrent
+            # pipeline write that failed). Roll back and retry once.
+            try:
+                self._conn.rollback()
+            except psycopg2.Error:
+                pass
+            return self._execute(sql, params)
         except psycopg2.OperationalError as exc:
             if not _is_dead_connection_error(exc):
                 raise
@@ -1475,7 +1484,8 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
-               s.pain_signals, s.scored_at
+               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
         FROM leads l
         LEFT JOIN lead_scores s ON s.lead_id = l.id
             AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
@@ -1506,7 +1516,8 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
-               s.pain_signals, s.scored_at
+               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
         FROM leads l
         LEFT JOIN lead_scores s ON s.lead_id = l.id
             AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
