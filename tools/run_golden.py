@@ -23,7 +23,7 @@ def _load_cases(path=CASES_PATH):
 def _score_case(case, fixture):
     canned = fixture["mock_verdict"]
     original_call = scorer._call_llm
-    scorer._call_llm = lambda _content, max_output_tokens=scorer.MAX_OUTPUT_TOKENS: dict(canned)
+    scorer._call_llm = lambda _content, max_output_tokens=scorer.MAX_OUTPUT_TOKENS, **kwargs: dict(canned)
     try:
         kwargs = {
             "deterministic_signals": fixture.get("technical_signals"),
