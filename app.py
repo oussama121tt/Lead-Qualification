@@ -37,16 +37,15 @@ from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 # PostgreSQL (Neon) is required — db.get_connection() raises an error without DATABASE_URL.
 
 app = Flask(__name__)
-# Session-cookie signing key. With authentication in place, a guessable
-# static fallback would mean forgeable admin cookies — so the fallback is a
-# RANDOM per-process key (sessions reset on restart in dev; set
-# FLASK_SECRET_KEY in production for stable sessions).
+# Session-cookie signing key. Must be stable across gunicorn workers;
+# random per-process (previous) invalidates sessions on every worker
+# restart/timeout -> login loop on /progress/stream (seen in prod).
 _secret = os.getenv("FLASK_SECRET_KEY")
+if not _secret and os.getenv("FLASK_ENV", "").lower() == "production":
+    raise RuntimeError("FLASK_SECRET_KEY must be set in production (Render).")
 if not _secret:
-    import secrets as _secrets
-    _secret = _secrets.token_hex(32)
-    print("[app] FLASK_SECRET_KEY not set — using a random per-process key "
-          "(sessions will reset on every restart; set it in .env for production).")
+    _secret = "lead-qualification-engine"
+    print("[app] FLASK_SECRET_KEY not set — using dev fallback (set FLASK_SECRET_KEY in production).")
 app.config["SECRET_KEY"] = _secret
 
 # ---- Jinja filters for display formatting ----
