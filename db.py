@@ -997,17 +997,62 @@ def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
         to_insert.append(tuple(built))
 
     if to_insert:
-        conn.executemany(
-            """
-            INSERT INTO leads
-                (session_id, first_name, last_name, title, company_name, email, website_url,
-                 domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-                 linkedin_url, status, batch_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            to_insert,
-        )
-        conn.commit()
+        try:
+            conn.executemany(
+                """
+                INSERT INTO leads
+                    (session_id, first_name, last_name, title, company_name, email, website_url,
+                     domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                     linkedin_url, status, batch_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                to_insert,
+            )
+            conn.commit()
+        except psycopg2.errors.UndefinedColumn as e:
+            # Render DB not yet migrated (leads.linkedin_url from merge
+            # addition). Roll back aborted tx, ensure columns, retry.
+            # If the column truly can't be added, fall back to legacy insert
+            # without linkedin_url so upload doesn't 500.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if "linkedin_url" in str(e):
+                for col, coltype in [("linkedin_url", "TEXT"), ("coverage_notes", "TEXT")]:
+                    _add_column(conn, "leads", col, coltype)
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO leads
+                            (session_id, first_name, last_name, title, company_name, email, website_url,
+                             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                             linkedin_url, status, batch_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        to_insert,
+                    )
+                    conn.commit()
+                except psycopg2.errors.UndefinedColumn:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    # legacy: drop linkedin_url from payload
+                    legacy_rows = [r[:11] + r[12:] for r in to_insert]
+                    conn.executemany(
+                        """
+                        INSERT INTO leads
+                            (session_id, first_name, last_name, title, company_name, email, website_url,
+                             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                             status, batch_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        legacy_rows,
+                    )
+                    conn.commit()
+            else:
+                raise
     return {"inserted": len(to_insert), "skipped_no_website": skipped}
 
 

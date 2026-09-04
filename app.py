@@ -209,6 +209,18 @@ def _init_schema_once():
         conn.close()
 
 
+# Run once at import so gunicorn (Render) also migrates - __main__ only
+# covers `python app.py`. In tests without DATABASE_URL, fail silently.
+_init_done = False
+try:
+    _init_schema_once()
+    _init_done = True
+except Exception as _init_e:
+    # Don't crash import (tests, build); will retry on first request
+    print(f"[init] schema init deferred: {_init_e}")
+    _init_done = False
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -224,6 +236,17 @@ def _init_schema_once():
 # one lightweight query per logged-in request, negligible at this scale.
 
 PUBLIC_ENDPOINTS = {"login", "signup", "static"}
+
+
+@app.before_request
+def _ensure_schema():
+    global _init_done
+    if not _init_done:
+        try:
+            _init_schema_once()
+            _init_done = True
+        except Exception as e:
+            print(f"[init] retry failed: {e}")
 
 
 @app.before_request
