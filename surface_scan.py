@@ -18,6 +18,7 @@ deferred (needs a public CVE feed) — the 9th check is intentionally omitted.
 """
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -25,7 +26,21 @@ import requests
 
 from site_fetcher import UA, _throttle_domain
 
+logger = logging.getLogger("surface_scan")
+
 ALLOWED_METHODS = ("GET", "HEAD")
+
+# Response bodies are regex-scanned; cap them so a huge SPA bundle or
+# pathological page cannot turn one regex pass into a stall.
+_BODY_CAP = 500_000
+
+# Bound on distinct referenced URLs probed per check-type (source maps,
+# open-api endpoints, storage buckets). A page referencing dozens of them in
+# its JS must not blow the per-lead request budget.
+_MAX_REFS_CHECKED = 10
+
+# Highest severity first, so max_findings truncation keeps high-signal rows.
+_SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 SECURITY_HEADERS = (
     "Content-Security-Policy",
@@ -52,7 +67,7 @@ _OPEN_API_RE = re.compile(
     re.I,
 )
 _CHAT_WIDGET_RE = re.compile(
-    r"[^\"']*intercom|drift|tawk\.to|crisp\.chat|widget\.crisp|/api/(?:chat|ask)",
+    r"intercom|drift|tawk\.to|crisp\.chat|widget\.crisp|/api/(?:chat|ask)",
     re.I,
 )
 _STORAGE_REF_RE = re.compile(
@@ -79,6 +94,27 @@ def _is_same_origin(url: str, origin: str) -> bool:
     return p.scheme == o.scheme and p.netloc == o.netloc
 
 
+def _run(fn, *args):
+    """Run one check in isolation: a failure here (bad regex hit, connection
+    error, malformed URL) is logged and yields [] — it must not kill the scan
+    or lose findings already collected by other checks."""
+    try:
+        return fn(*args)
+    except Exception as e:  # noqa: BLE001 - a single check must never abort the scan
+        logger.warning("surface_scan check failed: %s: %s", getattr(fn, "__name__", fn), e)
+        return []
+
+
+def _body_text(resp) -> str:
+    """Capped response text for regex scans; a network-failure None yields ""."""
+    if resp is None:
+        return ""
+    text = getattr(resp, "text", "") or ""
+    if not text and getattr(resp, "content", None):
+        text = resp.content.decode("utf-8", "ignore")
+    return text[:_BODY_CAP]
+
+
 def _dispatch(method: str, module, url: str, timeout: float, host: str,
               per_domain_delay: float, headers: dict | None = None,
               allow_redirects: bool = True):
@@ -86,15 +122,22 @@ def _dispatch(method: str, module, url: str, timeout: float, host: str,
     ALLOWED_METHODS before ANY network call, so a future check cannot smuggle
     in a POST/PUT/DELETE through the requests-like seam — the guard raises
     before the module is ever touched (structurally incapable, not just
-    tested). `module` is the requests-like seam injected by tests."""
+    tested). `module` is the requests-like seam injected by tests.
+
+    Returns None on a network-level failure (DNS, connection refused, timeout)
+    — callers treat a missing/None response the same as a non-200: skip."""
     if method not in ALLOWED_METHODS:
         raise ValueError(
             f"surface_scan only permits {ALLOWED_METHODS}, got {method!r}"
         )
     _throttle_domain(host, per_domain_delay)
     hdrs = dict(headers or {"User-Agent": UA})
-    call = getattr(module, method.lower())
-    return call(url, headers=hdrs, timeout=timeout, allow_redirects=allow_redirects)
+    try:
+        call = getattr(module, method.lower())
+        return call(url, headers=hdrs, timeout=timeout, allow_redirects=allow_redirects)
+    except requests.exceptions.RequestException as e:
+        logger.warning("surface_scan request failed: %s %s -> %s", method, url, e)
+        return None
 
 
 def _get(module, url: str, timeout: float, host: str, per_domain_delay: float,
@@ -113,7 +156,7 @@ def _robots_disallow(module, origin: str, host: str, timeout: float, per_domain_
     """Returns the set of robot-disallowed path prefixes (wildcard UA section
     only). Empty robots/404 = nothing disallowed."""
     resp = _get(module, urljoin(origin + "/", "robots.txt"), timeout, host, per_domain_delay)
-    if resp.status_code != 200:
+    if getattr(resp, "status_code", 0) != 200:
         return set()
     disallowed: set = set()
     wildcard_section = False
@@ -167,8 +210,8 @@ def _framework_disclosure(origin: str, headers: dict, html: str) -> list:
 def _cors_wildcard(module, origin: str, host: str, timeout: float, per_domain_delay: float) -> list:
     resp = _get(module, origin + "/", timeout, host, per_domain_delay,
                 headers={"User-Agent": UA, "Origin": origin}, allow_redirects=False)
-    acao = resp.headers.get("Access-Control-Allow-Origin")
-    acac = resp.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+    acao = (getattr(resp, "headers", None) or {}).get("Access-Control-Allow-Origin")
+    acac = (getattr(resp, "headers", None) or {}).get("Access-Control-Allow-Credentials", "").lower() == "true"
     if acao == "*" and acac:
         return [{
             "check_name": "cors_wildcard",
@@ -182,9 +225,9 @@ def _cors_wildcard(module, origin: str, host: str, timeout: float, per_domain_de
 def _dotfile(module, origin: str, path: str, host: str, timeout: float, per_domain_delay: float) -> list:
     url = urljoin(origin + "/", path.lstrip("/"))
     resp = _get(module, url, timeout, host, per_domain_delay)
-    if resp.status_code != 200:
+    if getattr(resp, "status_code", 0) != 200:
         return []  # 404 (or any non-200) is not an exposure
-    body = resp.text or ""
+    body = _body_text(resp)
     shape = DOTFILE_SHAPES.get(path)
     if shape is None or not shape.search(body):
         return []  # soft 200 / HTML error page / wrong content: not an exposure
@@ -197,18 +240,23 @@ def _dotfile(module, origin: str, path: str, host: str, timeout: float, per_doma
     }]
 
 
-def _source_maps(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float) -> list:
+def _source_maps(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float,
+                 max_refs_checked: int = _MAX_REFS_CHECKED) -> list:
     refs = re.findall(_MAP_REF_RE, html or "") + re.findall(_SOURCE_MAP_RE, html or "")
     seen = set()
+    checked = 0
     for ref in refs:
         url = urljoin(origin, ref)
         if not _is_same_origin(url, origin) or url in seen:
             continue
         seen.add(url)
+        if checked >= max_refs_checked:
+            break
+        checked += 1
         resp = _get(module, url, timeout, host, per_domain_delay)
-        if resp.status_code != 200:
+        if getattr(resp, "status_code", 0) != 200:
             continue
-        body = (resp.text or "")[:2000]
+        body = _body_text(resp)[:2000]
         if '"version"' in body and '"sources"' in body:
             return [{
                 "check_name": "source_maps_exposed",
@@ -219,19 +267,24 @@ def _source_maps(module, origin: str, html: str, host: str, timeout: float, per_
     return []
 
 
-def _open_api_endpoints(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float) -> list:
+def _open_api_endpoints(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float,
+                        max_refs_checked: int = _MAX_REFS_CHECKED) -> list:
     refs = re.findall(_OPEN_API_RE, html or "")
     seen = set()
+    checked = 0
     for ref in refs:
         url = urljoin(origin, ref)
         if not _is_same_origin(url, origin) or url in seen:
             continue
         seen.add(url)
+        if checked >= max_refs_checked:
+            break
+        checked += 1
         resp = _get(module, url, timeout, host, per_domain_delay)
-        if resp.status_code != 200:
+        if getattr(resp, "status_code", 0) != 200:
             continue
-        ctype = resp.headers.get("Content-Type", "")
-        body = (resp.text or "").strip()
+        ctype = (getattr(resp, "headers", None) or {}).get("Content-Type", "")
+        body = _body_text(resp).strip()
         is_json = "json" in ctype.lower() or body[:1] in ("{", "[")
         if is_json and body:
             excerpt = body[:200].replace("\n", " ")
@@ -252,22 +305,27 @@ def _public_llm_endpoint(origin: str, html: str) -> list:
                 "check_name": "public_llm_endpoint",
                 "severity": "info",
                 "evidence_url": origin,
-                "evidence_excerpt": "Chat widget marker present in homepage HTML — potential spend-cap surface.",
+                "evidence_excerpt": f"Chat widget marker {match.group(0)!r} in homepage HTML — potential spend-cap surface.",
             }]
     return []
 
 
-def _storage_bucket_listing(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float) -> list:
+def _storage_bucket_listing(module, origin: str, html: str, host: str, timeout: float, per_domain_delay: float,
+                            max_refs_checked: int = _MAX_REFS_CHECKED) -> list:
     refs = re.findall(_STORAGE_REF_RE, html or "")
     seen = set()
+    checked = 0
     for url in refs:
         if url in seen:
             continue
         seen.add(url)
+        if checked >= max_refs_checked:
+            break
+        checked += 1
         resp = _get(module, url, timeout, host, per_domain_delay)
-        if resp.status_code != 200:
+        if getattr(resp, "status_code", 0) != 200:
             continue
-        body = resp.text or ""
+        body = _body_text(resp)
         if any(marker in body for marker in _BUCKET_LISTING_MARKERS):
             return [{
                 "check_name": "storage_bucket_listing",
@@ -288,34 +346,38 @@ def scan_site(homepage_url: str, *, timeout: float = 10.0, per_domain_delay: flo
     module = module or __import__("requests")
     origin = _origin(homepage_url)
     if not origin:
+        logger.warning("surface_scan: no scanable origin for %r — skipping", homepage_url)
         return []
     host = urlparse(origin).netloc
     findings: list = []
 
     intro = _get(module, origin + "/", timeout, host, per_domain_delay)
-    status = intro.status_code
+    status = getattr(intro, "status_code", 0)
     html = ""
     if status and status < 400:
-        html = intro.text or ""
-    headers = dict(intro.headers or {})
+        html = _body_text(intro)
+    headers = dict(getattr(intro, "headers", None) or {})
 
-    robots = _robots_disallow(module, origin, host, timeout, per_domain_delay)
+    robots = _run(_robots_disallow, module, origin, host, timeout, per_domain_delay)
 
     if status and status < 400:
-        findings += _security_headers(origin, headers)
-        findings += _framework_disclosure(origin, headers, html)
-        findings += _cors_wildcard(module, origin, host, timeout, per_domain_delay)
+        findings += _run(_security_headers, origin, headers)
+        findings += _run(_framework_disclosure, origin, headers, html)
+        findings += _run(_cors_wildcard, module, origin, host, timeout, per_domain_delay)
 
     for path in DOTFILE_PATHS:
         if _path_disallowed(path, robots):
             continue
-        findings += _dotfile(module, origin, path, host, timeout, per_domain_delay)
+        findings += _run(_dotfile, module, origin, path, host, timeout, per_domain_delay)
 
     if status and status < 400:
-        findings += _source_maps(module, origin, html, host, timeout, per_domain_delay)
-        findings += _open_api_endpoints(module, origin, html, host, timeout, per_domain_delay)
-        findings += _public_llm_endpoint(origin, html)
-        findings += _storage_bucket_listing(module, origin, html, host, timeout, per_domain_delay)
+        findings += _run(_source_maps, module, origin, html, host, timeout, per_domain_delay)
+        findings += _run(_open_api_endpoints, module, origin, html, host, timeout, per_domain_delay)
+        findings += _run(_public_llm_endpoint, origin, html)
+        findings += _run(_storage_bucket_listing, module, origin, html, host, timeout, per_domain_delay)
+
+    # Highest severity first, so max_findings keeps the high-signal rows.
+    findings.sort(key=lambda f: _SEVERITY_ORDER.get(f.get("severity"), 9))
 
     # Every finding returned here already passed BOTH gates (HTTP status AND
     # content shape), so all are stamped verified for the DB hard rule.
