@@ -780,6 +780,9 @@ def extract_technical_signals(
         if host.endswith(suffix) and host != suffix[1:]:
             signals["on_builder_subdomain"] = True
             signals["on_builder_subdomain_builder"] = builder
+            if not signals.get("app_builder_fingerprint"):
+                signals["app_builder_fingerprint"] = builder
+                signals["generator_fingerprint"] = builder
             break
 
     # Explicit language ("built with X") — searched as-is, not inferred
@@ -1073,6 +1076,7 @@ def _scrape_website_free(homepage_url: str, notes: list) -> dict | None:
         raw_html=home["html"],
         all_links=all_links,
         homepage_text=homepage_text,
+        homepage_url=homepage_url,
     )
     technical_signals["founder_name_candidates"] = extract_founder_name_candidates(
         "\n\n".join(founder_bio_text_parts)
