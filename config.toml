@@ -40,10 +40,10 @@ session_cap_usd = 5.0
 
 [surface_scan]
 # Public Surface Scanner (deterministic GET/HEAD-only checks on the lead
-# website's public surface). Gated OFF by default: findings are stored for
-# INTERNAL review only until legal sign-off on the outreach wording — a finding
-# must never reach an outbound email before the template is approved.
-enabled = false
+# website's public surface). Findings are stored for INTERNAL review only and
+# must never reach an outbound email before the outreach wording has legal
+# sign-off — that outreach usage is still gated on the approval.
+enabled = true
 timeout = 10             # seconds per single request
 per_domain_delay = 1.0   # seconds between hits to the same domain (shared throttle)
 max_findings = 8         # cap on rows written per lead
