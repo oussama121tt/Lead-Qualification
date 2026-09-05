@@ -84,7 +84,8 @@ enough evidence, AI-built non-technical team, technical team, scaling agency, to
 otherwise unclear.
 Identify sensitive categories only when stated or clearly implied: minors, health_phi, biometric,
 payments, identity_documents, financial, legal, location, employee_data, none. Set
-data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none.
+sensitive_data_categories to a list of those exact keys and data_sensitivity_score from 0 to 100
+for breach impact; use [] and 0 when none.
 Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
 or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
 default builder subdomain, or shrinking headcount in budget_blockers. A strong blocker caps the
