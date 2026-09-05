@@ -377,6 +377,24 @@
     </div>
     {% endif %}
 
+    <!-- Public surface findings: deterministic checks on the site's public
+         surface, internal review only (never in an outbound email yet). -->
+    {% if public_findings %}
+    <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-shield-search" aria-hidden="true"></i>Public surface findings</h3>
+    <div class="card card-pad">
+      {% for f in public_findings %}
+      <div class="evidence-group">
+        <div class="evidence-src">
+          <span class="badge {{ 'badge-warning' if f.severity in ('medium', 'high') else 'badge-neutral' }}" style="min-width:92px;text-align:center;">{{ f.severity }}</span>
+          <span class="src-name">{{ f.check_name }}</span>
+        </div>
+        {% if f.evidence_url %}<p class="hit-url">{{ f.evidence_url }}</p>{% endif %}
+        {% if f.evidence_excerpt %}<p class="hit-content">{{ f.evidence_excerpt[:500] }}{% if f.evidence_excerpt|length > 500 %} …{% endif %}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     <!-- Evidence: scraped pages -->
     {% if content_rows %}
     <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-file-text" aria-hidden="true"></i>Scraped pages</h3>

@@ -302,6 +302,29 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
 
         events.append(_base({"step": "scraping_done", "status": scrape_result["status"], "error": scrape_result.get("error"), "scrape_seconds": scrape_elapsed}))
 
+        # --- Public surface scan (config-gated; OFF until legal sign-off) ---
+        # Deterministic GET/HEAD-only checks on the lead's public surface,
+        # stored as verified findings for internal review. The scan is a
+        # several-single-requests-per-domain affair; it never writes to the
+        # target and every finding row required verified=1 + evidence excerpt.
+        if load_config().surface_scan.enabled:
+            try:
+                import surface_scan
+                cfg = load_config().surface_scan
+                findings = surface_scan.scan_site(
+                    website,
+                    timeout=cfg.timeout,
+                    per_domain_delay=cfg.per_domain_delay,
+                    max_findings=cfg.max_findings,
+                )
+                written = dbmod.save_lead_public_findings(conn, lead_id, findings)
+                if written:
+                    coverage.append(f"surface scan: {written} verified finding(s) (internal review only)")
+                else:
+                    coverage.append("surface scan: no verified findings")
+            except Exception as _scan_e:
+                coverage.append(f"surface scan failed: {_scan_e}")
+
         # --- Scoring, pass 1: site content only, NO web search yet ---
         # Groups the scraper's deterministic signals (technical_signals +
         # github_check) into a single block for the prompt.

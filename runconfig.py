@@ -49,6 +49,14 @@ class BudgetCfg:
 
 
 @dataclass
+class SurfaceScanCfg:
+    enabled: bool
+    timeout: float
+    per_domain_delay: float
+    max_findings: int
+
+
+@dataclass
 class ApolloCfg:
     monthly_credit_cap: int
     search_page_size: int
@@ -69,6 +77,7 @@ class Config:
     linkedin: LinkedInCfg
     website: WebsiteCfg
     budget: BudgetCfg
+    surface_scan: SurfaceScanCfg
     apollo: ApolloCfg
     prefilter: PrefilterCfg
 
@@ -115,6 +124,12 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
         ),
         budget=BudgetCfg(
             session_cap_usd=float(raw.get("budget", {}).get("session_cap_usd", 0.0)),
+        ),
+        surface_scan=SurfaceScanCfg(
+            enabled=bool(raw.get("surface_scan", {}).get("enabled", False)),
+            timeout=float(raw.get("surface_scan", {}).get("timeout", 10)),
+            per_domain_delay=float(raw.get("surface_scan", {}).get("per_domain_delay", 1.0)),
+            max_findings=int(raw.get("surface_scan", {}).get("max_findings", 8)),
         ),
         apollo=ApolloCfg(
             monthly_credit_cap=int(raw.get("apollo", {}).get("monthly_credit_cap", 0)),

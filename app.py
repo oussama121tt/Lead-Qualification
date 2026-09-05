@@ -1207,6 +1207,7 @@ def lead_review_view(lead_id: int):
         technical = dbmod.get_lead_technical_signals(conn, lead_id)
         search_evidence = dbmod.get_lead_search_evidence(conn, lead_id)
         coverage_notes = dbmod.get_coverage_notes(conn, lead_id)
+        public_findings = dbmod.get_lead_public_findings(conn, lead_id)
     return render_template(
         "lead_review.html",
         session=session_row,
@@ -1215,6 +1216,7 @@ def lead_review_view(lead_id: int):
         technical=technical,
         search_evidence=search_evidence,
         coverage_notes=coverage_notes,
+        public_findings=public_findings,
     )
 
 

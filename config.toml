@@ -38,6 +38,16 @@ free_first = true          # false = always use Firecrawl (old behavior)
 # marked SCORE_FAILED with reason budget_exceeded). 0 disables the cap.
 session_cap_usd = 5.0
 
+[surface_scan]
+# Public Surface Scanner (deterministic GET/HEAD-only checks on the lead
+# website's public surface). Gated OFF by default: findings are stored for
+# INTERNAL review only until legal sign-off on the outreach wording — a finding
+# must never reach an outbound email before the template is approved.
+enabled = false
+timeout = 10             # seconds per single request
+per_domain_delay = 1.0   # seconds between hits to the same domain (shared throttle)
+max_findings = 8         # cap on rows written per lead
+
 [fast]
 # Test-mode overlay: shrinks LinkedIn delays and bypasses caps so the pipeline
 # can be verified in minutes without waiting hours or spending the real budget.

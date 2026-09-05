@@ -692,6 +692,21 @@ def _schema_sql() -> str:
         CREATE INDEX IF NOT EXISTS idx_dnc_email ON do_not_contact(email);
         CREATE INDEX IF NOT EXISTS idx_dnc_domain ON do_not_contact(domain);
 
+        CREATE TABLE IF NOT EXISTS lead_public_findings (
+            {pk},
+            session_id INTEGER,
+            lead_id INTEGER NOT NULL,
+            check_name TEXT,
+            severity TEXT,
+            evidence_url TEXT,
+            evidence_excerpt TEXT,
+            verified INTEGER NOT NULL DEFAULT 0,
+            verified_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES analysis_sessions(id),
+            FOREIGN KEY (lead_id) REFERENCES leads(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_findings_lead ON lead_public_findings(lead_id);
+
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON analysis_sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -708,7 +723,7 @@ def _schema_sql() -> str:
 _SEQUENCE_TRIGGER_TABLES = (
     "analysis_sessions", "users", "leads", "lead_content",
     "lead_technical_signals", "lead_scores", "lead_search_evidence",
-    "export_history",
+    "export_history", "lead_public_findings",
 )
 
 
@@ -1408,6 +1423,57 @@ def get_lead_search_evidence(conn, lead_id: int) -> list:
         "SELECT * FROM lead_search_evidence WHERE lead_id = ? ORDER BY id", (lead_id,)
     ).fetchall()
     return _group_search_evidence(rows).get(lead_id, [])
+
+
+def save_lead_public_findings(conn, lead_id: int, findings: list) -> int:
+    """Persists public-surface findings for a lead.
+
+    Hard rule from the scanner spec: a finding row is written ONLY when it is
+    verified (HTTP status AND content shape matched) AND has an evidence
+    excerpt. Anything else is dropped here — a finding without proof never
+    reaches the DB. Returns the number of rows written.
+    """
+    findings = [
+        f for f in findings
+        if isinstance(f, dict) and f.get("verified") and f.get("evidence_excerpt")
+    ]
+    if not findings:
+        return 0
+    session_row = conn.execute("SELECT session_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    session_id = session_row[0] if session_row else None
+    now = _now()
+    conn.executemany(
+        """
+        INSERT INTO lead_public_findings
+            (session_id, lead_id, check_name, severity, evidence_url,
+             evidence_excerpt, verified, verified_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        """,
+        [
+            (
+                session_id,
+                lead_id,
+                f.get("check_name"),
+                f.get("severity", "low"),
+                f.get("evidence_url"),
+                f.get("evidence_excerpt"),
+                now,
+            )
+            for f in findings
+        ],
+    )
+    conn.commit()
+    return len(findings)
+
+
+def get_lead_public_findings(conn, lead_id: int) -> list:
+    """Returns the verified public-surface findings for a lead."""
+    rows = conn.execute(
+        "SELECT check_name, severity, evidence_url, evidence_excerpt, verified, verified_at "
+        "FROM lead_public_findings WHERE lead_id = ? AND verified = 1 ORDER BY id",
+        (lead_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _group_search_evidence(rows) -> dict:
