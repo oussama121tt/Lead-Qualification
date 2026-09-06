@@ -21,6 +21,9 @@ import os
 from datetime import datetime
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 APOLLO_BASE = "https://api.apollo.io/api/v1"
 SEARCH_PATH = "/mixed_people/search"
