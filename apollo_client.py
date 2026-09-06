@@ -26,7 +26,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 APOLLO_BASE = "https://api.apollo.io/api/v1"
-SEARCH_PATH = "/mixed_people/search"
+# NB: /mixed_people/search is UI-session-only and returns 403 API_INACCESSIBLE
+# for API keys (even master keys). API-key people search lives at
+# /mixed_people/api_search — verified live 2026-08.
+SEARCH_PATH = "/mixed_people/api_search"
 BULK_MATCH_PATH = "/people/bulk_match"
 
 
@@ -135,6 +138,11 @@ def search_people_all(filters: dict, *, max_people: int = 500, per_page: int = 1
         if not batch:
             break
         people.extend(batch)
+        # api_search returns total_entries (no pagination object); stop as soon
+        # as we have them all instead of paying for an empty extra page.
+        total = data.get("total_entries")
+        if total is not None and len(people) >= total:
+            break
         pagination = data.get("pagination") or {}
         total_pages = pagination.get("total_pages")
         if total_pages and page >= total_pages:
