@@ -333,6 +333,11 @@ def _validate_verdict(verdict: dict) -> dict:
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
         forced_correction = True
 
+    # "unclear" means insufficient evidence — by definition it needs a human.
+    # The prompt says so; enforce it in code so it never depends on the model.
+    if verdict.get("segment") == "unclear":
+        verdict["needs_human_review"] = True
+
     if verdict.get("recommended_offer") not in VALID_OFFERS:
         verdict["recommended_offer"] = "none"
         forced_correction = True
