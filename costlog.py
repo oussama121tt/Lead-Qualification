@@ -15,6 +15,7 @@ from __future__ import annotations
 MODEL_PRICES: dict[str, tuple[float, float]] = {
     # Groq
     "llama-3.3-70b-versatile": (0.59, 0.79),
+    "openai/gpt-oss-120b": (0.15, 0.60),   # Groq list price; verify on the pricing page if it changes
     # Anthropic (first-party API rates)
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),

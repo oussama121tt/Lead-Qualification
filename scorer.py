@@ -89,7 +89,82 @@ for breach impact; use [] and 0 when none.
 Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
 or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
 default builder subdomain, or shrinking headcount in budget_blockers. A strong blocker caps the
-budget signal at weak. Return only JSON with all schema fields."""
+budget signal at weak.
+
+Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
+{
+  "segment": "ai_solo_founder | technical_founder | small_agency_scaling | too_big | wrong_field | unclear",
+  "confidence": 0.0,
+  "company_stage": "pre-launch | early | scaling | established",
+  "built_with_ai_signals": [],
+  "technical_signals": [],
+  "pain_signals": [],
+  "evidence_quotes": [],
+  "recommended_offer": "ai_audit | general_audit | pipeline | none",
+  "personalization_hooks": [{"hook": "...", "based_on": "exact verbatim quote from the content"}],
+  "sensitive_data_categories": [],
+  "data_sensitivity_score": 0,
+  "budget_signal": "strong | moderate | weak | none",
+  "budget_evidence": [],
+  "budget_blockers": [],
+  "disqualify_reason": null,
+  "needs_human_review": false
+}"""
+
+# Every key the parser reads. A test asserts each one is named in the prompt,
+# so a future "prompt diet" can never silently drop the schema again (this
+# exact regression happened: the model started returning "hooks"/"offer" and
+# every verdict parsed as empty with confidence 0).
+SCHEMA_KEYS = (
+    "segment", "confidence", "company_stage", "built_with_ai_signals",
+    "technical_signals", "pain_signals", "evidence_quotes", "recommended_offer",
+    "personalization_hooks", "sensitive_data_categories", "data_sensitivity_score",
+    "budget_signal", "budget_evidence", "budget_blockers", "disqualify_reason",
+    "needs_human_review",
+)
+
+# Defensive key normalization: common aliases a model may emit for our
+# schema keys. Applied BEFORE validation, and the verdict is flagged when
+# any alias was needed — drift is corrected AND visible, never silent.
+_KEY_ALIASES = {
+    "hooks": "personalization_hooks",
+    "personalisation_hooks": "personalization_hooks",
+    "offer": "recommended_offer",
+    "recommended_offering": "recommended_offer",
+    "quotes": "evidence_quotes",
+    "evidence": "evidence_quotes",
+    "stage": "company_stage",
+    "ai_signals": "built_with_ai_signals",
+    "built_with_ai": "built_with_ai_signals",
+    "tech_signals": "technical_signals",
+    "pains": "pain_signals",
+    "pain": "pain_signals",
+    "sensitive_data": "sensitive_data_categories",
+    "sensitivity_score": "data_sensitivity_score",
+    "budget": "budget_signal",
+    "human_review": "needs_human_review",
+    "needs_review": "needs_human_review",
+    "disqualify": "disqualify_reason",
+    "reason": "disqualify_reason",
+}
+
+
+def _normalize_verdict_keys(verdict: dict) -> dict:
+    """Map known aliases onto the canonical schema keys. Records which
+    aliases were used in disqualify_reason so the drift is auditable."""
+    if not isinstance(verdict, dict):
+        return verdict
+    renamed = []
+    for alias, canon in _KEY_ALIASES.items():
+        if alias in verdict and canon not in verdict:
+            verdict[canon] = verdict.pop(alias)
+            renamed.append(f"{alias}->{canon}")
+    if renamed:
+        note = "schema_key_aliases_normalized: " + ", ".join(renamed)
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+    return verdict
+
 
 def _strip_images(text: str) -> str:
     """Removes image and media markers from the text before sending it to the LLM."""
@@ -360,7 +435,7 @@ def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS,
             cost_cb(meta, int((_time.monotonic() - t0) * 1000))
         except Exception:
             pass  # cost logging must never fail a scoring call
-    return data
+    return _normalize_verdict_keys(data)
 
 
 def _apply_confidence_guard(verdict: dict) -> dict:
@@ -370,9 +445,22 @@ def _apply_confidence_guard(verdict: dict) -> dict:
     return verdict
 
 
+_QUOTE_CHARS = "\"'“”‘’«»`‹›"
+_QUOTE_TRANS = str.maketrans({
+    "“": '"', "”": '"', "‘": "'", "’": "'",
+    "«": '"', "»": '"', " ": " ", "…": "...",
+})
+
+
 def _normalize_for_grounding(s: str) -> str:
-    """Light normalization to compare quotes against the source text."""
-    return re.sub(r"\s+", " ", (s or "").strip().lower())
+    """Normalization used on BOTH the model's citation and the source text
+    before the verbatim check: lowercase, whitespace-collapsed, curly quotes
+    and non-breaking spaces folded to ASCII, and any WRAPPING quotation marks
+    stripped. Models routinely return citations as "\"exact text\"" — without
+    this, a real citation failed the check on its quote characters alone and
+    good hooks were silently discarded (observed live on gpt-oss-120b)."""
+    t = (s or "").translate(_QUOTE_TRANS).strip().strip(_QUOTE_CHARS).strip()
+    return re.sub(r"\s+", " ", t.lower())
 
 
 # Same tag names as scraper.py's _tag_attributed_content — kept in sync
