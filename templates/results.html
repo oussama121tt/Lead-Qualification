@@ -168,6 +168,7 @@
         <a class="btn-outline" href="{{ url_for('download_scores_csv', session_id=session.id) }}">
           <i class="ti ti-download" style="font-size:16px;vertical-align:-2px;" aria-hidden="true"></i>CSV
         </a>
+        <a class="btn-outline" href="{{ url_for('download_instantly_csv', session_id=session.id) }}">Export to Instantly/Smartlead ({{ summary.approved }} approved)</a>
         <a class="btn-outline" href="{{ url_for('download_scraping_csv', session_id=session.id) }}">Scraping CSV</a>
         {% if has_search_evidence %}
         <a class="btn-outline" href="{{ url_for('download_search_csv', session_id=session.id) }}">Web search CSV</a>
@@ -192,6 +193,13 @@
         <p class="stat-label">Waiting</p>
         <p class="stat-value">{{ summary.pending }}</p>
       </div>
+      {% if summary.llm_spend %}
+      <div class="stat-card">
+        <p class="stat-label">LLM spend (session)</p>
+        <p class="stat-value">${{ '%.4f'|format(summary.llm_spend.cost_usd) }}</p>
+        <p class="stat-label">{{ summary.llm_spend.calls }} call(s) · {{ summary.llm_spend.tokens_in }} in / {{ summary.llm_spend.tokens_out }} out</p>
+      </div>
+      {% endif %}
     </div>
 
     <form id="emailForm" action="{{ url_for('prepare_emails', session_id=session.id) }}" method="post"></form>

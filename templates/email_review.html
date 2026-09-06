@@ -126,6 +126,35 @@
       {% endif %}
     {% endwith %}
 
+    <div id="emailJobBanner" class="alert alert-info" style="display:none;"></div>
+    <script>
+      (function () {
+        var banner = document.getElementById("emailJobBanner");
+        var wasRunning = false;
+        function poll() {
+          fetch("{{ url_for('email_job_status', session_id=session.id) }}")
+            .then(function (r) { return r.json(); })
+            .then(function (job) {
+              if (job.status === "running") {
+                wasRunning = true;
+                banner.style.display = "";
+                banner.textContent = (job.kind === "send" ? "Sending" : "Generating") +
+                  " emails in the background… " + (job.done || 0) + "/" + (job.total || "?");
+                setTimeout(poll, 2000);
+              } else if (wasRunning && (job.status === "done" || job.status === "failed")) {
+                // Job just finished while we were watching: reload so the
+                // fresh drafts / sent statuses appear.
+                window.location.reload();
+              } else {
+                banner.style.display = "none";
+              }
+            })
+            .catch(function () { setTimeout(poll, 5000); });
+        }
+        poll();
+      })();
+    </script>
+
     {% if drafts %}
     <form id="emailForm" action="{{ url_for('send_emails', session_id=session.id) }}" method="post">
       {% for lead in drafts %}

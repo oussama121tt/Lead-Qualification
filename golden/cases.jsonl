@@ -1,0 +1,15 @@
+{"id":"roxie","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Bubble childcare app","fixture":"roxie.json"}
+{"id":"carlee","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Lovable product","fixture":"carlee.json"}
+{"id":"dan","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Bolt founder product","fixture":"dan.json"}
+{"id":"marius","expected_segment":"technical_founder","expected_offer":"general_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"CTO with engineering team","fixture":"marius.json"}
+{"id":"hao","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Replit product","fixture":"hao.json"}
+{"id":"george","expected_segment":"small_agency_scaling","expected_offer":"pipeline","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Scaling studio","fixture":"george.json"}
+{"id":"eric","expected_segment":"technical_founder","expected_offer":"general_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Engineering founder","fixture":"eric.json"}
+{"id":"sule","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Bubble SaaS","fixture":"sule.json"}
+{"id":"pauline","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":true,"notes":"Budget blocker nonprofit","fixture":"pauline.json"}
+{"id":"thomas","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":true,"notes":"Budget blocker student","fixture":"thomas.json"}
+{"id":"sascha","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":true,"notes":"Budget blocker side project","fixture":"sascha.json"}
+{"id":"shakeim","expected_segment":"ai_solo_founder","expected_offer":"ai_audit","min_confidence":0.6,"expected_needs_human_review":true,"notes":"Budget blocker shrinking team","fixture":"shakeim.json"}
+{"id":"notion","expected_segment":"too_big","expected_offer":"none","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Established company","fixture":"notion.json"}
+{"id":"airtable","expected_segment":"too_big","expected_offer":"none","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Mature platform","fixture":"airtable.json"}
+{"id":"vercel","expected_segment":"wrong_field","expected_offer":"none","min_confidence":0.6,"expected_needs_human_review":false,"notes":"Outside target","fixture":"vercel.json"}

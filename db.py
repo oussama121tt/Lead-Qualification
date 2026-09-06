@@ -74,6 +74,9 @@ COLUMN_ALIASES = {
     "company_name": ["company_name", "company", "company name", "organization"],
     "email": ["email", "email address", "work email"],
     "website_url": ["website_url", "website", "company website", "website url"],
+    # Optional in the spec (FR-1) — used by the LinkedIn founder lane when
+    # present, so the person harvest never has to guess a profile by name.
+    "linkedin_url": ["linkedin_url", "linkedin url", "person linkedin url", "linkedin"],
 }
 
 FREE_EMAIL_PROVIDERS = {
@@ -143,6 +146,15 @@ class _PgConnection:
 
     def execute(self, sql, params=None):
         try:
+            return self._execute(sql, params)
+        except psycopg2.errors.InFailedSqlTransaction:
+            # Previous statement in this transaction failed and left it aborted
+            # (e.g. Neon pool reuse after a prior error, or a concurrent
+            # pipeline write that failed). Roll back and retry once.
+            try:
+                self._conn.rollback()
+            except psycopg2.Error:
+                pass
             return self._execute(sql, params)
         except psycopg2.OperationalError as exc:
             if not _is_dead_connection_error(exc):
@@ -567,6 +579,10 @@ def _schema_sql() -> str:
             {pk},
             session_id INTEGER,
             lead_id INTEGER NOT NULL,
+            app_builder_fingerprint TEXT,
+            site_builder_fingerprint TEXT,
+            on_builder_subdomain INTEGER,
+            on_builder_subdomain_builder TEXT,
             generator_fingerprint TEXT,
             vibe_language_matches TEXT,
             trend_fonts_found TEXT,
@@ -593,6 +609,11 @@ def _schema_sql() -> str:
             technical_signals TEXT,
             pain_signals TEXT,
             evidence_quotes TEXT,
+            sensitive_data_categories TEXT,
+            data_sensitivity_score INTEGER,
+            budget_signal TEXT,
+            budget_evidence TEXT,
+            budget_blockers TEXT,
             recommended_offer TEXT,
             personalization_hooks TEXT,
             disqualify_reason TEXT,
@@ -624,6 +645,68 @@ def _schema_sql() -> str:
             FOREIGN KEY (lead_id) REFERENCES leads(id)
         );
 
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            {pk},
+            session_id INTEGER,
+            lead_id INTEGER,
+            purpose TEXT,
+            provider TEXT,
+            model TEXT,
+            tokens_in INTEGER,
+            tokens_out INTEGER,
+            cost_usd {real_col},
+            latency_ms INTEGER,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS li_daily_counter (
+            day TEXT PRIMARY KEY,
+            profiles_done INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS apollo_usage (
+            month TEXT PRIMARY KEY,
+            credits_used INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS apollo_recipes (
+            {pk},
+            name TEXT,
+            filters TEXT,
+            created_at TEXT,
+            runs INTEGER NOT NULL DEFAULT 0,
+            leads_pulled INTEGER NOT NULL DEFAULT 0,
+            qualified INTEGER NOT NULL DEFAULT 0,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            sent INTEGER NOT NULL DEFAULT 0,
+            replies INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS do_not_contact (
+            {pk},
+            email TEXT,
+            domain TEXT,
+            reason TEXT,
+            added_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dnc_email ON do_not_contact(email);
+        CREATE INDEX IF NOT EXISTS idx_dnc_domain ON do_not_contact(domain);
+
+        CREATE TABLE IF NOT EXISTS lead_public_findings (
+            {pk},
+            session_id INTEGER,
+            lead_id INTEGER NOT NULL,
+            check_name TEXT,
+            severity TEXT,
+            evidence_url TEXT,
+            evidence_excerpt TEXT,
+            verified INTEGER NOT NULL DEFAULT 0,
+            verified_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES analysis_sessions(id),
+            FOREIGN KEY (lead_id) REFERENCES leads(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_findings_lead ON lead_public_findings(lead_id);
+
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON analysis_sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -633,13 +716,14 @@ def _schema_sql() -> str:
         CREATE INDEX IF NOT EXISTS idx_scores_session ON lead_scores(session_id);
         CREATE INDEX IF NOT EXISTS idx_technical_signals_lead ON lead_technical_signals(lead_id);
         CREATE INDEX IF NOT EXISTS idx_export_history_domain ON export_history(domain_normalized);
+        CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
         """
 
 
 _SEQUENCE_TRIGGER_TABLES = (
     "analysis_sessions", "users", "leads", "lead_content",
     "lead_technical_signals", "lead_scores", "lead_search_evidence",
-    "export_history",
+    "export_history", "lead_public_findings",
 )
 
 
@@ -760,11 +844,25 @@ def init_db(conn) -> None:
         _add_column(conn, "leads", col, coltype)
 
     for col, coltype in [
+        ("app_builder_fingerprint", "TEXT"),
+        ("site_builder_fingerprint", "TEXT"),
+        ("on_builder_subdomain", "INTEGER"),
+        ("on_builder_subdomain_builder", "TEXT"),
+        ("traction_signals", "TEXT"),
         ("ai_style_phrases_found", "TEXT"),
         ("ai_style_phrase_density", "TEXT"),
         ("ai_authorship_disclosures_found", "TEXT"),
     ]:
         _add_column(conn, "lead_technical_signals", col, coltype)
+
+    for col, coltype in [
+        ("sensitive_data_categories", "TEXT"),
+        ("data_sensitivity_score", "INTEGER"),
+        ("budget_signal", "TEXT"),
+        ("budget_evidence", "TEXT"),
+        ("budget_blockers", "TEXT"),
+    ]:
+        _add_column(conn, "lead_scores", col, coltype)
 
     # Outreach email columns (generated and sent from the results page)
     for col, coltype in [
@@ -774,6 +872,20 @@ def init_db(conn) -> None:
         ("email_provider", "TEXT"),
         ("email_error", "TEXT"),
         ("email_sent_at", "TIMESTAMPTZ"),
+    ]:
+        _add_column(conn, "leads", col, coltype)
+
+    # Merge additions: the founder's LinkedIn URL from the Apollo CSV
+    # (optional column, FR-1), and per-lead evidence coverage notes (JSON
+    # list) so no data gap is ever silent.
+    for col, coltype in [
+        ("linkedin_url", "TEXT"),
+        ("coverage_notes", "TEXT"),
+        # Apollo enrichment kept with the lead (FR-1 verified-email flag +
+        # the founder's career + org facts, all fed to the scorer)
+        ("apollo_email_status", "TEXT"),
+        ("apollo_person", "TEXT"),
+        ("apollo_org", "TEXT"),
     ]:
         _add_column(conn, "leads", col, coltype)
 
@@ -829,60 +941,104 @@ def insert_leads_from_csv(
 
     with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        rows_to_insert = []
-        for row in reader:
-            website = _pick_column(row, "website_url")
-            if not website:
-                skipped += 1
-                continue
+        normalized = [
+            {
+                "first_name": _pick_column(row, "first_name"),
+                "last_name": _pick_column(row, "last_name"),
+                "title": _pick_column(row, "title"),
+                "company_name": _pick_column(row, "company_name"),
+                "email": _pick_column(row, "email"),
+                "website_url": _pick_column(row, "website_url"),
+                "linkedin_url": _pick_column(row, "linkedin_url"),
+            }
+            for row in reader
+        ]
+    return insert_leads_from_rows(conn, normalized, batch_id, session_id=session_id)
 
-            email = _pick_column(row, "email")
-            email_domain = _email_domain(email)
-            site_domain = _normalize_domain(website)
 
-            domain_mismatch = 0
-            domain_mismatch_reason = None
-            if (
-                email_domain
-                and email_domain not in FREE_EMAIL_PROVIDERS
-                and site_domain
-                and not _domains_related(email_domain, site_domain)
-            ):
-                domain_mismatch = 1
-                domain_mismatch_reason = f"email domain '{email_domain}' does not match website domain '{site_domain}'"
+def _build_lead_insert_row(row: dict, session_id, now):
+    """Shared lead-row builder for CSV and Apollo-API ingestion. Returns the
+    insert tuple, or None when the row has no website (skipped)."""
+    website = (row.get("website_url") or "").strip()
+    if not website:
+        return None
+    email = (row.get("email") or "").strip()
+    email_domain = _email_domain(email)
+    site_domain = _normalize_domain(website)
 
-            rows_to_insert.append(
-                (
-                    session_id,
-                    _pick_column(row, "first_name"),
-                    _pick_column(row, "last_name"),
-                    _pick_column(row, "title"),
-                    _pick_column(row, "company_name"),
-                    email,
-                    website,
-                    site_domain,
-                    email_domain,
-                    domain_mismatch,
-                    domain_mismatch_reason,
-                    "NEW",
-                    batch_id,
-                    now,
-                )
-            )
+    domain_mismatch = 0
+    domain_mismatch_reason = None
+    if (
+        email_domain
+        and email_domain not in FREE_EMAIL_PROVIDERS
+        and site_domain
+        and not _domains_related(email_domain, site_domain)
+    ):
+        domain_mismatch = 1
+        domain_mismatch_reason = f"email domain '{email_domain}' does not match website domain '{site_domain}'"
 
-    conn.executemany(
-        """
-        INSERT INTO leads
-            (session_id, first_name, last_name, title, company_name, email, website_url,
-             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-             status, batch_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows_to_insert,
+    return (
+        session_id,
+        (row.get("first_name") or "").strip(),
+        (row.get("last_name") or "").strip(),
+        (row.get("title") or "").strip(),
+        (row.get("company_name") or "").strip(),
+        email,
+        website,
+        site_domain,
+        email_domain,
+        domain_mismatch,
+        domain_mismatch_reason,
+        (row.get("linkedin_url") or "").strip(),
+        (row.get("apollo_email_status") or "").strip() or None,
+        row.get("apollo_person") or None,
+        row.get("apollo_org") or None,
+        "NEW",
+        batch_id_placeholder := None,  # replaced below
+        now,
     )
-    conn.commit()
-    inserted = len(rows_to_insert)
-    return {"inserted": inserted, "skipped_no_website": skipped}
+
+
+def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
+                           session_id: int | None = None) -> dict:
+    """Insert leads from a list of normalized dicts (keys: first_name,
+    last_name, title, company_name, email, website_url, linkedin_url). Shared
+    by the CSV ingester and the Apollo sourcing pipeline. Rows without a
+    website are skipped and counted."""
+    now = _now()
+    if session_id is None:
+        session_id = get_latest_session_id(conn)
+    skipped = 0
+    to_insert = []
+    for row in rows:
+        built = _build_lead_insert_row(row, session_id, now)
+        if built is None:
+            skipped += 1
+            continue
+        built = list(built)
+        built[-2] = batch_id  # fill batch_id
+        to_insert.append(tuple(built))
+
+    if to_insert:
+        # Schema safety for a DB that predates these columns (idempotent, cheap):
+        # the INSERT below names every merge/enrichment column explicitly.
+        for col, coltype in [("linkedin_url", "TEXT"), ("coverage_notes", "TEXT"),
+                             ("apollo_email_status", "TEXT"), ("apollo_person", "TEXT"),
+                             ("apollo_org", "TEXT")]:
+            _add_column(conn, "leads", col, coltype)
+        conn.executemany(
+            """
+            INSERT INTO leads
+                (session_id, first_name, last_name, title, company_name, email, website_url,
+                 domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                 linkedin_url, apollo_email_status, apollo_person, apollo_org,
+                 status, batch_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            to_insert,
+        )
+        conn.commit()
+    return {"inserted": len(to_insert), "skipped_no_website": skipped}
 
 
 def get_leads(
@@ -1113,22 +1269,27 @@ def save_lead_technical_signals(
     conn.execute(
         """
         INSERT INTO lead_technical_signals
-            (session_id, lead_id, generator_fingerprint, vibe_language_matches, trend_fonts_found,
-             visual_patterns_triggered, generator_meta_tag, github_repo_url, github_check,
-             ai_style_phrases_found, ai_style_phrase_density, ai_authorship_disclosures_found,
+              (session_id, lead_id, app_builder_fingerprint, site_builder_fingerprint,
+               on_builder_subdomain, on_builder_subdomain_builder, generator_fingerprint,
+               vibe_language_matches, trend_fonts_found, generator_meta_tag, github_repo_url, github_check,
+             traction_signals, ai_style_phrases_found, ai_style_phrase_density, ai_authorship_disclosures_found,
              computed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             lead_id,
+            technical_signals.get("app_builder_fingerprint"),
+            technical_signals.get("site_builder_fingerprint"),
+            1 if technical_signals.get("on_builder_subdomain") else 0,
+            technical_signals.get("on_builder_subdomain_builder"),
             technical_signals.get("generator_fingerprint"),
             as_json(technical_signals.get("vibe_language_matches", [])),
             as_json(technical_signals.get("trend_fonts_found", [])),
-            as_json(technical_signals.get("visual_patterns_triggered", [])),
             technical_signals.get("generator_meta_tag"),
             technical_signals.get("github_repo_url"),
             as_json(github_check),
+            as_json(technical_signals.get("traction_signals", [])),
             as_json(technical_signals.get("ai_style_phrases_found", [])),
             technical_signals.get("ai_style_phrase_density"),
             as_json(technical_signals.get("ai_authorship_disclosures_found", [])),
@@ -1153,6 +1314,7 @@ def get_lead_technical_signals(conn, lead_id: int) -> dict | None:
     for json_field in (
         "vibe_language_matches",
         "trend_fonts_found",
+        "traction_signals",
         "visual_patterns_triggered",
         "github_check",
         "ai_style_phrases_found",
@@ -1176,9 +1338,10 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
         """
         INSERT INTO lead_scores
             (session_id, lead_id, segment, confidence, company_stage, built_with_ai_signals,
-             technical_signals, pain_signals, evidence_quotes, recommended_offer,
+                             technical_signals, pain_signals, sensitive_data_categories, data_sensitivity_score,
+                             budget_signal, budget_evidence, budget_blockers, evidence_quotes, recommended_offer,
              personalization_hooks, disqualify_reason, needs_human_review, scored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -1189,6 +1352,11 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
             as_json(verdict.get("built_with_ai_signals", [])),
             as_json(verdict.get("technical_signals", [])),
             as_json(verdict.get("pain_signals", [])),
+            as_json(verdict.get("sensitive_data_categories", [])),
+            verdict.get("data_sensitivity_score", 0),
+            verdict.get("budget_signal", "none"),
+            as_json(verdict.get("budget_evidence", [])),
+            as_json(verdict.get("budget_blockers", [])),
             as_json(verdict.get("evidence_quotes", [])),
             verdict.get("recommended_offer"),
             as_json(verdict.get("personalization_hooks", [])),
@@ -1225,6 +1393,57 @@ def get_lead_search_evidence(conn, lead_id: int) -> list:
         "SELECT * FROM lead_search_evidence WHERE lead_id = ? ORDER BY id", (lead_id,)
     ).fetchall()
     return _group_search_evidence(rows).get(lead_id, [])
+
+
+def save_lead_public_findings(conn, lead_id: int, findings: list) -> int:
+    """Persists public-surface findings for a lead.
+
+    Hard rule from the scanner spec: a finding row is written ONLY when it is
+    verified (HTTP status AND content shape matched) AND has an evidence
+    excerpt. Anything else is dropped here — a finding without proof never
+    reaches the DB. Returns the number of rows written.
+    """
+    findings = [
+        f for f in findings
+        if isinstance(f, dict) and f.get("verified") and f.get("evidence_excerpt")
+    ]
+    if not findings:
+        return 0
+    session_row = conn.execute("SELECT session_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    session_id = session_row[0] if session_row else None
+    now = _now()
+    conn.executemany(
+        """
+        INSERT INTO lead_public_findings
+            (session_id, lead_id, check_name, severity, evidence_url,
+             evidence_excerpt, verified, verified_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        """,
+        [
+            (
+                session_id,
+                lead_id,
+                f.get("check_name"),
+                f.get("severity", "low"),
+                f.get("evidence_url"),
+                f.get("evidence_excerpt"),
+                now,
+            )
+            for f in findings
+        ],
+    )
+    conn.commit()
+    return len(findings)
+
+
+def get_lead_public_findings(conn, lead_id: int) -> list:
+    """Returns the verified public-surface findings for a lead."""
+    rows = conn.execute(
+        "SELECT check_name, severity, evidence_url, evidence_excerpt, verified, verified_at "
+        "FROM lead_public_findings WHERE lead_id = ? AND verified = 1 ORDER BY id",
+        (lead_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _group_search_evidence(rows) -> dict:
@@ -1290,6 +1509,7 @@ def get_lead_technical_signals_map(conn, lead_ids: list) -> dict:
         for json_field in (
             "vibe_language_matches",
             "trend_fonts_found",
+            "traction_signals",
             "visual_patterns_triggered",
             "github_check",
             "ai_style_phrases_found",
@@ -1345,7 +1565,8 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
-               s.pain_signals, s.scored_at
+               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
         FROM leads l
         LEFT JOIN lead_scores s ON s.lead_id = l.id
             AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
@@ -1362,4 +1583,145 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY l.id"
-    return [dict(r) for r in conn.execute(query, params).fetchall()]
+    try:
+        return [dict(r) for r in conn.execute(query, params).fetchall()]
+    except psycopg2.errors.UndefinedColumn:
+        # Render DB not yet migrated (CREATE TABLE IF NOT EXISTS left old
+        # lead_scores without new columns and _add_column not yet run
+        # before first GET). Roll back aborted tx, ensure columns, retry
+        # with legacy SELECT so the page renders instead of 500.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        for col, coltype in [
+            ("sensitive_data_categories", "TEXT"),
+            ("data_sensitivity_score", "INTEGER"),
+            ("budget_signal", "TEXT"),
+            ("budget_evidence", "TEXT"),
+            ("budget_blockers", "TEXT"),
+        ]:
+            _add_column(conn, "lead_scores", col, coltype)
+        # retry legacy projection (new cols will be NULL until next score)
+        legacy = """
+            SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+                   s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+                   s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+                   s.pain_signals, s.scored_at
+            FROM leads l
+            LEFT JOIN lead_scores s ON s.lead_id = l.id
+                AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+        """
+        if session_id is not None or owner_id is not None:
+            # reuse same conditions/params logic on legacy base
+            legacy_conditions = []
+            if session_id is not None:
+                legacy_conditions.append("l.session_id = ?")
+            if owner_id is not None:
+                legacy = legacy + " JOIN analysis_sessions a ON a.id = l.session_id"
+                legacy_conditions.append("a.owner_id = ?")
+            if legacy_conditions:
+                legacy += " WHERE " + " AND ".join(legacy_conditions)
+            legacy += " ORDER BY l.id"
+        else:
+            legacy += " ORDER BY l.id"
+        rows = [dict(r) for r in conn.execute(legacy, params).fetchall()]
+        # inject missing keys so callers (export/UI/budget demote) don't KeyError
+        for r in rows:
+            r.setdefault("sensitive_data_categories", None)
+            r.setdefault("data_sensitivity_score", None)
+            r.setdefault("budget_signal", None)
+            r.setdefault("budget_evidence", None)
+            r.setdefault("budget_blockers", None)
+        return rows
+
+def get_lead_with_score(conn, lead_id: int) -> dict | None:
+    """One lead + its latest verdict, fetched directly by id.
+
+    Replaces the previous pattern of loading EVERY lead in the database and
+    scanning for one id (app.py lead_review_view) — that worked at demo
+    volume and would crawl at a few thousand leads.
+    """
+    query = """
+        SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+               s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+               s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
+        FROM leads l
+        LEFT JOIN lead_scores s ON s.lead_id = l.id
+            AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+        WHERE l.id = ?
+        """
+    try:
+        row = conn.execute(query, (lead_id,)).fetchone()
+    except psycopg2.errors.UndefinedColumn:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        for col, coltype in [
+            ("sensitive_data_categories", "TEXT"),
+            ("data_sensitivity_score", "INTEGER"),
+            ("budget_signal", "TEXT"),
+            ("budget_evidence", "TEXT"),
+            ("budget_blockers", "TEXT"),
+        ]:
+            _add_column(conn, "lead_scores", col, coltype)
+        legacy = """
+            SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
+                   s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
+                   s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
+                   s.pain_signals, s.scored_at
+            FROM leads l
+            LEFT JOIN lead_scores s ON s.lead_id = l.id
+                AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+            WHERE l.id = ?
+            """
+        row = conn.execute(legacy, (lead_id,)).fetchone()
+        if row is not None:
+            d = dict(row)
+            d.setdefault("sensitive_data_categories", None)
+            d.setdefault("data_sensitivity_score", None)
+            d.setdefault("budget_signal", None)
+            d.setdefault("budget_evidence", None)
+            d.setdefault("budget_blockers", None)
+            return d
+        return None
+    return dict(row) if row else None
+
+
+def append_coverage_notes(conn, lead_id: int, notes: list[str]) -> None:
+    """Appends data-quality/coverage notes to a lead (JSON list column).
+
+    Coverage notes are the merge's "nothing fails silently" rule: which
+    evidence lanes ran, which were skipped/capped/failed, what was thin or
+    truncated. Duplicate notes are not re-appended.
+    """
+    if not notes:
+        return
+    row = conn.execute("SELECT coverage_notes FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    existing: list = []
+    if row and row["coverage_notes"]:
+        try:
+            existing = json.loads(row["coverage_notes"])
+        except (json.JSONDecodeError, TypeError):
+            existing = [str(row["coverage_notes"])]
+    for n in notes:
+        if n and n not in existing:
+            existing.append(n)
+    conn.execute(
+        "UPDATE leads SET coverage_notes = ? WHERE id = ?",
+        (json.dumps(existing, ensure_ascii=False), lead_id),
+    )
+    conn.commit()
+
+
+def get_coverage_notes(conn, lead_id: int) -> list[str]:
+    row = conn.execute("SELECT coverage_notes FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row or not row["coverage_notes"]:
+        return []
+    try:
+        return json.loads(row["coverage_notes"])
+    except (json.JSONDecodeError, TypeError):
+        return [str(row["coverage_notes"])]

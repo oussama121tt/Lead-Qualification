@@ -1,12 +1,22 @@
-pandas
-rapidfuzz
-firecrawl-py
-openai
-python-dotenv
-flask
-requests
-psycopg2-binary
-groq
-google-api-python-client
-google-auth-oauthlib
+# Version floors pinned so a fresh install cannot silently pull an
+# incompatible major version (the unpinned openai package already broke one
+# install with a pre-1.0 version).
+pandas>=2.0
+rapidfuzz>=3.0
+firecrawl-py>=4.0
+openai>=1.40
+python-dotenv>=1.0
+flask>=3.0
+requests>=2.31
+psycopg2-binary>=2.9
+groq>=0.9
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
 gunicorn==26.1.0
+# Merge additions (free-first website fetching + optional Claude provider)
+beautifulsoup4>=4.12
+lxml>=5.0
+anthropic>=1.0
+# Tests
+pytest>=8.0
+# Apollo sourcing uses requests (already pinned above)

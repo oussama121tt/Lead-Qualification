@@ -1,0 +1,84 @@
+# Operational config — tunable without code changes.
+# The [fast] section overlays test-mode values (selected by RUN_MODE=fast in .env
+# or the fast flag in runconfig.load_config).
+
+[linkedin]
+# Randomized per-profile delay (seconds) before each LinkedIn profile harvest,
+# picked uniformly in [min, max]. Human-mimicking pacing.
+delay_min = 45
+delay_max = 180
+# Longer pause every N profiles, N picked in [every_min, every_max].
+long_pause_every_min = 15
+long_pause_every_max = 20
+# Long pause duration (seconds), picked in [min, max]. 15-40 min.
+long_pause_min = 900
+long_pause_max = 2400
+# Hard caps (global, persisted across runs/batches/sessions in the DB).
+daily_cap = 50
+weekly_cap = 250
+# Seconds between per-post fetches on one profile (SGAI ~10 req/min per key).
+post_interval = 7.0
+# Post caps: most-recent authored posts kept (plus an always-kept bio post),
+# and most-recent liked posts kept.
+authored_keep = 10
+liked_keep = 5
+# Cap of activity items fetched per profile (0 = no cap beyond the feed slice).
+max_posts = 12
+
+[website]
+# Free-first fetching (requests + BeautifulSoup). Firecrawl is only used as a
+# fallback for JS-heavy/app-shell pages the free fetch cannot read.
+page_timeout = 15          # seconds per page (free fetch)
+per_domain_delay = 1.0     # seconds between hits to the same domain
+free_first = true          # false = always use Firecrawl (old behavior)
+
+[budget]
+# Hard LLM spend cap per analysis session, in USD. When the running total of
+# logged LLM calls for a session reaches this cap, scoring stops (leads are
+# marked SCORE_FAILED with reason budget_exceeded). 0 disables the cap.
+session_cap_usd = 5.0
+
+[surface_scan]
+# Public Surface Scanner (deterministic GET/HEAD-only checks on the lead
+# website's public surface). Findings are stored for INTERNAL review only and
+# must never reach an outbound email before the outreach wording has legal
+# sign-off — that outreach usage is still gated on the approval.
+enabled = true
+timeout = 10             # seconds per single request
+per_domain_delay = 1.0   # seconds between hits to the same domain (shared throttle)
+max_findings = 8         # cap on rows written per lead
+
+[fast]
+# Test-mode overlay: shrinks LinkedIn delays and bypasses caps so the pipeline
+# can be verified in minutes without waiting hours or spending the real budget.
+delay_min = 2
+delay_max = 4
+long_pause_every_min = 1000
+long_pause_every_max = 1000
+long_pause_min = 3
+long_pause_max = 5
+bypass_caps = true
+
+[apollo]
+# Monthly Apollo enrichment credit cap. Enrichment (people bulk_match) costs
+# 1 credit per person; people SEARCH is free. The credit governor blocks any
+# enrichment that would push the running monthly total past this cap. 0 = off.
+monthly_credit_cap = 3600
+# Max people fetched per search page (Apollo max is 100).
+search_page_size = 100
+# Hard ceiling on people pulled in one recipe run (safety net).
+max_people_per_run = 500
+# Add contact_email_status=["verified"] to every search unless the recipe sets
+# its own. Verified live: 52% of an unfiltered run's credits went to people
+# whose email_status was 'unavailable' (no email exists) — pure waste.
+require_verified_email = true
+
+[prefilter]
+# Stage-0 runs on free Apollo search fields BEFORE any enrichment or website
+# fetch. deterministic-only by default; set use_llm = true to send the
+# leftover "unclear" leads to a cheap Groq pass. min_headcount/max_headcount
+# bound the target persona (0 = no bound).
+enabled = true
+use_llm = false
+max_headcount = 50
+min_headcount = 0

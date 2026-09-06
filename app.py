@@ -24,8 +24,11 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db as dbmod
 from db import _now as _db_now
 import dedup as dedupmod
+import dnc as dncmod
 import export as exportmod
 import pipeline as pipelinemod
+import recipes as recipesmod
+import sourcing as sourcingmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 
@@ -34,7 +37,16 @@ from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 # PostgreSQL (Neon) is required — db.get_connection() raises an error without DATABASE_URL.
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "lead-qualification-engine")
+# Session-cookie signing key. Must be stable across gunicorn workers;
+# random per-process (previous) invalidates sessions on every worker
+# restart/timeout -> login loop on /progress/stream (seen in prod).
+_secret = os.getenv("FLASK_SECRET_KEY")
+if not _secret and os.getenv("FLASK_ENV", "").lower() == "production":
+    raise RuntimeError("FLASK_SECRET_KEY must be set in production (Render).")
+if not _secret:
+    _secret = "lead-qualification-engine"
+    print("[app] FLASK_SECRET_KEY not set — using dev fallback (set FLASK_SECRET_KEY in production).")
+app.config["SECRET_KEY"] = _secret
 
 # ---- Jinja filters for display formatting ----
 
@@ -196,6 +208,18 @@ def _init_schema_once():
         conn.close()
 
 
+# Run once at import so gunicorn (Render) also migrates - __main__ only
+# covers `python app.py`. In tests without DATABASE_URL, fail silently.
+_init_done = False
+try:
+    _init_schema_once()
+    _init_done = True
+except Exception as _init_e:
+    # Don't crash import (tests, build); will retry on first request
+    print(f"[init] schema init deferred: {_init_e}")
+    _init_done = False
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -211,6 +235,17 @@ def _init_schema_once():
 # one lightweight query per logged-in request, negligible at this scale.
 
 PUBLIC_ENDPOINTS = {"login", "signup", "static"}
+
+
+@app.before_request
+def _ensure_schema():
+    global _init_done
+    if not _init_done:
+        try:
+            _init_schema_once()
+            _init_done = True
+        except Exception as e:
+            print(f"[init] retry failed: {e}")
 
 
 @app.before_request
@@ -292,6 +327,17 @@ def _table_html(df: pd.DataFrame, columns: list[str]) -> str:
     if df.empty:
         return '<div class="empty-state">No data to display for now.</div>'
     display_df = df.loc[:, columns].copy()
+    # XSS fix: every data cell is HTML-escaped — scraped-site text and LLM
+    # output are untrusted input. Only the app-generated 'detail' link column
+    # (built in _load_dashboard_data, no external data in it beyond the
+    # numeric lead id) is left as markup.
+    import html as _html
+    for col in display_df.columns:
+        if col == "detail":
+            continue
+        display_df[col] = display_df[col].map(
+            lambda v: _html.escape(str(v)) if isinstance(v, str) else v
+        )
     return display_df.to_html(index=False, classes="table table-hover table-striped align-middle", escape=False)
 
 
@@ -357,7 +403,7 @@ def _load_dashboard_data(conn, session_id=None, selected_lead_id=None, segment_f
             selected_lead_id = int(scores.iloc[0]["id"])
         lead_detail = scores[scores["id"] == selected_lead_id].iloc[0].to_dict()
         # Parse JSON fields from DB text columns
-        for field in ("evidence_quotes", "personalization_hooks", "built_with_ai_signals", "technical_signals", "pain_signals"):
+        for field in ("evidence_quotes", "personalization_hooks", "built_with_ai_signals", "technical_signals", "pain_signals", "sensitive_data_categories", "budget_evidence", "budget_blockers"):
             val = lead_detail.get(field)
             if isinstance(val, str):
                 try:
@@ -530,6 +576,9 @@ def upload_and_review():
         )
         batch_id, ingest_summary = _run_ingest(conn, uploaded_file, session_id=session_id)
         dedup_summary = dedupmod.run_dedup(conn, fuzzy_threshold=fuzzy_threshold, session_id=session_id)
+        dnc_flagged = dncmod.flag_batch_on_import(conn, session_id)
+        if dnc_flagged:
+            flash(f"{dnc_flagged} lead(s) on the do-not-contact registry were excluded.", "info")
 
     flash(
         f"{ingest_summary['inserted']} row(s) imported, {ingest_summary['skipped_no_website']} ignored. "
@@ -717,41 +766,59 @@ def _homepage_content(conn, lead_id: int) -> str:
     return ""
 
 
-@app.route("/session/<int:session_id>/prepare_emails", methods=["POST"])
-def prepare_emails(session_id: int):
-    """Generates a DRAFT email for each selected lead (no sending yet).
+# ---------------------------------------------------------------------------
+# Email jobs — generation and sending run in BACKGROUND threads.
+# Doing N LLM calls (or N sends with a 10s throttle) inside one HTTP request
+# gets killed by any production WSGI worker timeout (gunicorn default: 30s).
+# The request now only starts the job; the review page polls its status.
+# ---------------------------------------------------------------------------
 
-    Each draft (subject + body) is saved in the DB with status 'draft',
-    then the user is redirected to the review page where they can read,
-    edit, and confirm the send — nothing is sent here.
-    """
-    _, denied = _require_session(session_id)
-    if denied is not None:
-        return denied
+_email_jobs: dict[int, dict] = {}
+_email_jobs_lock = threading.Lock()
 
-    lead_ids = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
-    if not lead_ids:
-        flash("Select at least one lead to email.", "warning")
-        return redirect(url_for("results_view", session_id=session_id))
 
+def _set_email_job(session_id: int, **fields):
+    with _email_jobs_lock:
+        job = _email_jobs.get(session_id, {})
+        job.update(fields)
+        _email_jobs[session_id] = job
+
+
+def _get_email_job(session_id: int) -> dict | None:
+    with _email_jobs_lock:
+        job = _email_jobs.get(session_id)
+        return dict(job) if job else None
+
+
+def _background_generate_emails(session_id: int, lead_ids: list[int], include_unapproved: bool):
     import emailer
 
-    generated = failed = skipped = 0
-    with open_db() as conn:
+    conn = dbmod.get_connection(DB_PATH)
+    generated = failed = skipped = unapproved = 0
+    try:
         scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
-        for lead_id in lead_ids:
+        approved_ids = {l["id"] for l in _categorize_leads(list(scores.values()))["approved"]}
+        for i, lead_id in enumerate(lead_ids):
+            _set_email_job(session_id, kind="generate", status="running",
+                           done=i, total=len(lead_ids))
             lead = scores.get(lead_id)
             if lead is None:
                 failed += 1
                 continue
-            if lead.get("email_status") == "sent":
-                skipped += 1
+            # Approval gate (spec hard rule): only leads in the qualified
+            # bucket get an email drafted, unless explicitly overridden.
+            # Skipped leads are counted and reported — never silent.
+            if not include_unapproved and lead_id not in approved_ids:
+                unapproved += 1
                 continue
-            if lead.get("email_status") == "draft":
+            if lead.get("email_status") in ("sent", "draft"):
                 skipped += 1
                 continue
             try:
-                email = emailer.generate_email_for_lead(lead, _homepage_content(conn, lead_id))
+                email = emailer.generate_email_for_lead(
+                    lead, _homepage_content(conn, lead_id),
+                    cost_cb=pipelinemod._make_cost_cb(conn, session_id, lead_id, "email"),
+                )
                 dbmod.update_lead_email_status(
                     conn,
                     lead_id,
@@ -764,9 +831,49 @@ def prepare_emails(session_id: int):
             except Exception as e:
                 failed += 1
                 dbmod.update_lead_email_status(conn, lead_id, status="failed", error=str(e))
+        message = (f"{generated} draft(s) generated, {failed} failed, {skipped} already "
+                   f"drafted/sent, {unapproved} not in 'Ready to approve' (skipped).")
+        _set_email_job(session_id, kind="generate", status="done",
+                       done=len(lead_ids), total=len(lead_ids), message=message)
+    except Exception as e:
+        _set_email_job(session_id, kind="generate", status="failed", error=str(e))
+    finally:
+        conn.close()
 
-    message = f"{generated} email draft(s) generated, {failed} failed, {skipped} already drafted/sent (skipped)."
-    flash(message, "success" if not failed else "warning")
+
+@app.route("/session/<int:session_id>/prepare_emails", methods=["POST"])
+def prepare_emails(session_id: int):
+    """Starts a BACKGROUND job that generates a DRAFT email per selected lead.
+
+    Only leads in the 'Ready to approve' category are drafted (hard rule of
+    the original spec) unless include_unapproved=1 is posted explicitly.
+    Nothing is ever sent here — drafts land on the review page, where the
+    human reads, edits, and confirms.
+    """
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+
+    lead_ids = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
+    if not lead_ids:
+        flash("Select at least one lead to email.", "warning")
+        return redirect(url_for("results_view", session_id=session_id))
+
+    job = _get_email_job(session_id)
+    if job and job.get("status") == "running":
+        flash("An email job is already running for this session — wait for it to finish.", "warning")
+        return redirect(url_for("email_review_view", session_id=session_id))
+
+    include_unapproved = request.form.get("include_unapproved") == "1"
+    _set_email_job(session_id, kind="generate", status="running", done=0, total=len(lead_ids))
+    threading.Thread(
+        target=_background_generate_emails,
+        args=(session_id, lead_ids, include_unapproved),
+        daemon=True,
+    ).start()
+
+    flash(f"Generating {len(lead_ids)} email draft(s) in the background — "
+          "this page refreshes automatically when they are ready.", "info")
     return redirect(url_for("email_review_view", session_id=session_id))
 
 
@@ -788,13 +895,70 @@ def email_review_view(session_id: int):
     return render_template("email_review.html", session=session_row, drafts=drafts)
 
 
+def _background_send_emails(session_id: int, payload: list[dict]):
+    """Sends the confirmed emails one by one with the anti-spam throttle,
+    in a background thread (a 10s-throttled loop inside an HTTP request
+    would be killed by the WSGI worker timeout after ~3 emails)."""
+    from gmail_sender import THROTTLE_SECONDS, send_email
+
+    conn = dbmod.get_connection(DB_PATH)
+    sent = failed = skipped = 0
+    try:
+        scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
+        for i, item in enumerate(payload):
+            _set_email_job(session_id, kind="send", status="running",
+                           done=i, total=len(payload))
+            lead = scores.get(item["lead_id"])
+            if lead is None:
+                failed += 1
+                continue
+            if lead.get("email_status") == "sent":
+                skipped += 1
+                continue
+            subject = item["subject"] or lead.get("email_subject") or ""
+            body = item["body"] or lead.get("email_body") or ""
+            if not subject or not body:
+                failed += 1
+                dbmod.update_lead_email_status(conn, item["lead_id"], status="failed", error="empty email content")
+                continue
+            try:
+                send_email(lead.get("email") or "", subject, body)
+                dbmod.update_lead_email_status(
+                    conn,
+                    item["lead_id"],
+                    subject=subject,
+                    body=body,
+                    status="sent",
+                    provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
+                    sent_at=_db_now(),
+                )
+                # A sent email is permanent do-not-contact — the next import
+                # cannot re-contact this person (the 22-person-re-email fix).
+                dncmod.add(conn, email=lead.get("email"),
+                           domain=lead.get("domain_normalized"), reason="sent")
+                sent += 1
+            except Exception as e:
+                failed += 1
+                dbmod.update_lead_email_status(conn, item["lead_id"], status="failed", error=str(e))
+            if i < len(payload) - 1:
+                time.sleep(THROTTLE_SECONDS)
+        message = f"{sent} email(s) sent, {failed} failed, {skipped} already sent (skipped)."
+        _set_email_job(session_id, kind="send", status="done",
+                       done=len(payload), total=len(payload), message=message)
+    except Exception as e:
+        _set_email_job(session_id, kind="send", status="failed", error=str(e))
+    finally:
+        conn.close()
+
+
 @app.route("/session/<int:session_id>/send_emails", methods=["POST"])
 def send_emails(session_id: int):
-    """Sends the (possibly edited) drafted emails for the selected leads.
+    """Starts a BACKGROUND job that sends the (possibly edited) drafts.
 
     The review page posts the edited subject/body per lead — what is sent
     is exactly what the user saw and approved. Nothing is ever sent
-    without this explicit confirmation.
+    without this explicit confirmation. The edits are captured from the
+    form NOW; the sending itself runs in a background thread.
     """
     _, denied = _require_session(session_id)
     if denied is not None:
@@ -805,7 +969,7 @@ def send_emails(session_id: int):
         flash("Select at least one email to send.", "warning")
         return redirect(url_for("email_review_view", session_id=session_id))
 
-    from gmail_sender import GmailNotConfigured, THROTTLE_SECONDS, get_credentials, send_email
+    from gmail_sender import GmailNotConfigured, get_credentials
 
     try:
         get_credentials()
@@ -813,49 +977,38 @@ def send_emails(session_id: int):
         flash(f"{e} See setup instructions in setup_gmail.py.", "error")
         return redirect(url_for("email_review_view", session_id=session_id))
 
-    sent = failed = skipped = 0
-    with open_db() as conn:
-        scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
-        for i, lead_id in enumerate(lead_ids):
-            lead = scores.get(lead_id)
-            if lead is None:
-                failed += 1
-                continue
-            if lead.get("email_status") == "sent":
-                skipped += 1
-                continue
-            # The edited content posted by the review form is authoritative;
-            # fall back to the stored draft when a field is missing.
-            subject = request.form.get(f"subject_{lead_id}") or lead.get("email_subject") or ""
-            body = request.form.get(f"body_{lead_id}") or lead.get("email_body") or ""
-            if not subject or not body:
-                failed += 1
-                dbmod.update_lead_email_status(conn, lead_id, status="failed", error="empty email content")
-                continue
-            try:
-                send_email(lead.get("email") or "", subject, body)
-                dbmod.update_lead_email_status(
-                    conn,
-                    lead_id,
-                    subject=subject,
-                    body=body,
-                    status="sent",
-                    provider=os.environ.get("EMAIL_LLM_PROVIDER", "groq"),
-                    sent_at=_db_now(),
-                )
-                sent += 1
-            except Exception as e:
-                failed += 1
-                dbmod.update_lead_email_status(conn, lead_id, status="failed", error=str(e))
-            if i < len(lead_ids) - 1:
-                time.sleep(THROTTLE_SECONDS)
+    job = _get_email_job(session_id)
+    if job and job.get("status") == "running":
+        flash("An email job is already running for this session — wait for it to finish.", "warning")
+        return redirect(url_for("email_review_view", session_id=session_id))
 
-    message = f"{sent} email(s) sent, {failed} failed, {skipped} already sent (skipped)."
-    if failed:
-        flash(message, "warning")
-    else:
-        flash(message, "success")
-    return redirect(url_for("results_view", session_id=session_id))
+    payload = [
+        {
+            "lead_id": lid,
+            "subject": request.form.get(f"subject_{lid}") or "",
+            "body": request.form.get(f"body_{lid}") or "",
+        }
+        for lid in lead_ids
+    ]
+    _set_email_job(session_id, kind="send", status="running", done=0, total=len(payload))
+    threading.Thread(
+        target=_background_send_emails,
+        args=(session_id, payload),
+        daemon=True,
+    ).start()
+
+    flash(f"Sending {len(payload)} email(s) in the background "
+          f"(~10s between each to stay under the spam radar).", "info")
+    return redirect(url_for("email_review_view", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/email_job", methods=["GET"])
+def email_job_status(session_id: int):
+    """Polled by the review page to display background email-job progress."""
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return jsonify({"status": "denied"})
+    return jsonify(_get_email_job(session_id) or {"status": "idle"})
 
 
 def _categorize_leads(scores_data: list) -> dict:
@@ -902,6 +1055,12 @@ def _categorize_leads(scores_data: list) -> dict:
         else:
             to_review.append(lead)
 
+        if lead in approved and lead.get("budget_signal") == "none" and lead.get("budget_blockers"):
+            approved.remove(lead)
+            reason = lead.get("disqualify_reason") or ""
+            lead["disqualify_reason"] = f"{reason} | budget blocker" if reason else "budget blocker"
+            to_review.append(lead)
+
     return {
         "approved": approved,
         "not_selected": not_selected,
@@ -937,6 +1096,14 @@ def results_view(session_id: int):
             "not_selected": len(not_selected),
             "pending": len(pending),
         }
+
+        # Running LLM spend for this session (FR-7): every scoring/email
+        # call is logged in llm_calls; the total is surfaced here.
+        try:
+            import costlog as costlogmod
+            summary["llm_spend"] = costlogmod.session_spend(conn, session_id)
+        except Exception:
+            summary["llm_spend"] = None
 
         # Load web search evidence for inline display (same structure as web_search_view)
         evidence_by_lead = dbmod.get_search_evidence_for_session(conn, session_id)
@@ -1019,8 +1186,7 @@ def rescore_leads(session_id: int):
 def lead_review_view(lead_id: int):
     """Structured per-lead review page: verdict, decision rationale and all evidence."""
     with open_db() as conn:
-        all_scored = dbmod.get_leads_with_scores(conn)
-        lead = next((l for l in all_scored if l.get("id") == lead_id), None)
+        lead = dbmod.get_lead_with_score(conn, lead_id)
         if lead is None:
             flash("Lead not found.", "error")
             return redirect(url_for("home"))
@@ -1029,7 +1195,7 @@ def lead_review_view(lead_id: int):
             return denied
         for field in (
             "evidence_quotes", "personalization_hooks", "built_with_ai_signals",
-            "technical_signals", "pain_signals",
+            "technical_signals", "pain_signals", "sensitive_data_categories", "budget_evidence", "budget_blockers",
         ):
             val = lead.get(field)
             if isinstance(val, str):
@@ -1040,6 +1206,8 @@ def lead_review_view(lead_id: int):
         content_rows = dbmod.get_lead_content(conn, lead_id)
         technical = dbmod.get_lead_technical_signals(conn, lead_id)
         search_evidence = dbmod.get_lead_search_evidence(conn, lead_id)
+        coverage_notes = dbmod.get_coverage_notes(conn, lead_id)
+        public_findings = dbmod.get_lead_public_findings(conn, lead_id)
     return render_template(
         "lead_review.html",
         session=session_row,
@@ -1047,7 +1215,141 @@ def lead_review_view(lead_id: int):
         content_rows=content_rows,
         technical=technical,
         search_evidence=search_evidence,
+        coverage_notes=coverage_notes,
+        public_findings=public_findings,
     )
+
+
+@app.route("/session/<int:session_id>/bulk_approve", methods=["POST"])
+def bulk_approve(session_id: int):
+    """Bulk-approve the selected leads (clears the review flag) — the volume
+    review path. Posts lead_ids[]; with confidence_min set, approves all
+    to-review leads at or above that confidence in one click."""
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+    selected = [int(x) for x in request.form.getlist("lead_ids") if x.isdigit()]
+    conf_min = request.form.get("confidence_min", type=float)
+    with open_db() as conn:
+        if not selected and conf_min is not None:
+            rows = dbmod.get_leads_with_scores(conn, session_id=session_id)
+            selected = [
+                l["id"] for l in rows
+                if not l.get("is_duplicate")
+                and l.get("needs_human_review")
+                and (l.get("confidence") or 0) >= conf_min
+            ]
+        n = 0
+        for lid in selected:
+            conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lid,))
+            conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lid,))
+            dbmod.set_lead_review(conn, lid, "APPROVED")
+            n += 1
+        conn.commit()
+    flash(f"{n} lead(s) approved.", "success")
+    return redirect(url_for("results_view", session_id=session_id))
+
+
+@app.route("/download/instantly.csv", methods=["GET"])
+def download_instantly_csv():
+    """Approval-gated Instantly/Smartlead export with {{first_line}}. Records
+    every exported lead in the do-not-contact registry so the next import
+    cannot re-contact them."""
+    selected_session_id, denied = _resolve_accessible_session(request.args.get("session_id", type=int))
+    if denied is not None:
+        return denied
+    approved_only = request.args.get("all") != "1"
+    with open_db() as conn:
+        rows = exportmod.instantly_rows(conn, session_id=selected_session_id, approved_only=approved_only)
+        csv_text = exportmod.instantly_csv_string(conn, session_id=selected_session_id, approved_only=approved_only)
+        # DNC + export history: never contact these again.
+        dnc_rows = [{"email": r["email"],
+                     "domain_normalized": dbmod._normalize_domain(r.get("website_url", ""))}
+                    for r in rows]
+        dncmod.add_many_from_leads(conn, dnc_rows, reason="instantly_export")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    if not rows:
+        flash("No approved leads to export. Approve leads first (or use ?all=1).", "warning")
+        return redirect(url_for("results_view", session_id=selected_session_id))
+    return _csv_response(f"instantly_{timestamp}.csv", csv_text)
+
+
+# ---------------------------------------------------------------------------
+# Apollo sourcing — search + Stage-0 pre-filter + credit-gated enrich
+# ---------------------------------------------------------------------------
+
+_sourcing_jobs: dict[int, dict] = {}
+_sourcing_lock = threading.Lock()
+
+
+def _set_sourcing_job(job_id, **f):
+    with _sourcing_lock:
+        j = _sourcing_jobs.get(job_id, {})
+        j.update(f)
+        _sourcing_jobs[job_id] = j
+
+
+@app.route("/sourcing", methods=["GET"])
+def sourcing_view():
+    with open_db() as conn:
+        recipe_list = recipesmod.list_all(conn)
+        import apollo_client
+        apollo_client.ensure_usage_table(conn)
+        used = apollo_client.credits_used_this_month(conn)
+    from runconfig import load_config
+    cfg = load_config()
+    return render_template("sourcing.html", recipes=recipe_list,
+                           credits_used=used, credit_cap=cfg.apollo.monthly_credit_cap,
+                           apollo_ready=bool(os.getenv("APOLLO_API_KEY")))
+
+
+@app.route("/sourcing/recipe", methods=["POST"])
+def sourcing_create_recipe():
+    name = (request.form.get("name") or "").strip()
+    filters_raw = (request.form.get("filters") or "").strip()
+    if not name or not filters_raw:
+        flash("Recipe needs a name and a filters JSON.", "error")
+        return redirect(url_for("sourcing_view"))
+    try:
+        filters = json.loads(filters_raw)
+    except json.JSONDecodeError as e:
+        flash(f"Filters must be valid JSON: {e}", "error")
+        return redirect(url_for("sourcing_view"))
+    with open_db() as conn:
+        recipesmod.create(conn, name, filters)
+    flash(f"Recipe '{name}' saved.", "success")
+    return redirect(url_for("sourcing_view"))
+
+
+def _background_sourcing(job_id, recipe_id, owner_id, dry_run):
+    conn = dbmod.get_connection()
+    try:
+        _set_sourcing_job(job_id, status="running")
+        summary = sourcingmod.run_recipe(conn, recipe_id=recipe_id, owner_id=owner_id, dry_run=dry_run)
+        _set_sourcing_job(job_id, status="done", summary=summary)
+    except Exception as e:
+        _set_sourcing_job(job_id, status="failed", error=str(e))
+    finally:
+        conn.close()
+
+
+@app.route("/sourcing/run/<int:recipe_id>", methods=["POST"])
+def sourcing_run(recipe_id: int):
+    dry_run = request.form.get("dry_run") == "1"
+    owner_id = session.get("user_id")
+    job_id = recipe_id
+    _set_sourcing_job(job_id, status="running")
+    threading.Thread(target=_background_sourcing,
+                     args=(job_id, recipe_id, owner_id, dry_run), daemon=True).start()
+    flash("Sourcing run started" + (" (dry run — no credits spent)" if dry_run else "") +
+          ". Watch its status below.", "info")
+    return redirect(url_for("sourcing_view"))
+
+
+@app.route("/sourcing/job/<int:recipe_id>", methods=["GET"])
+def sourcing_job_status(recipe_id: int):
+    with _sourcing_lock:
+        return jsonify(_sourcing_jobs.get(recipe_id) or {"status": "idle"})
 
 
 @app.route("/lead/<int:lead_id>/approve", methods=["POST"])
@@ -1126,6 +1428,9 @@ def start_analysis():
         )
         batch_id, ingest_summary = _run_ingest(conn, uploaded_file, session_id=session_id)
         dedup_summary = dedupmod.run_dedup(conn, fuzzy_threshold=fuzzy_threshold, session_id=session_id)
+        dnc_flagged = dncmod.flag_batch_on_import(conn, session_id)
+        if dnc_flagged:
+            flash(f"{dnc_flagged} lead(s) on the do-not-contact registry were excluded.", "info")
 
         threading.Thread(
             target=_background_pipeline,

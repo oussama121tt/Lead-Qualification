@@ -6,8 +6,17 @@ company and the recommended RuyaTech offer. This is a NEW step downstream
 of the scoring — scorer.py is never touched here.
 """
 import json
+import os
 
 from llm_provider import get_llm_provider
+
+# The sender identity is campaign configuration, not code: set SENDER_NAME
+# (and optionally SENDER_COMPANY) in .env. Falls back to a neutral company
+# signature — never a hardcoded person.
+def _sender_signature() -> str:
+    name = os.getenv("SENDER_NAME", "").strip()
+    company = os.getenv("SENDER_COMPANY", "RuyaTech").strip()
+    return f"{name} — {company}" if name else company
 
 EMAIL_PROMPT_TEMPLATE = """You write a short, personalized outreach email for RuyaTech,
 a technical agency that builds, rescues, and scales SaaS products for founders.
@@ -55,7 +64,10 @@ Strict instructions:
      RuyaTech service, with at most one concrete proof point (case study/figure) if it adds real
      credibility.
   4. Call-to-action (1 sentence): one single clear action (e.g. propose a quick call).
-  5. Sign-off + signature (e.g. "Best regards," then a line break, then "Oussama Ibrahim — RuyaTech").
+  5. Sign-off + signature (e.g. "Best regards," then a line break, then "{sender_signature}").
+  6. After the signature, on its own final line, a short polite opt-out sentence (e.g.
+     "If you'd rather not hear from me again, just reply 'no thanks'."). This line is
+     MANDATORY in every email — compliance requirement, never skip it.
 - 4 to 6 sentences total for blocks 1 to 4 (excluding the signature), in English, direct and
   professional tone, no empty superlatives.
 - Never write the body as one continuous block of text — the 5 parts above must stay visually
@@ -112,11 +124,23 @@ def build_prompt(lead: dict, homepage_content: str) -> str:
         personalization_hooks=_as_text(lead.get("personalization_hooks")),
         evidence_quotes=_as_text(lead.get("evidence_quotes")),
         homepage_content=(homepage_content or "")[:MAX_HOMEPAGE_CHARS],
+        sender_signature=_sender_signature(),
     )
 
 
-def generate_email_for_lead(lead: dict, homepage_content: str) -> dict:
-    """Returns {"subject": ..., "body": ...} or raises an exception, handled by the caller."""
-    provider = get_llm_provider()
+def generate_email_for_lead(lead: dict, homepage_content: str,
+                            cost_cb=None) -> dict:
+    """Returns {"subject": ..., "body": ...} or raises an exception, handled by
+    the caller. cost_cb, when provided, receives (meta, latency_ms) so the
+    call is logged to llm_calls (FR-7)."""
+    import time as _time
+    provider = get_llm_provider("email")
     prompt = build_prompt(lead, homepage_content)
-    return provider.generate_json(prompt)
+    t0 = _time.monotonic()
+    data, meta = provider.generate_json(prompt, max_tokens=1024)
+    if cost_cb is not None:
+        try:
+            cost_cb(meta, int((_time.monotonic() - t0) * 1000))
+        except Exception:
+            pass  # cost logging must never fail an email generation
+    return data

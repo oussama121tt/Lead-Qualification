@@ -10,14 +10,37 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import costlog
 import db as dbmod
+import linkedin_lane
 import scraper
 import scorer
+from db import _now as _db_now
+from runconfig import load_config
 
 from constants import CONFIDENCE_THRESHOLD
 
 DEFAULT_THROTTLE_SECONDS = 15  # Firecrawl free tier ~10 req/min
 DEFAULT_CONCURRENCY = int(os.getenv("PIPELINE_CONCURRENCY", "3") or "3")
+
+
+def _make_cost_cb(conn, session_id: int | None, lead_id: int | None, purpose: str):
+    """Callback handed to scorer/emailer so EVERY LLM call is logged to
+    llm_calls with tokens, latency, and estimated cost (FR-7)."""
+    def cb(meta: dict, latency_ms: int):
+        costlog.log_call(
+            conn,
+            session_id=session_id,
+            lead_id=lead_id,
+            purpose=purpose,
+            provider=meta.get("provider", "?"),
+            model=meta.get("model", "?"),
+            tokens_in=meta.get("tokens_in", 0),
+            tokens_out=meta.get("tokens_out", 0),
+            latency_ms=latency_ms,
+            created_at=_db_now(),
+        )
+    return cb
 
 
 def _now_ts() -> float:
@@ -61,17 +84,31 @@ def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=
 
 def _build_lead_metadata(lead: dict) -> dict:
     """Extracts Apollo metadata from a lead for the scoring prompt."""
-    return {
+    import json as _json
+    meta = {
         "first_name": lead.get("first_name"),
         "last_name": lead.get("last_name"),
         "title": lead.get("title"),
         "company_name": lead.get("company_name"),
         "email": lead.get("email"),
         "website_url": lead.get("website_url"),
+        "apollo_email_status": lead.get("apollo_email_status"),
     }
+    # Apollo enrichment (when the lead came from the API): the founder's
+    # career and the org facts are direct evidence for technical_founder vs
+    # ai_solo_founder and for budget_signal.
+    for key in ("apollo_person", "apollo_org"):
+        raw = lead.get(key)
+        if raw:
+            try:
+                meta[key] = _json.loads(raw) if isinstance(raw, str) else raw
+            except (ValueError, TypeError):
+                pass
+    return meta
 
 
-def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals: dict | None = None) -> dict:
+def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals: dict | None = None,
+                               notes: list | None = None) -> dict:
     """Runs the web search escalation (LinkedIn, Product Hunt, GitHub,
     founder person_* profiles, etc.), persists each source in
     the DB (lead_search_evidence), and returns the results as a dict
@@ -94,8 +131,10 @@ def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals
     a completely unrelated LinkedIn profile), while a link or name the
     company put on its own site cannot be confused with a homonym.
     """
+    notes = notes if notes is not None else []
     company_name = lead.get("company_name", "")
     if not company_name:
+        notes.append("web search skipped: lead has no company name")
         return {}
     technical_signals = technical_signals or {}
 
@@ -110,25 +149,66 @@ def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals
     # be a guess, same risk as the name-search bug this is meant to avoid.
     known_linkedin_person_url = person_urls[0] if len(person_urls) == 1 else None
 
+    # The founder's LinkedIn URL from the Apollo CSV (optional FR-1 column)
+    # outranks the site-link candidate: it names THE contact we are emailing,
+    # not just "a person the site links to".
+    csv_person_url = (lead.get("linkedin_url") or "").strip() or None
+    person_profile_url = csv_person_url or known_linkedin_person_url
+
+    # --- Founder LinkedIn deep harvest (merged from lead_tool) ---
+    # Full profile + attributed posts, sequential/paced/capped. When it
+    # succeeds it REPLACES the snippet-based person_linkedin evidence with
+    # far richer, code-attributed content. When it can't run (capped, no
+    # key, failure), the classic search path below still covers the lead —
+    # and the coverage note says exactly what happened. Nothing silent.
+    harvest_hits = None
+    if person_profile_url:
+        cfg = load_config()
+        harvest = linkedin_lane.harvest_founder_profile(person_profile_url, cfg.linkedin, conn)
+        notes.extend(harvest.get("notes") or [])
+        if harvest["status"] == "ok":
+            harvest_hits = harvest["hits"]
+            notes.append(
+                f"linkedin founder profile harvested in full "
+                f"({sum(1 for h in harvest_hits if h['title'].startswith('AUTHORED'))} authored post(s))")
+        elif harvest["status"] == "capped":
+            notes.append("linkedin harvest capped; fell back to snippet search evidence")
+        elif harvest["status"] in ("no_key", "keys_exhausted"):
+            notes.append(f"linkedin harvest unavailable ({harvest['status']}); fell back to snippet search")
+        else:
+            notes.append(f"linkedin harvest failed ({harvest.get('reason')}); fell back to snippet search")
+    else:
+        notes.append("no founder linkedin url known (csv or site); person evidence limited to name search")
+
     try:
         search_results = scraper.search_additional_evidence(
             company_name=company_name,
             founder_name=founder_name,
             limit_per_query=2,
             known_linkedin_company_url=known_linkedin_company_url,
-            known_linkedin_person_url=known_linkedin_person_url,
+            known_linkedin_person_url=person_profile_url,
+            # When the deep harvest succeeded we already have the person
+            # evidence — skip the redundant person scrape/search entirely.
+            skip_person_linkedin=harvest_hits is not None,
         )
         if "_error" in search_results:
-            return {}
-        for source, hits in search_results.items():
-            if isinstance(hits, list) and hits:
-                dbmod.save_search_evidence(conn, lead_id, source, "", hits)
-        return {
-            source: hits for source, hits in search_results.items()
-            if isinstance(hits, list) and hits
-        }
-    except Exception:
-        return {}
+            notes.append(f"web search skipped: {search_results['_error']}")
+            search_results = {}
+    except Exception as e:
+        notes.append(f"web search failed: {e}")
+        search_results = {}
+
+    if harvest_hits is not None:
+        search_results["person_linkedin"] = harvest_hits
+
+    collected = {}
+    for source, hits in search_results.items():
+        if isinstance(hits, list) and hits:
+            dbmod.save_search_evidence(conn, lead_id, source, "", hits)
+            collected[source] = hits
+    if not collected:
+        notes.append("web escalation returned no usable evidence")
+    return collected
 
 
 def _load_persisted_web_evidence(conn, lead_id: int) -> dict:
@@ -172,6 +252,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
     events = []
     lead_id = lead["id"]
     website = lead["website_url"]
+    coverage: list = []   # evidence coverage notes — flushed to the DB in finally
 
     def _base(extra=None):
         d = {
@@ -185,6 +266,23 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         return d
 
     try:
+        # --- Session budget gate (FR-7) ---
+        # Checked BEFORE any spend on this lead. When the cap is hit the
+        # whole session is cancelled cooperatively: leads in flight finish,
+        # queued ones never start, and each skipped lead says why.
+        cap_usd = load_config().budget.session_cap_usd
+        if session_id is not None and cap_usd > 0:
+            try:
+                costlog.check_budget(conn, session_id, cap_usd)
+            except costlog.BudgetExceeded as be:
+                dbmod.update_lead_progress(conn, lead_id, status="SCORE_FAILED",
+                                           error=f"budget_exceeded: {be}")
+                coverage.append(f"skipped: session LLM budget cap reached (${be.cap:.2f})")
+                dbmod.cancel_analysis_session(conn, session_id)
+                events.append(_base({"step": "done", "status": "SCORE_FAILED",
+                                     "error": f"budget_exceeded: {be}"}))
+                return events
+
         events.append(_base({"step": "scraping", "status": None, "error": None}))
 
         # --- Scraping ---
@@ -199,6 +297,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             return events
 
         scrape_elapsed = _now_ts() - scrape_t0
+        coverage.extend(scrape_result.get("fetch_notes") or [])
         dbmod.update_lead_progress(conn, lead_id, status=scrape_result["status"], error=scrape_result.get("error"), scrape_seconds=scrape_elapsed)
         if scrape_result["rows"]:
             dbmod.save_lead_content(conn, lead_id, scrape_result["rows"])
@@ -215,6 +314,29 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             )
 
         events.append(_base({"step": "scraping_done", "status": scrape_result["status"], "error": scrape_result.get("error"), "scrape_seconds": scrape_elapsed}))
+
+        # --- Public surface scan (config-gated; OFF until legal sign-off) ---
+        # Deterministic GET/HEAD-only checks on the lead's public surface,
+        # stored as verified findings for internal review. The scan is a
+        # several-single-requests-per-domain affair; it never writes to the
+        # target and every finding row required verified=1 + evidence excerpt.
+        if load_config().surface_scan.enabled:
+            try:
+                import surface_scan
+                cfg = load_config().surface_scan
+                findings = surface_scan.scan_site(
+                    website,
+                    timeout=cfg.timeout,
+                    per_domain_delay=cfg.per_domain_delay,
+                    max_findings=cfg.max_findings,
+                )
+                written = dbmod.save_lead_public_findings(conn, lead_id, findings)
+                if written:
+                    coverage.append(f"surface scan: {written} verified finding(s) (internal review only)")
+                else:
+                    coverage.append("surface scan: no verified findings")
+            except Exception as _scan_e:
+                coverage.append(f"surface scan failed: {_scan_e}")
 
         # --- Scoring, pass 1: site content only, NO web search yet ---
         # Groups the scraper's deterministic signals (technical_signals +
@@ -238,6 +360,8 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             (content or "").strip() for _, _, content in scrape_result["rows"]
         )
 
+        cost_cb = _make_cost_cb(conn, session_id, lead_id, "score")
+
         def _score(web_evidence):
             return scorer.score_content(
                 scrape_result["rows"],
@@ -247,6 +371,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
                 scoring_criteria=scoring_criteria,
                 scoring_criteria_custom=scoring_criteria_custom,
                 site_content_missing=site_content_missing,
+                cost_cb=cost_cb,
             )
 
         score_t0 = _now_ts()
@@ -280,7 +405,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         )
         if should_escalate_web:
             events.append(_base({"step": "web_search", "status": None, "error": None}))
-            web_evidence = _fetch_web_search_evidence(conn, lead_id, lead, technical_signals=scrape_result.get("technical_signals"))
+            web_evidence = _fetch_web_search_evidence(conn, lead_id, lead, technical_signals=scrape_result.get("technical_signals"), notes=coverage)
             if web_evidence:
                 try:
                     verdict = _score(web_evidence)
@@ -291,6 +416,8 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
                     note = f"web_escalation_second_pass_failed: {e}"
                     existing = verdict.get("disqualify_reason")
                     verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+        else:
+            coverage.append("web escalation skipped: pass-1 verdict was clear-cut")
         score_elapsed = _now_ts() - score_t0
 
         try:
@@ -324,6 +451,10 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         events.append(_base({"step": "done", "status": "SCORE_FAILED", "error": str(fatal)}))
         return events
     finally:
+        try:
+            dbmod.append_coverage_notes(conn, lead_id, coverage)
+        except Exception:
+            pass  # coverage notes must never fail a lead
         conn.close()
 
 
@@ -452,6 +583,7 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
                 scoring_criteria=scoring_criteria,
                 scoring_criteria_custom=scoring_criteria_custom,
                 site_content_missing=site_content_missing,
+                cost_cb=_make_cost_cb(conn, session_id, lead_id, "rescore"),
             )
             score_elapsed = _now_ts() - score_t0
 

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apollo sourcing — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border, #eee); }
+    textarea { width: 100%; min-height: 90px; font-family: monospace; font-size: 13px; }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #ccc); background: var(--surface-2, #f6f6f6); cursor: pointer; text-decoration: none; color: inherit; display: inline-block; }
+    .btn-primary { background: #00ABE4; color: #fff; border-color: #00ABE4; }
+    input[type=text] { width: 100%; padding: 8px; border: 1px solid var(--border, #ccc); border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('history') }}">History</a></p>
+    <h1>Apollo sourcing</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for c, m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <strong>Credits this month:</strong> {{ credits_used }} / {{ credit_cap }}
+      {% if not apollo_ready %}<div class="muted">⚠ APOLLO_API_KEY is not set — searches and enrichment will fail. Add it to .env.</div>{% endif %}
+      <div class="muted">Flow per run: search (free) → Stage-0 pre-filter (free) → enrich survivors (1 credit each, capped). Use "Dry run" to see how many would be enriched without spending a credit.</div>
+    </div>
+
+    <div class="card">
+      <h3>New recipe</h3>
+      <form action="{{ url_for('sourcing_create_recipe') }}" method="post">
+        <p><input type="text" name="name" placeholder="Recipe name (e.g. health-software-solo-2026)"></p>
+        <p class="muted">Apollo search filters as JSON — passed straight to the People Search API. Example:</p>
+        <textarea name="filters">{
+  "person_titles": ["founder", "co-founder", "ceo"],
+  "q_keywords": "health app",
+  "organization_num_employees_ranges": ["1,10", "11,20"]
+}</textarea>
+        <p><button class="btn btn-primary" type="submit">Save recipe</button></p>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3>Recipes</h3>
+      {% if recipes %}
+      <table>
+        <tr><th>Name</th><th>Runs</th><th>Pulled</th><th>Qualified</th><th>Enriched</th><th>Sent</th><th>Replies</th><th>Qual. rate</th><th>Reply rate</th><th></th></tr>
+        {% for r in recipes %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.runs }}</td><td>{{ r.leads_pulled }}</td><td>{{ r.qualified }}</td>
+          <td>{{ r.enriched }}</td><td>{{ r.sent }}</td><td>{{ r.replies }}</td>
+          <td>{{ '%.0f%%'|format(r.qualified_rate*100) if r.qualified_rate is not none else '—' }}</td>
+          <td>{{ '%.1f%%'|format(r.reply_rate*100) if r.reply_rate is not none else '—' }}</td>
+          <td>
+            <form action="{{ url_for('sourcing_run', recipe_id=r.id) }}" method="post" style="display:inline">
+              <input type="hidden" name="dry_run" value="1">
+              <button class="btn" type="submit">Dry run</button>
+            </form>
+            <form action="{{ url_for('sourcing_run', recipe_id=r.id) }}" method="post" style="display:inline">
+              <button class="btn btn-primary" type="submit" onclick="return confirm('Spend up to {{ r.leads_pulled and 500 or 500 }} credits?')">Run (spend credits)</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No recipes yet. Your validated finding: many NARROW vertical searches beat a few broad ones. Save one above.</p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

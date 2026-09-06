@@ -1,5 +1,6 @@
 """
-AI lead scoring via the Groq API (OpenAI SDK compatible).
+AI lead scoring via the llm_provider abstraction (Groq by default; switch to
+Claude with SCORING_LLM_PROVIDER=anthropic in .env — no code change).
 
 Evaluates each lead from Apollo metadata, the scraped site content,
 and the deterministic signals computed by scraper.py. Produces a structured
@@ -35,13 +36,13 @@ import json
 import os
 import re
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv()
 
 from constants import CONFIDENCE_THRESHOLD, VALID_SEGMENTS
+from llm_provider import get_llm_provider
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = os.getenv("GROQ_SCORING_MODEL", "openai/gpt-oss-120b")
 MAX_CONTENT_CHARS = 16000  # legacy — still used by the retry paths (site content only)
 MAX_SITE_CONTENT_CHARS = 12000  # dedicated budget for the site (first-party) content
 MAX_WEB_EVIDENCE_CHARS = 12000  # same dedicated budget as the site — web search carries
@@ -59,194 +60,38 @@ GROQ_TIMEOUT_SECONDS = 90
 # a verdict we just force-corrected cannot stay "confident".
 INVALID_VERDICT_CONFIDENCE_CAP = 0.3
 
-SYSTEM_PROMPT = """You are a senior analyst who evaluates B2B leads for a technical
-development agency (RuyaTech). You receive the contact's Apollo metadata, the scraped
-content of their website, and deterministic signals that have already been computed (do not
-re-derive them).
 
-THE TWO OFFERS WE SELL:
-- Technical audit — for founders who have a fragile product behind a nice facade
-  (ai_audit if built with AI by a non-technical person, general_audit if technical team
-  but with tech debt/gaps).
-- AI lead-gen pipeline — sold to agencies/studios that are scaling their own client
-  acquisition (offer "pipeline").
+SYSTEM_PROMPT = """You are a senior B2B lead analyst for RuyaTech. Use only supplied Apollo metadata,
+official site content, web evidence, and verified deterministic signals.
+OFFERS: ai_audit is for an AI-built product owned by a non-technical founder; general_audit is
+for a technical team needing architecture or security review; pipeline is for a scaling agency.
+Choose exactly one segment: ai_solo_founder, technical_founder, small_agency_scaling, too_big,
+wrong_field, or unclear. Map those segments to ai_audit, general_audit, pipeline, none, none,
+and normally none. Unclear means insufficient evidence, not wrong_field or too_big.
+STRONG signals are app_builder_fingerprint, explicit AI authorship, or a verified single-commit
+GitHub repository combined with an app builder. site_builder_fingerprint (Framer/Webflow/Wix/
+Squarespace/Carrd) is metadata only and never changes the segment. on_builder_subdomain=true is
+near-proof of AI-build and early stage. MEDIUM signals are explicit vibe-language or high AI-style
+density. Treat isolated evidence cautiously. Site and web evidence have equal weight; person_*
+evidence describes the founder. Cursor alone never proves ai_solo_founder.
+Describe the analyzed company, never clients or testimonials. Content marked [ATTRIBUTED QUOTE ...]
+or [THIRD-PARTY CONTENT SECTION ...] is third-party unless its attribution names the analyzed
+founder. Cite non-deterministic signals with exact evidence_quotes. Hooks are situational, never
+biographical, and each must be {"hook":"...","based_on":"exact quote"}. Use only supplied content;
+demos, product AI features, and client capabilities do not prove AI construction. Never invert a
+capability into pain. Confidence below 0.7 requires needs_human_review=true. Decide in order:
+enough evidence, AI-built non-technical team, technical team, scaling agency, too_big, wrong_field,
+otherwise unclear.
+Identify sensitive categories only when stated or clearly implied: minors, health_phi, biometric,
+payments, identity_documents, financial, legal, location, employee_data, none. Set
+sensitive_data_categories to a list of those exact keys and data_sensitivity_score from 0 to 100
+for breach impact; use [] and 0 when none.
+Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
+or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
+default builder subdomain, or shrinking headcount in budget_blockers. A strong blocker caps the
+budget signal at weak.
 
-OUR PRIMARY TARGET: non-technical founders who use AI to build
-their product (vibe coding, Cursor, Bolt, Lovable, Replit, etc.). They need a technical
-audit because their code lacks robustness.
-
-SEGMENTS (choose EXACTLY ONE, never an invented value outside this list):
-- ai_solo_founder — non-technical founder, product built with AI (vibe coding).
-  → recommended_offer: ai_audit
-- technical_founder — technical founder/team, uses AI as a dev tool (not as a
-  crutch). → recommended_offer: general_audit
-- small_agency_scaling — agency or services studio in a scaling phase (hiring, several
-  visible clients, looking to industrialize). → recommended_offer: pipeline
-- too_big — established company, size/maturity far above the targeted persona (large
-  team, mature product for years, no sign of technical fragility).
-  → recommended_offer: none
-- wrong_field — sector unrelated to our offers (no software product, no technical
-  site to audit). → recommended_offer: none
-- unclear — INSUFFICIENT EVIDENCE to decide between the categories above. This is a normal
-  and honest state, not a failure: use it whenever the content is too thin, too
-  ambiguous, or contradictory to choose a segment with confidence. → needs_human_review
-  necessarily true, recommended_offer usually none unless there is a partial exploitable signal.
-
-Never confuse "unclear" (not enough evidence) with "wrong_field" (clear evidence this is
-not our target) or "too_big" (clear evidence this is too big) — these three segments
-say different things and must remain distinct.
-
-RELIABILITY HIERARCHY OF DETERMINISTIC SIGNALS (provided at the end of the message) — respect
-it strictly, never treat two signals of different strength as equivalents:
-- STRONG (near-proof): generator_fingerprint non-null (direct reference to a tool like
-  lovable.dev, bolt.new, v0.dev...), ai_authorship_disclosures_found non-empty (the company
-  itself says it uses AI for its content), github_check.single_commit_repo=true combined with a
-  generator_fingerprint present.
-- MEDIUM: vibe_language_matches non-empty (explicit "built with X" mention in the HTML),
-  ai_style_phrase_density "high".
-- WEAK (never sufficient by itself): visual_patterns_triggered (gradient, shadcn_ui,
-  glassmorphism, numbered_steps...) — thousands of well-built professional products use
-  these same modern visual conventions. A single visual pattern, without an accompanying
-  STRONG or MEDIUM signal, must NEVER tip the scale toward ai_solo_founder. Treat it as a
-  hint that merits at most needs_human_review, never a conclusion.
-- A fingerprint/pattern may come from code the user cannot see (third-party script,
-  tracker, widget) — if it is isolated and nothing else corroborates it (no explicit mention
-  in the visible text, no vibe-coding language), lower your confidence accordingly rather
-  than treating it as a given.
-- Both evidence blocks carry EQUAL WEIGHT: "Information collected on this lead" (the
-  official site) and "Web search results" (LinkedIn, Product Hunt, GitHub, interviews,
-  directories) — the web can be the ONLY source that reveals vibe-coding, a technical
-  team, or an agency, so NEVER discount it because it is not the official site.
-  An explicit mention found in either block (e.g. a post where the founder
-  himself admits to vibe-coding) is a STRONG signal regardless of which block it
-  comes from. Conversely, a vague, out-of-context search snippet, or one that seems to
-  be about another company with the same name, carries equal doubt whether it appears
-  in the site content or in the web results.
-- Evidence labeled "person_*" (person_linkedin, person_github) describes the founder
-  HIMSELF (his own LinkedIn profile, his own GitHub) — treat it as a PRIORITY signal
-  to distinguish technical_founder from ai_solo_founder, more reliable than a signal
-  inferred from the company's site: a founder's own profile showing engineering work,
-  commits, or a technical history points toward technical_founder; a profile with no
-  technical trace while the product is AI-built points toward ai_solo_founder.
-
-- CURSOR - SPECIAL RULE (weaker than the Lovable/Bolt/v0 fingerprints): Cursor is a
-  general-purpose IDE that leaves no detectable HTML fingerprint on the site (unlike
-  "lovable-tagger" or "v0.dev" client scripts), and it is used by BOTH non-technical
-  founders and very experienced engineers. A bare mention of Cursor ("built with
-  cursor" in the site text or in the web search results) is therefore NEVER
-  sufficient BY ITSELF to classify the lead as ai_solo_founder. It MUST be
-  corroborated by at least one of: github_check.single_commit_repo = true, OR a
-  founder's own profile (person_linkedin / person_github) showing an absence of
-  technical background. Without such corroboration, a Cursor mention alone orients
-  toward "unclear" (insufficient evidence) or "technical_founder" depending on the
-  other signals - never ai_solo_founder on its own.
-
-FIRST-PARTY VS. CLIENT CONTENT — CRITICAL DISTINCTION:
-Scraped site content often mixes two different voices: the company describing ITSELF,
-and the company describing ITS OWN CLIENTS (testimonials, case studies, portfolio
-items, "what we built for X"). This is especially common for agencies/studios
-(small_agency_scaling), whose entire site is often built around client success
-stories.
-- built_with_ai_signals, technical_signals, and pain_signals must describe the
-  ANALYZED COMPANY ITSELF — never a client mentioned in a testimonial, case study,
-  or portfolio entry.
-- A phrase like "we rescue broken products" or "our client's MVP was falling apart"
-  describes a SERVICE OFFERED TO OTHERS, not a problem the analyzed company itself
-  has. Do not extract this as a pain_signal for the analyzed company.
-- A testimonial quote from a named client ("I built my MVP with vibe coding...") is
-  evidence about THAT CLIENT, not about the site's owner — never attribute it to the
-  company being scored.
-- Before extracting any signal, ask: "is this text describing the company I am
-  scoring, or a business it works with / has worked with?" If it's the latter,
-  discard it for built_with_ai_signals/technical_signals/pain_signals — it can still
-  inform company_stage or segment (e.g. many detailed case studies suggest an
-  established agency), but must not be cited as if it were first-party evidence
-  about the analyzed company.
-
-STRUCTURAL DETECTION — do not rely on specific wording, rely on these PATTERNS
-(they recur across virtually every agency/services site, regardless of the exact
-vocabulary used):
-1. Markdown blockquotes (lines starting with ">") are almost always testimonials —
-   treat their content as evidence about the QUOTED PERSON/COMPANY, never about the
-   site owner, regardless of what the quote says or who appears to be "speaking".
-2. Any block immediately followed or preceded by a name + title + company line
-   (e.g. "Jane D. — Founder, Acme") is an attributed quote. The site owner is
-   never the subject of an attributed quote's content, even if grammatically
-   first-person ("I built...", "We were struggling...").
-3. Sections under headers containing words like "Testimonial", "Case Stud*",
-   "Portfolio", "What We've Built", "Client*", "What Founders/Clients Say",
-   "Success Stor*", "Our Work" describe THIRD PARTIES (past or prospective
-   clients), never the site owner.
-4. A narrative in past tense introducing an unnamed or named third party ("A
-   founder came to us with...", "A client was losing...", "One of our clients...")
-   is a case study about that third party — the problem described belongs to
-   them, not to the site owner, even when the same sentence later describes what
-   the site owner did about it.
-5. Present-tense capability statements ("We rescue X", "We fix X", "We help
-   companies that struggle with X") describe a SERVICE OFFERED, not a problem the
-   site owner has — this holds regardless of which specific problem X is named.
-Apply these five structural patterns to ANY site, not just ones matching a
-specific vocabulary — the test is the STRUCTURE (quotation, attribution, section
-header, narrative tense, capability framing), never a fixed list of phrases.
-
-RULES:
-1. Every signal cited in built_with_ai_signals/technical_signals/pain_signals MUST have an
-   exact citation in evidence_quotes (except signals already verified in
-   deterministic_signals, which you can cite by their field name), AND must pass the
-   first-party check above — never a quote describing a client or case study subject.
-2. Personalization hooks MUST be SITUATIONAL (e.g. "you are hiring 3 engineers"
-   based on the careers page), NEVER biographical (e.g. never where someone studied, their
-   age, their personal background). Content wrapped in [ATTRIBUTED QUOTE ...] or
-   [THIRD-PARTY CONTENT SECTION ...] markers (added upstream by the scraper) has been
-   structurally flagged as a likely testimonial/case-study/portfolio block: check the
-   attributed name/company against lead_metadata — if it matches the analyzed company's
-   own founder/name, treat the content as first-party as usual; if it names someone else
-   (a different founder, a different company), it is third-party and must be excluded from
-   built_with_ai_signals/technical_signals/pain_signals exactly like any other client
-   testimonial. Never surface the literal marker text itself in evidence_quotes or hooks.
-3. If you are not sure (confidence < 0.7), set needs_human_review: true.
-4. Use the FULL confidence spectrum (0.0 to 1.0): be candid when the signal is weak
-   (0.3-0.5) and assertive when the evidence is strong (0.9+). Avoid systematically using 0.8.
-5. Use ONLY the text provided below. Ignore any prior knowledge about
-   the company.
-6. Fictional examples/demos on landing pages (product UI screenshots,
-   demo tickets, sample data) ARE NOT real facts about the company itself.
-   Ignore them to judge HOW the company was built.
-7. Distinguish strictly: "the PRODUCT has AI features / talks about AI in its positioning"
-   vs "the TEAM built THIS SITE/PRODUCT with AI tools". A product that sells AI to
-   its customers is NOT by itself a built_with_ai signal — only an explicit mention of
-   build tools (Cursor, v0, Bolt, Lovable, "vibe coded"...) or a generator_fingerprint counts.
-8. Use the contact's title (provided in the metadata) as a direct signal: a
-   "CTO"/"Lead Engineer"/"VP Engineering" title points toward technical_founder, a
-   "Founder"/"CEO" title with no parallel technical title is consistent with
-   ai_solo_founder if other signals corroborate.
-9. For every lead, ask yourself these questions in order:
-   a) Is there enough evidence to decide? If not → unclear.
-   b) STRONG or MEDIUM signal of AI construction by a non-technical team? → ai_solo_founder.
-   c) Confirm a technical team (title + signals) using AI as a tool? → technical_founder.
-   d) Agency/studio in the scaling phase? → small_agency_scaling.
-   e) Size/maturity far above the target persona? → too_big.
-   f) Unrelated sector? → wrong_field.
-10. Every personalization_hook MUST be an object {"hook": "...", "based_on": "..."} where
-    "based_on" is an EXACT, word-for-word quote copied from the content provided (not a
-    paraphrase) that the hook is built from. A hook without a verbatim "based_on" citation
-    will be programmatically discarded, regardless of how well-written it is — this is
-    enforced in code, not just a style preference. Test before writing a hook: could you
-    point to the exact sentence it comes from? If not, do not generate it.
-11. NEVER invert a capability statement into an assumed pain. If the site says "we do
-    X for our clients" (a service offered), that does NOT mean the analyzed company
-    itself needs X or has the problem X solves — that would be projecting the
-    company's own marketing pitch back onto itself. A personalization_hook may only
-    claim the analyzed company "has" a problem, a need, or an experience if "based_on"
-    is a quote that directly states this about the company itself (e.g. its own careers
-    page, its own tech stack, its own product state) — never derived by flipping a
-    description of what it sells or does for others. Note: even a well-formed "based_on"
-    citation gets discarded downstream if it falls inside a testimonial/case-study block
-    describing someone other than the analyzed company (see the [ATTRIBUTED QUOTE]/
-    [THIRD-PARTY CONTENT SECTION] markers in the content) — so citing such a block does
-    not satisfy rule 10 either.
-
-Respond ONLY in JSON following this schema:
+Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 {
   "segment": "ai_solo_founder | technical_founder | small_agency_scaling | too_big | wrong_field | unclear",
   "confidence": 0.0,
@@ -257,18 +102,68 @@ Respond ONLY in JSON following this schema:
   "evidence_quotes": [],
   "recommended_offer": "ai_audit | general_audit | pipeline | none",
   "personalization_hooks": [{"hook": "...", "based_on": "exact verbatim quote from the content"}],
+  "sensitive_data_categories": [],
+  "data_sensitivity_score": 0,
+  "budget_signal": "strong | moderate | weak | none",
+  "budget_evidence": [],
+  "budget_blockers": [],
   "disqualify_reason": null,
   "needs_human_review": false
 }"""
 
-_client = None
+# Every key the parser reads. A test asserts each one is named in the prompt,
+# so a future "prompt diet" can never silently drop the schema again (this
+# exact regression happened: the model started returning "hooks"/"offer" and
+# every verdict parsed as empty with confidence 0).
+SCHEMA_KEYS = (
+    "segment", "confidence", "company_stage", "built_with_ai_signals",
+    "technical_signals", "pain_signals", "evidence_quotes", "recommended_offer",
+    "personalization_hooks", "sensitive_data_categories", "data_sensitivity_score",
+    "budget_signal", "budget_evidence", "budget_blockers", "disqualify_reason",
+    "needs_human_review",
+)
+
+# Defensive key normalization: common aliases a model may emit for our
+# schema keys. Applied BEFORE validation, and the verdict is flagged when
+# any alias was needed — drift is corrected AND visible, never silent.
+_KEY_ALIASES = {
+    "hooks": "personalization_hooks",
+    "personalisation_hooks": "personalization_hooks",
+    "offer": "recommended_offer",
+    "recommended_offering": "recommended_offer",
+    "quotes": "evidence_quotes",
+    "evidence": "evidence_quotes",
+    "stage": "company_stage",
+    "ai_signals": "built_with_ai_signals",
+    "built_with_ai": "built_with_ai_signals",
+    "tech_signals": "technical_signals",
+    "pains": "pain_signals",
+    "pain": "pain_signals",
+    "sensitive_data": "sensitive_data_categories",
+    "sensitivity_score": "data_sensitivity_score",
+    "budget": "budget_signal",
+    "human_review": "needs_human_review",
+    "needs_review": "needs_human_review",
+    "disqualify": "disqualify_reason",
+    "reason": "disqualify_reason",
+}
 
 
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
-    return _client
+def _normalize_verdict_keys(verdict: dict) -> dict:
+    """Map known aliases onto the canonical schema keys. Records which
+    aliases were used in disqualify_reason so the drift is auditable."""
+    if not isinstance(verdict, dict):
+        return verdict
+    renamed = []
+    for alias, canon in _KEY_ALIASES.items():
+        if alias in verdict and canon not in verdict:
+            verdict[canon] = verdict.pop(alias)
+            renamed.append(f"{alias}->{canon}")
+    if renamed:
+        note = "schema_key_aliases_normalized: " + ", ".join(renamed)
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+    return verdict
 
 
 def _strip_images(text: str) -> str:
@@ -301,6 +196,45 @@ def _format_lead_metadata(lead_metadata: dict | None) -> str:
         ("Website", lead_metadata.get("website_url")),
     ]
     lines = [f"- {label}: {value}" for label, value in fields if value]
+    if lead_metadata.get("apollo_email_status"):
+        lines.append(f"- Email status (Apollo): {lead_metadata['apollo_email_status']}")
+
+    person = lead_metadata.get("apollo_person") or {}
+    if isinstance(person, dict) and person:
+        if person.get("seniority"):
+            lines.append(f"- Seniority: {person['seniority']}")
+        if person.get("headline"):
+            lines.append(f"- Headline: {person['headline']}")
+        loc = ", ".join(filter(None, [person.get("city"), person.get("country")]))
+        if loc:
+            lines.append(f"- Location: {loc}")
+        history = person.get("employment_history") or []
+        if history:
+            lines.append("- Career history (most recent first; this is the founder's OWN background: "
+                         "engineering/CTO roles point to technical_founder, non-technical roles "
+                         "with an AI-built product point to ai_solo_founder):")
+            for e in history[:8]:
+                end = e.get("end") or ("now" if e.get("current") else "?")
+                lines.append(f"    * {e.get('title') or '?'} @ {e.get('organization') or '?'} ({e.get('start') or '?'} to {end})")
+
+    org = lead_metadata.get("apollo_org") or {}
+    if isinstance(org, dict) and org:
+        facts = []
+        if org.get("employees") is not None:
+            facts.append(f"employees={org['employees']}")
+        if org.get("founded_year"):
+            facts.append(f"founded={org['founded_year']}")
+        if org.get("industry"):
+            facts.append(f"industry={org['industry']}")
+        if org.get("headcount_growth_6m") is not None:
+            facts.append(f"headcount_growth_6m={org['headcount_growth_6m']}")
+        if org.get("revenue"):
+            facts.append(f"revenue={org['revenue']}")
+        if facts:
+            lines.append("- Company facts (Apollo): " + ", ".join(facts))
+        if org.get("keywords"):
+            lines.append("- Company keywords: " + ", ".join(str(k) for k in org["keywords"][:12]))
+
     if not lines:
         return ""
     return "Contact metadata (Apollo source):\n" + "\n".join(lines)
@@ -317,19 +251,11 @@ def _format_web_search_evidence(web_search_evidence: dict | None, max_chars: int
     the same weight as the site content (both are grounding sources for
     `evidence_quotes`).
 
-    Args:
-        web_search_evidence: dict {source: [{"url":..,"title":..,"content":..}, ...]}
-            — format returned by scraper.search_additional_evidence(), or
-            rebuilt from db.get_lead_search_evidence() for a rescore.
-        max_chars: dedicated budget, independent of the site content budget.
     """
     if not web_search_evidence:
         return ""
 
     chunks = []
-    # person_* sources describe the founder himself (his own LinkedIn/GitHub)
-    # — ordered FIRST, they are the priority signal for distinguishing
-    # technical_founder vs ai_solo_founder.
     ordered_sources = sorted(
         web_search_evidence.items(),
         key=lambda kv: (0, kv[0]) if kv[0].startswith("person_") else (1, kv[0]),
@@ -381,6 +307,11 @@ def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
 
 VALID_OFFERS = {"ai_audit", "general_audit", "pipeline", "none"}
 VALID_STAGES = {"pre-launch", "early", "scaling", "established"}
+VALID_SENSITIVE_DATA_CATEGORIES = {
+    "minors", "health_phi", "biometric", "payments", "identity_documents",
+    "financial", "legal", "location", "employee_data", "none",
+}
+VALID_BUDGET_SIGNALS = {"strong", "moderate", "weak", "none"}
 
 
 def _validate_verdict(verdict: dict) -> dict:
@@ -402,12 +333,43 @@ def _validate_verdict(verdict: dict) -> dict:
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
         forced_correction = True
 
+    # "unclear" means insufficient evidence — by definition it needs a human.
+    # The prompt says so; enforce it in code so it never depends on the model.
+    if verdict.get("segment") == "unclear":
+        verdict["needs_human_review"] = True
+
     if verdict.get("recommended_offer") not in VALID_OFFERS:
         verdict["recommended_offer"] = "none"
         forced_correction = True
 
     if verdict.get("company_stage") not in VALID_STAGES:
         verdict["company_stage"] = None
+
+    categories = verdict.get("sensitive_data_categories", [])
+    if isinstance(categories, str):
+        try:
+            categories = json.loads(categories)
+        except (json.JSONDecodeError, TypeError):
+            categories = [categories]
+    if not isinstance(categories, list):
+        categories = []
+    verdict["sensitive_data_categories"] = [
+        category for category in categories
+        if isinstance(category, str) and category in VALID_SENSITIVE_DATA_CATEGORIES
+    ]
+    if "none" in verdict["sensitive_data_categories"] and len(verdict["sensitive_data_categories"]) > 1:
+        verdict["sensitive_data_categories"].remove("none")
+    try:
+        sensitivity_score = int(float(verdict.get("data_sensitivity_score", 0)))
+    except (TypeError, ValueError):
+        sensitivity_score = 0
+    verdict["data_sensitivity_score"] = max(0, min(100, sensitivity_score))
+
+    budget_signal = verdict.get("budget_signal", "none")
+    verdict["budget_signal"] = budget_signal if budget_signal in VALID_BUDGET_SIGNALS else "none"
+    for field in ("budget_evidence", "budget_blockers"):
+        value = verdict.get(field, [])
+        verdict[field] = value if isinstance(value, list) else []
 
     if forced_correction:
         try:
@@ -429,6 +391,11 @@ def _empty_verdict(disqualify_reason: str) -> dict:
         "built_with_ai_signals": [],
         "technical_signals": [],
         "pain_signals": [],
+        "sensitive_data_categories": [],
+        "data_sensitivity_score": 0,
+        "budget_signal": "none",
+        "budget_evidence": [],
+        "budget_blockers": [],
         "evidence_quotes": [],
         "recommended_offer": "none",
         "personalization_hooks": [],
@@ -454,21 +421,26 @@ def _is_json_parse_error(e: Exception) -> bool:
     return False
 
 
-def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict:
-    """Calls Groq and parses the JSON response."""
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS,
+              cost_cb=None) -> dict:
+    """Calls the configured scoring LLM (llm_provider) and parses the JSON
+    response. cost_cb, when provided, receives (meta, latency_ms) after every
+    call — including retries — so no LLM spend is ever unlogged (FR-7)."""
+    import time as _time
+    provider = get_llm_provider("scoring")
+    t0 = _time.monotonic()
+    data, meta = provider.generate_json(
+        user_content,
+        system=SYSTEM_PROMPT,
         temperature=0.2,
         max_tokens=max_output_tokens,
-        response_format={"type": "json_object"},
-        timeout=GROQ_TIMEOUT_SECONDS,
     )
-    return json.loads(response.choices[0].message.content)
+    if cost_cb is not None:
+        try:
+            cost_cb(meta, int((_time.monotonic() - t0) * 1000))
+        except Exception:
+            pass  # cost logging must never fail a scoring call
+    return _normalize_verdict_keys(data)
 
 
 def _apply_confidence_guard(verdict: dict) -> dict:
@@ -478,9 +450,22 @@ def _apply_confidence_guard(verdict: dict) -> dict:
     return verdict
 
 
+_QUOTE_CHARS = "\"'“”‘’«»`‹›"
+_QUOTE_TRANS = str.maketrans({
+    "“": '"', "”": '"', "‘": "'", "’": "'",
+    "«": '"', "»": '"', " ": " ", "…": "...",
+})
+
+
 def _normalize_for_grounding(s: str) -> str:
-    """Light normalization to compare quotes against the source text."""
-    return re.sub(r"\s+", " ", (s or "").strip().lower())
+    """Normalization used on BOTH the model's citation and the source text
+    before the verbatim check: lowercase, whitespace-collapsed, curly quotes
+    and non-breaking spaces folded to ASCII, and any WRAPPING quotation marks
+    stripped. Models routinely return citations as "\"exact text\"" — without
+    this, a real citation failed the check on its quote characters alone and
+    good hooks were silently discarded (observed live on gpt-oss-120b)."""
+    t = (s or "").translate(_QUOTE_TRANS).strip().strip(_QUOTE_CHARS).strip()
+    return re.sub(r"\s+", " ", t.lower())
 
 
 # Same tag names as scraper.py's _tag_attributed_content — kept in sync
@@ -665,11 +650,11 @@ def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict
     return verdict
 
 
-def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None) -> dict:
+def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None, cost_cb=None) -> dict:
     """Retries the scoring with reduced content after a JSON parsing failure."""
     try:
         shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS)
+        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS, cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
         verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
@@ -730,6 +715,7 @@ def score_content(
     scoring_criteria: list[str] | None = None,
     scoring_criteria_custom: str = "",
     site_content_missing: bool = False,
+    cost_cb=None,
 ) -> dict:
     """Evaluates a lead from the Apollo metadata, the scraped content, and the
     deterministic signals.
@@ -755,6 +741,10 @@ def score_content(
             needs_human_review=True regardless of confidence, with the
             limitation traced in disqualify_reason (see
             _apply_site_missing_guard and SITE_MISSING_INSTRUCTION).
+        cost_cb: optional callable (meta, latency_ms) invoked after EVERY LLM
+            call this evaluation makes (retries included) — the pipeline uses
+            it to log tokens/cost per lead and enforce the session budget cap
+            (FR-7). Never raises into the scoring path.
 
     Returns:
         Dict matching the JSON schema of the verdict (segment, confidence, etc.).
@@ -812,21 +802,21 @@ def score_content(
         return "\n\n---\n\n".join(parts)
 
     try:
-        verdict = _call_llm(build_user_content(text))
+        verdict = _call_llm(build_user_content(text), cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
         verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
-        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
+        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
     except Exception as e:
         if _is_json_parse_error(e):
-            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata)
+            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-                verdict = _call_llm(build_user_content(shorter_text))
+                verdict = _call_llm(build_user_content(shorter_text), cost_cb=cost_cb)
                 verdict = _apply_confidence_guard(verdict)
                 verdict = _validate_verdict(verdict)
                 verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
