@@ -48,6 +48,34 @@ timeout = 10             # seconds per single request
 per_domain_delay = 1.0   # seconds between hits to the same domain (shared throttle)
 max_findings = 8         # cap on rows written per lead
 
+[triggers]
+# Trigger monitoring (solve WHEN): weekly re-checks of scored leads. When a
+# readiness signal changes (first engineer hired, pricing page appears, moved
+# off a builder subdomain, team growth...), the lead jumps to the top of the
+# review queue with the trigger as the hook. Run by `python tools/run_triggers.py`
+# from cron / a scheduled cloud job.
+enabled = false
+# Re-check interval (days) applied as leads.next_check_at (+ interval).
+interval_days = 7
+# Safety net: max leads checked in one scheduled run.
+max_leads_per_run = 50
+# Only leads at/above this confidence, in a target segment and NOT flagged for
+# human review get the expensive LinkedIn check (founder_posts_pain).
+high_value_confidence = 0.8
+# team_growth fires when the Apollo headcount rises at least this many people
+# since the last snapshot.
+team_growth_delta = 3
+# When false: triggers still fire, still log to lead_trigger_events, still set
+# trigger_hook — only the review queue ORDER BY (priority DESC) is skipped.
+reorder_queue = true
+# Monthly SGAI budget for the PAID trigger search lane (funding_announced /
+# product_hunt: one governed web search per lead per run = 1 nominal credit).
+# SEPARATE from [apollo].monthly_credit_cap on purpose: one vendor's budget
+# must never throttle the other. PLACEHOLDER pending a real ScrapeGraphAI
+# quota number — re-size before going live. 0 = off.
+# TODO(pre-launch): replace with the real SGAI quota; 1000 is a placeholder.
+sgai_monthly_credit_cap = 1000
+
 [fast]
 # Test-mode overlay: shrinks LinkedIn delays and bypasses caps so the pipeline
 # can be verified in minutes without waiting hours or spending the real budget.

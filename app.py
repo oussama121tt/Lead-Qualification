@@ -7,6 +7,7 @@ Run with: python app.py
 """
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -31,6 +32,8 @@ import recipes as recipesmod
 import sourcing as sourcingmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
+
+logger = logging.getLogger("app")
 
 
 
@@ -1011,7 +1014,7 @@ def email_job_status(session_id: int):
     return jsonify(_get_email_job(session_id) or {"status": "idle"})
 
 
-def _categorize_leads(scores_data: list) -> dict:
+def _categorize_leads(scores_data: list, reorder_queue: bool = True) -> dict:
     """Distributes scored leads into the 5 categories.
 
     Simplified logic:
@@ -1023,6 +1026,11 @@ def _categorize_leads(scores_data: list) -> dict:
     - Not selected  : SKIPPED at import
     - Already exported: flagged by the inter-batch dedup
       (already_exported_previous_batch) — analyzed but excluded from new CSV exports.
+
+    `reorder_queue` (config [triggers].reorder_queue): when true, triggered
+    leads sort to the top of their bucket (priority desc, then id asc). When
+    false the bucket order is untouched — triggers still fire, log and set
+    trigger_hook, only the ORDER BY change is skipped.
     """
     approved, not_selected, out_of_target, to_review, pending = [], [], [], [], []
 
@@ -1061,6 +1069,16 @@ def _categorize_leads(scores_data: list) -> dict:
             lead["disqualify_reason"] = f"{reason} | budget blocker" if reason else "budget blocker"
             to_review.append(lead)
 
+    # Task 9 — triggered leads surface at the top of the queue (priority
+    # desc, then id asc), with the hook text already on the lead row. Gated by
+    # [triggers].reorder_queue: when false, only the ORDER BY is skipped —
+    # firing/logging/hook-setting are unaffected.
+    if reorder_queue:
+        approved.sort(key=lambda l: (-(l.get("trigger_priority") or 0), l.get("id") or 0))
+        to_review.sort(key=lambda l: (-(l.get("trigger_priority") or 0), l.get("id") or 0))
+
+    _log_approved_below_trigger_gate(approved)
+
     return {
         "approved": approved,
         "not_selected": not_selected,
@@ -1068,6 +1086,37 @@ def _categorize_leads(scores_data: list) -> dict:
         "to_review": to_review,
         "pending": pending,
     }
+
+
+def _log_approved_below_trigger_gate(approved: list) -> None:
+    """Fix 7 decision visibility: the trigger check gate
+    (triggers._is_high_value_lead — needs_human_review falsy + target segment
+    + confidence >= [triggers].high_value_confidence) stays STRICTER than this
+    page's approved bucket, so leads can be approved here without ever being
+    expensively re-checked for triggers. Log that gap (debug level) so it is
+    observable over time rather than silent. Never raises.
+    """
+    try:
+        from runconfig import load_config
+        from triggers import _is_high_value_lead
+        cfg = load_config()
+    except Exception:
+        return
+    for lead in approved:
+        try:
+            if _is_high_value_lead(lead, cfg):
+                continue
+        except Exception:
+            continue
+        logger.debug(
+            "lead %s (%s) approved for review but below the trigger gate: "
+            "segment=%s confidence=%s needs_human_review=%s (not trigger-checked)",
+            lead.get("id"),
+            lead.get("company_name") or lead.get("website_url") or "?",
+            lead.get("segment"),
+            lead.get("confidence"),
+            lead.get("needs_human_review"),
+        )
 
 
 @app.route("/results/<int:session_id>", methods=["GET"])
@@ -1080,7 +1129,10 @@ def results_view(session_id: int):
     with open_db() as conn:
         scores_data = dbmod.get_leads_with_scores(conn, session_id=session_id)
 
-        categories = _categorize_leads(scores_data)
+        from runconfig import load_config
+        categories = _categorize_leads(
+            scores_data, reorder_queue=load_config().triggers.reorder_queue
+        )
         approved = categories["approved"]
         not_selected = categories["not_selected"]
         out_of_target = categories["out_of_target"]
@@ -1095,6 +1147,7 @@ def results_view(session_id: int):
             "out_of_target": len(out_of_target),
             "not_selected": len(not_selected),
             "pending": len(pending),
+            "triggered": len([l for l in scores_data if l.get("trigger_priority")]),
         }
 
         # Running LLM spend for this session (FR-7): every scoring/email
@@ -1208,6 +1261,11 @@ def lead_review_view(lead_id: int):
         search_evidence = dbmod.get_lead_search_evidence(conn, lead_id)
         coverage_notes = dbmod.get_coverage_notes(conn, lead_id)
         public_findings = dbmod.get_lead_public_findings(conn, lead_id)
+        trigger_events = dbmod.get_lead_trigger_events(conn, lead_id)
+        try:
+            lead["trigger_state_parsed"] = json.loads(lead.get("trigger_state")) if lead.get("trigger_state") else None
+        except (json.JSONDecodeError, TypeError):
+            lead["trigger_state_parsed"] = None
     return render_template(
         "lead_review.html",
         session=session_row,
@@ -1217,6 +1275,7 @@ def lead_review_view(lead_id: int):
         search_evidence=search_evidence,
         coverage_notes=coverage_notes,
         public_findings=public_findings,
+        trigger_events=trigger_events,
     )
 
 
@@ -1599,7 +1658,10 @@ def export_results(session_id: int, format: str):
         scores_data = dbmod.get_leads_with_scores(conn, session_id=session_id)
 
         # Same category logic as results_view
-        categories = _categorize_leads(scores_data)
+        from runconfig import load_config
+        categories = _categorize_leads(
+            scores_data, reorder_queue=load_config().triggers.reorder_queue
+        )
         approved = categories["approved"]
         not_selected = categories["not_selected"]
         out_of_target = categories["out_of_target"]

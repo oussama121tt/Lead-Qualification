@@ -395,6 +395,30 @@
     </div>
     {% endif %}
 
+    <!-- Trigger monitoring events: readiness signals detected since the lead
+         was scored (Task 9). Each carries the hook text that surfaced it. -->
+    {% if trigger_events or lead.trigger_hook %}
+    <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-timeline-event" aria-hidden="true"></i>Trigger events</h3>
+    <div class="card card-pad">
+      {% if lead.trigger_hook %}
+      <div class="evidence-src">
+        <span class="badge badge-warning">queue</span>
+        <span class="src-name">{{ lead.trigger_hook }}</span>
+      </div>
+      {% endif %}
+      {% for ev in trigger_events %}
+      <div class="evidence-group">
+        <div class="evidence-src">
+          <span class="badge badge-neutral" style="min-width:150px;text-align:center;">{{ ev.trigger }}</span>
+          <span class="src-name">{{ ev.detected_at }}</span>
+        </div>
+        {% if ev.detail %}<p class="hit-content">{{ ev.detail }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      {% if not trigger_events %}<div class="empty-state-compact">No trigger events yet — the lead is scheduled for re-check.</div>{% endif %}
+    </div>
+    {% endif %}
+
     <!-- Evidence: scraped pages -->
     {% if content_rows %}
     <h3 class="card-title" style="margin-top:28px;"><i class="ti ti-file-text" aria-hidden="true"></i>Scraped pages</h3>

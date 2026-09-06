@@ -72,6 +72,17 @@ class PrefilterCfg:
 
 
 @dataclass
+class TriggersCfg:
+    enabled: bool
+    interval_days: int
+    max_leads_per_run: int
+    high_value_confidence: float
+    team_growth_delta: int
+    reorder_queue: bool
+    sgai_monthly_credit_cap: int
+
+
+@dataclass
 class Config:
     fast: bool
     linkedin: LinkedInCfg
@@ -80,6 +91,7 @@ class Config:
     surface_scan: SurfaceScanCfg
     apollo: ApolloCfg
     prefilter: PrefilterCfg
+    triggers: TriggersCfg
 
 
 _cached: Config | None = None
@@ -141,6 +153,18 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
             use_llm=bool(raw.get("prefilter", {}).get("use_llm", False)),
             max_headcount=int(raw.get("prefilter", {}).get("max_headcount", 50)),
             min_headcount=int(raw.get("prefilter", {}).get("min_headcount", 0)),
+        ),
+        triggers=TriggersCfg(
+            enabled=bool(raw.get("triggers", {}).get("enabled", False)),
+            interval_days=int(raw.get("triggers", {}).get("interval_days", 7)),
+            max_leads_per_run=int(raw.get("triggers", {}).get("max_leads_per_run", 50)),
+            high_value_confidence=float(raw.get("triggers", {}).get("high_value_confidence", 0.8)),
+            team_growth_delta=int(raw.get("triggers", {}).get("team_growth_delta", 3)),
+            reorder_queue=bool(raw.get("triggers", {}).get("reorder_queue", True)),
+            # SGAI owns the PAID trigger search lane (funding_announced /
+            # product_hunt) with its own cap, independent of Apollo. Placeholder
+            # budget (1 nominal credit per governed search run); 0 = off.
+            sgai_monthly_credit_cap=int(raw.get("triggers", {}).get("sgai_monthly_credit_cap", 1000)),
         ),
     )
     if path is None:

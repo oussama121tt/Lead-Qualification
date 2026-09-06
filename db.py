@@ -669,6 +669,11 @@ def _schema_sql() -> str:
             credits_used INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS sgai_usage (
+            month TEXT PRIMARY KEY,
+            credits_used INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS apollo_recipes (
             {pk},
             name TEXT,
@@ -691,6 +696,17 @@ def _schema_sql() -> str:
         );
         CREATE INDEX IF NOT EXISTS idx_dnc_email ON do_not_contact(email);
         CREATE INDEX IF NOT EXISTS idx_dnc_domain ON do_not_contact(domain);
+
+        CREATE TABLE IF NOT EXISTS lead_trigger_events (
+            {pk},
+            lead_id INTEGER NOT NULL,
+            trigger TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            detail TEXT,
+            FOREIGN KEY (lead_id) REFERENCES leads(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_trigger_events_lead ON lead_trigger_events(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_lead_trigger_events_detected ON lead_trigger_events(detected_at);
 
         CREATE TABLE IF NOT EXISTS lead_public_findings (
             {pk},
@@ -723,7 +739,7 @@ def _schema_sql() -> str:
 _SEQUENCE_TRIGGER_TABLES = (
     "analysis_sessions", "users", "leads", "lead_content",
     "lead_technical_signals", "lead_scores", "lead_search_evidence",
-    "export_history", "lead_public_findings",
+    "export_history", "lead_public_findings", "lead_trigger_events",
 )
 
 
@@ -881,6 +897,15 @@ def init_db(conn) -> None:
     for col, coltype in [
         ("linkedin_url", "TEXT"),
         ("coverage_notes", "TEXT"),
+    ]:
+        _add_column(conn, "leads", col, coltype)
+
+    # Task 9 — Trigger monitoring columns on leads
+    for col, coltype in [
+        ("next_check_at", "TEXT"),
+        ("trigger_state", "TEXT"),
+        ("trigger_priority", "INTEGER"),
+        ("trigger_hook", "TEXT"),
     ]:
         _add_column(conn, "leads", col, coltype)
 
@@ -1237,6 +1262,160 @@ def update_lead_progress(
     params.append(lead_id)
     conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", params)
     conn.commit()
+
+
+def update_lead_trigger_fields(
+    conn,
+    lead_id: int,
+    *,
+    trigger_state: str | None = None,
+    next_check_at: str | None = None,
+    trigger_priority: int | None = None,
+    trigger_hook: str | None = None,
+    commit: bool = True,
+) -> None:
+    """Writes a lead's trigger-monitoring columns in a single UPDATE.
+
+    None leaves the corresponding column untouched (the pipeline pattern used
+    by the other update_lead_* helpers). Used by the trigger scheduler
+    (tools/run_triggers.py) to persist the per-check snapshot and reschedule.
+    `commit=False` defers the commit so the caller can hold one transaction
+    for the whole per-lead read-check-write cycle (triggers.run_checks_for_lead).
+    """
+    updates, params = [], []
+    for col, value in [
+        ("trigger_state", trigger_state),
+        ("next_check_at", next_check_at),
+        ("trigger_priority", trigger_priority),
+        ("trigger_hook", trigger_hook),
+    ]:
+        if value is not None:
+            updates.append(f"{col} = ?")
+            params.append(value)
+    if not updates:
+        return
+    params.append(lead_id)
+    conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", params)
+    if commit:
+        conn.commit()
+
+
+def get_due_leads(conn, now: str | None = None, limit: int | None = None) -> list:
+    """Scored, non-duplicate leads whose next trigger check is due.
+
+    A lead is due when it has a latest score AND (never scheduled, or
+    `next_check_at` is in the past). Keeps only leads that survived the full
+    scoring pipeline (status not in NOT_YET_SCORED_STATUSES).
+    """
+    placeholders = ",".join("?" for _ in NOT_YET_SCORED_STATUSES)
+    params = list(NOT_YET_SCORED_STATUSES)
+    query = f"""
+        SELECT l.*, s.segment, s.confidence, s.needs_human_review
+        FROM leads l
+        JOIN lead_scores s ON s.lead_id = l.id
+            AND s.id = (SELECT MAX(id) FROM lead_scores WHERE lead_id = l.id)
+        WHERE l.is_duplicate = 0
+          AND l.status NOT IN ({placeholders})
+          AND (l.next_check_at IS NULL OR l.next_check_at <= ?)
+        ORDER BY l.id
+    """
+    params.append(now or _now())
+    if limit:
+        query += " LIMIT ?"
+        params.append(limit)
+    return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+def save_lead_trigger_event(
+    conn, lead_id: int, trigger: str, detected_at: str, detail: str | None = None,
+    *,
+    commit: bool = True,
+) -> None:
+    """Records one fired trigger event for a lead.
+
+    `commit=False` defers the commit so the caller can hold one transaction
+    for the whole per-lead read-check-write cycle (triggers.run_checks_for_lead).
+    """
+    conn.execute(
+        "INSERT INTO lead_trigger_events (lead_id, trigger, detected_at, detail) "
+        "VALUES (?, ?, ?, ?)",
+        (lead_id, trigger, detected_at, detail),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_lead_trigger_events(
+    conn, lead_id: int, limit: int | None = 20
+) -> list:
+    """Recent trigger events for one lead (newest first, for the review page)."""
+    query = (
+        "SELECT * FROM lead_trigger_events WHERE lead_id = ? "
+        "ORDER BY id DESC"
+    )
+    params = [lead_id]
+    if limit:
+        query += " LIMIT ?"
+        params.append(limit)
+    return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+def lock_lead_trigger_row(conn, lead_id: int) -> dict | None:
+    """Acquires a row-level lock on the leads row and returns its trigger
+    columns.
+
+    PostgreSQL: `SELECT ... FOR UPDATE` inside the caller's transaction, so two
+    overlapping scheduler runs cannot both fire the same transition or clobber
+    each other's snapshot write (the snapshot is re-read under the lock).
+    SQLite (tests): the lock is a no-op (SQLite is single-writer) but the row
+    is still returned so the caller re-reads the freshest snapshot.
+    """
+    if isinstance(conn, _PgConnection):
+        conn.execute("SELECT id FROM leads WHERE id = ? FOR UPDATE", (lead_id,))
+    row = conn.execute(
+        "SELECT trigger_state, trigger_priority, trigger_hook FROM leads WHERE id = ?",
+        (lead_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def inject_trigger_hook(conn, lead_id: int, hook: dict, *, commit: bool = True) -> None:
+    """Idempotently injects a trigger-generated hook into the latest
+    `lead_scores.personalization_hooks`.
+
+    Any previously-injected trigger hook (a dict carrying `source == "trigger"`)
+    is removed first, so exactly ONE active trigger hook ever reaches the
+    outreach paths (the email prompt and the Instantly export), and it is the
+    most recent one fired. Runs inside the caller's transaction when
+    `commit=False`.
+    """
+    row = conn.execute(
+        "SELECT id, personalization_hooks FROM lead_scores "
+        "WHERE lead_id = ? ORDER BY id DESC LIMIT 1",
+        (lead_id,),
+    ).fetchone()
+    if row is None:
+        return
+    hooks: list = []
+    raw = row["personalization_hooks"]
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = str(raw)
+        if isinstance(parsed, list):
+            hooks = parsed
+    hooks = [
+        h for h in hooks
+        if not (isinstance(h, dict) and h.get("source") == "trigger")
+    ]
+    hooks.append(dict(hook))
+    conn.execute(
+        "UPDATE lead_scores SET personalization_hooks = ? WHERE id = ?",
+        (json.dumps(hooks, ensure_ascii=False), row["id"]),
+    )
+    if commit:
+        conn.commit()
 
 
 def mark_duplicate(conn, lead_id: int, duplicate_of_id: int, reason: str) -> None:
