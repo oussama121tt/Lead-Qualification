@@ -64,6 +64,11 @@ def evaluate_person(person: dict, *, max_headcount: int = 50,
                         or person.get("estimated_num_employees")
                         or person.get("organization_num_employees"))
 
+    # 0. No email at all (search-level has_email flag is free and reliable):
+    #    an un-emailable contact is worth zero credits for cold outreach.
+    if person.get("has_email") is False:
+        return {"decision": "reject", "reason": "apollo has_email=false (no email to contact)"}
+
     # 1. Enterprise / too big — by headcount (a free, reliable field).
     if max_headcount and headcount and headcount > max_headcount:
         return {"decision": "reject", "reason": f"headcount {headcount} > {max_headcount} (too big)"}

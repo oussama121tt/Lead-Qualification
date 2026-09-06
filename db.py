@@ -881,6 +881,11 @@ def init_db(conn) -> None:
     for col, coltype in [
         ("linkedin_url", "TEXT"),
         ("coverage_notes", "TEXT"),
+        # Apollo enrichment kept with the lead (FR-1 verified-email flag +
+        # the founder's career + org facts, all fed to the scorer)
+        ("apollo_email_status", "TEXT"),
+        ("apollo_person", "TEXT"),
+        ("apollo_org", "TEXT"),
     ]:
         _add_column(conn, "leads", col, coltype)
 
@@ -985,6 +990,9 @@ def _build_lead_insert_row(row: dict, session_id, now):
         domain_mismatch,
         domain_mismatch_reason,
         (row.get("linkedin_url") or "").strip(),
+        (row.get("apollo_email_status") or "").strip() or None,
+        row.get("apollo_person") or None,
+        row.get("apollo_org") or None,
         "NEW",
         batch_id_placeholder := None,  # replaced below
         now,
@@ -1012,62 +1020,24 @@ def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
         to_insert.append(tuple(built))
 
     if to_insert:
-        try:
-            conn.executemany(
-                """
-                INSERT INTO leads
-                    (session_id, first_name, last_name, title, company_name, email, website_url,
-                     domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-                     linkedin_url, status, batch_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                to_insert,
-            )
-            conn.commit()
-        except psycopg2.errors.UndefinedColumn as e:
-            # Render DB not yet migrated (leads.linkedin_url from merge
-            # addition). Roll back aborted tx, ensure columns, retry.
-            # If the column truly can't be added, fall back to legacy insert
-            # without linkedin_url so upload doesn't 500.
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            if "linkedin_url" in str(e):
-                for col, coltype in [("linkedin_url", "TEXT"), ("coverage_notes", "TEXT")]:
-                    _add_column(conn, "leads", col, coltype)
-                try:
-                    conn.executemany(
-                        """
-                        INSERT INTO leads
-                            (session_id, first_name, last_name, title, company_name, email, website_url,
-                             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-                             linkedin_url, status, batch_id, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        to_insert,
-                    )
-                    conn.commit()
-                except psycopg2.errors.UndefinedColumn:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    # legacy: drop linkedin_url from payload
-                    legacy_rows = [r[:11] + r[12:] for r in to_insert]
-                    conn.executemany(
-                        """
-                        INSERT INTO leads
-                            (session_id, first_name, last_name, title, company_name, email, website_url,
-                             domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-                             status, batch_id, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        legacy_rows,
-                    )
-                    conn.commit()
-            else:
-                raise
+        # Schema safety for a DB that predates these columns (idempotent, cheap):
+        # the INSERT below names every merge/enrichment column explicitly.
+        for col, coltype in [("linkedin_url", "TEXT"), ("coverage_notes", "TEXT"),
+                             ("apollo_email_status", "TEXT"), ("apollo_person", "TEXT"),
+                             ("apollo_org", "TEXT")]:
+            _add_column(conn, "leads", col, coltype)
+        conn.executemany(
+            """
+            INSERT INTO leads
+                (session_id, first_name, last_name, title, company_name, email, website_url,
+                 domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
+                 linkedin_url, apollo_email_status, apollo_person, apollo_org,
+                 status, batch_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            to_insert,
+        )
+        conn.commit()
     return {"inserted": len(to_insert), "skipped_no_website": skipped}
 
 

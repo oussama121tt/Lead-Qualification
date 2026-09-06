@@ -61,6 +61,7 @@ class ApolloCfg:
     monthly_credit_cap: int
     search_page_size: int
     max_people_per_run: int
+    require_verified_email: bool
 
 
 @dataclass
@@ -135,6 +136,7 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
             monthly_credit_cap=int(raw.get("apollo", {}).get("monthly_credit_cap", 0)),
             search_page_size=int(raw.get("apollo", {}).get("search_page_size", 100)),
             max_people_per_run=int(raw.get("apollo", {}).get("max_people_per_run", 500)),
+            require_verified_email=bool(raw.get("apollo", {}).get("require_verified_email", True)),
         ),
         prefilter=PrefilterCfg(
             enabled=bool(raw.get("prefilter", {}).get("enabled", True)),

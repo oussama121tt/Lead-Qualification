@@ -24,7 +24,7 @@ def _now() -> str:
 def ensure_table(conn) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS apollo_recipes ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, filters TEXT, created_at TEXT, "
+        "id INTEGER PRIMARY KEY, name TEXT, filters TEXT, created_at TEXT, "
         "runs INTEGER NOT NULL DEFAULT 0, "
         "leads_pulled INTEGER NOT NULL DEFAULT 0, "
         "qualified INTEGER NOT NULL DEFAULT 0, "

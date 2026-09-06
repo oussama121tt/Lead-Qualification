@@ -121,6 +121,45 @@ def _format_lead_metadata(lead_metadata: dict | None) -> str:
         ("Website", lead_metadata.get("website_url")),
     ]
     lines = [f"- {label}: {value}" for label, value in fields if value]
+    if lead_metadata.get("apollo_email_status"):
+        lines.append(f"- Email status (Apollo): {lead_metadata['apollo_email_status']}")
+
+    person = lead_metadata.get("apollo_person") or {}
+    if isinstance(person, dict) and person:
+        if person.get("seniority"):
+            lines.append(f"- Seniority: {person['seniority']}")
+        if person.get("headline"):
+            lines.append(f"- Headline: {person['headline']}")
+        loc = ", ".join(filter(None, [person.get("city"), person.get("country")]))
+        if loc:
+            lines.append(f"- Location: {loc}")
+        history = person.get("employment_history") or []
+        if history:
+            lines.append("- Career history (most recent first; this is the founder's OWN background: "
+                         "engineering/CTO roles point to technical_founder, non-technical roles "
+                         "with an AI-built product point to ai_solo_founder):")
+            for e in history[:8]:
+                end = e.get("end") or ("now" if e.get("current") else "?")
+                lines.append(f"    * {e.get('title') or '?'} @ {e.get('organization') or '?'} ({e.get('start') or '?'} to {end})")
+
+    org = lead_metadata.get("apollo_org") or {}
+    if isinstance(org, dict) and org:
+        facts = []
+        if org.get("employees") is not None:
+            facts.append(f"employees={org['employees']}")
+        if org.get("founded_year"):
+            facts.append(f"founded={org['founded_year']}")
+        if org.get("industry"):
+            facts.append(f"industry={org['industry']}")
+        if org.get("headcount_growth_6m") is not None:
+            facts.append(f"headcount_growth_6m={org['headcount_growth_6m']}")
+        if org.get("revenue"):
+            facts.append(f"revenue={org['revenue']}")
+        if facts:
+            lines.append("- Company facts (Apollo): " + ", ".join(facts))
+        if org.get("keywords"):
+            lines.append("- Company keywords: " + ", ".join(str(k) for k in org["keywords"][:12]))
+
     if not lines:
         return ""
     return "Contact metadata (Apollo source):\n" + "\n".join(lines)

@@ -84,14 +84,27 @@ def _sleep_check(seconds: float, conn=None, session_id=None, cancellation_check=
 
 def _build_lead_metadata(lead: dict) -> dict:
     """Extracts Apollo metadata from a lead for the scoring prompt."""
-    return {
+    import json as _json
+    meta = {
         "first_name": lead.get("first_name"),
         "last_name": lead.get("last_name"),
         "title": lead.get("title"),
         "company_name": lead.get("company_name"),
         "email": lead.get("email"),
         "website_url": lead.get("website_url"),
+        "apollo_email_status": lead.get("apollo_email_status"),
     }
+    # Apollo enrichment (when the lead came from the API): the founder's
+    # career and the org facts are direct evidence for technical_founder vs
+    # ai_solo_founder and for budget_signal.
+    for key in ("apollo_person", "apollo_org"):
+        raw = lead.get(key)
+        if raw:
+            try:
+                meta[key] = _json.loads(raw) if isinstance(raw, str) else raw
+            except (ValueError, TypeError):
+                pass
+    return meta
 
 
 def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals: dict | None = None,

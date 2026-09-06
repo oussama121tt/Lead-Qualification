@@ -68,6 +68,10 @@ monthly_credit_cap = 3600
 search_page_size = 100
 # Hard ceiling on people pulled in one recipe run (safety net).
 max_people_per_run = 500
+# Add contact_email_status=["verified"] to every search unless the recipe sets
+# its own. Verified live: 52% of an unfiltered run's credits went to people
+# whose email_status was 'unavailable' (no email exists) — pure waste.
+require_verified_email = true
 
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website

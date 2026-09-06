@@ -208,13 +208,54 @@ def enrich_people(conn, people: list[dict], *, monthly_cap: int,
     return {"enriched": enriched, "credits": total_credits}
 
 
+def _compact_employment(history, limit: int = 8) -> list:
+    """Keep the fields that carry signal (title/org/dates/current), drop noise."""
+    out = []
+    for e in (history or [])[:limit]:
+        if not isinstance(e, dict):
+            continue
+        out.append({
+            "title": e.get("title"),
+            "organization": e.get("organization_name"),
+            "start": (e.get("start_date") or "")[:7] or None,
+            "end": (e.get("end_date") or "")[:7] or None,
+            "current": bool(e.get("current")),
+        })
+    return out
+
+
 def person_to_lead_row(p: dict) -> dict:
-    """Map an enriched Apollo person into the CSV-column shape the ingester
-    understands (first_name, last_name, title, company_name, email,
-    website_url, linkedin_url)."""
+    """Map an enriched Apollo person into the row shape the ingester
+    understands. Beyond the basic CSV columns it carries the high-signal
+    enrichment data the scorer should see:
+      - email_status  (verified | guessed | unavailable | ...)
+      - apollo_person (seniority, headline, location, employment history:
+        the founder's career is the strongest technical-vs-non-technical signal)
+      - apollo_org    (headcount, founded year, industry, growth, revenue)
+    """
+    import json as _json
     org = p.get("organization") or {}
     website = (p.get("website_url") or org.get("website_url")
-               or (f"https://{org.get('primary_domain')}" if org.get("primary_domain") else ""))
+               or ("https://" + org["primary_domain"] if org.get("primary_domain") else ""))
+    apollo_person = {
+        "seniority": p.get("seniority"),
+        "headline": p.get("headline"),
+        "city": p.get("city"),
+        "country": p.get("country"),
+        "employment_history": _compact_employment(p.get("employment_history")),
+    }
+    apollo_org = {
+        "name": org.get("name"),
+        "domain": org.get("primary_domain"),
+        "employees": org.get("estimated_num_employees"),
+        "founded_year": org.get("founded_year"),
+        "industry": org.get("industry"),
+        "headcount_growth_6m": org.get("organization_headcount_six_month_growth"),
+        "headcount_growth_12m": org.get("organization_headcount_twelve_month_growth"),
+        "revenue": org.get("organization_revenue_printed"),
+        "linkedin_url": org.get("linkedin_url"),
+        "keywords": (org.get("keywords") or [])[:12],
+    }
     return {
         "first_name": p.get("first_name") or "",
         "last_name": p.get("last_name") or "",
@@ -223,4 +264,7 @@ def person_to_lead_row(p: dict) -> dict:
         "email": p.get("email") or "",
         "website_url": website or "",
         "linkedin_url": p.get("linkedin_url") or "",
+        "apollo_email_status": p.get("email_status") or "",
+        "apollo_person": _json.dumps(apollo_person, ensure_ascii=False),
+        "apollo_org": _json.dumps(apollo_org, ensure_ascii=False),
     }

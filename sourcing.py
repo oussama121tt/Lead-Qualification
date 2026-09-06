@@ -45,6 +45,10 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
         filters = recipe["filters"]
     if not filters:
         raise ValueError("no filters provided")
+    # Verified-email gate at SEARCH time (free): never enrich a contact Apollo
+    # already knows has no usable email.
+    if cfg.apollo.require_verified_email and "contact_email_status" not in filters:
+        filters = {**filters, "contact_email_status": ["verified"]}
 
     # 1. SEARCH (free)
     people = apollo_client.search_people_all(
