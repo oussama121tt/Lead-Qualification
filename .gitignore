@@ -11,3 +11,7 @@ venv/
 credentials.json
 token.json
 .code_verifier
+
+# bulk run state + generated exports
+tools/bulk_run_state.json
+exports/
