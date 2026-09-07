@@ -1279,16 +1279,12 @@ SEARCH_QUERY_TEMPLATES: dict[str, str] = {
 
 
 def _get_sgai_keys() -> list[str]:
-    """Returns the configured SGAI keys (SGAI_API_KEY, _2, _3, ...)."""
+    """Returns the configured SGAI keys (SGAI_API_KEY, SGAI_API_KEY1/2/..., _2/_3..., SCRAPE_API_KEYS)."""
     global _sgai_keys
     with _sgai_keys_lock:
         if _sgai_keys is None:
-            keys = []
-            for k in ("SGAI_API_KEY", "SGAI_API_KEY_2", "SGAI_API_KEY_3", "SGAI_API_KEY_4", "SGAI_API_KEY_5"):
-                val = os.getenv(k)
-                if val:
-                    keys.append(val)
-            _sgai_keys = keys
+            from keyring import load_sgai_keys
+            _sgai_keys = load_sgai_keys()
         return _sgai_keys
 
 

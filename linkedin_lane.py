@@ -84,15 +84,8 @@ def _get_ring() -> MemoryKeyRing | None:
     global _ring
     with _ring_lock:
         if _ring is None:
-            keys = []
-            for k in ("SGAI_API_KEY", "SGAI_API_KEY_2", "SGAI_API_KEY_3",
-                      "SGAI_API_KEY_4", "SGAI_API_KEY_5"):
-                val = os.getenv(k)
-                if val:
-                    keys.append(val)
-            multi = os.getenv("SCRAPE_API_KEYS", "").strip()
-            if multi:
-                keys = [k.strip() for k in multi.split(",") if k.strip()] or keys
+            from keyring import load_sgai_keys
+            keys = load_sgai_keys()
             _ring = MemoryKeyRing(keys) if keys else None
         return _ring
 

@@ -1,0 +1,213 @@
+{
+ "started_at": "2026-09-07T11:46:27",
+ "credits_spent": 8,
+ "recipes": {
+  "bulk-narrow-health-app": {
+   "done": true,
+   "pulled": 2,
+   "enriched": 2,
+   "inserted": 2,
+   "session_id": 2,
+   "prefilter": {
+    "total": 2,
+    "kept": 2,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-patient-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-care-platform": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 3,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-therapy-platform": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-clinic-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-telehealth-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-hr-platform": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-employee-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-payroll-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-recruiting-platform": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-workforce-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-property-app": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 4,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-tenant-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-landlord-platform": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-rental-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-booking-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-scheduling-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-marketplace-app": {
+   "done": true,
+   "pulled": 2,
+   "enriched": 2,
+   "inserted": 2,
+   "session_id": 5,
+   "prefilter": {
+    "total": 2,
+    "kept": 2,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-payments-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-invoicing-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-childcare-platform": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-kids-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-parenting-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-student-app": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 6,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-school-platform": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 7,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-tutoring-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  }
+ },
+ "sessions": [
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ],
+ "seen_ids": []
+}

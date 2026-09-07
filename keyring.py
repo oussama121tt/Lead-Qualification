@@ -73,3 +73,22 @@ class MemoryKeyRing:
             return [{"idx": i, "fingerprint": fingerprint(k),
                      "state": "cooling" if self._cool_until[i] > now else "active"}
                     for i, k in enumerate(self._keys)]
+
+
+def load_sgai_keys() -> list[str]:
+    """All ScrapeGraphAI keys from the environment, in a stable order:
+    SGAI_API_KEY, SGAI_API_KEY1/2/3..., SGAI_API_KEY_2/_3..., and a
+    comma-separated SCRAPE_API_KEYS. Duplicates removed, order preserved."""
+    import os as _os, re as _re
+    found = []
+    for name, val in sorted(_os.environ.items(), key=lambda kv: (len(kv[0]), kv[0])):
+        if _re.fullmatch(r"SGAI_API_KEY_?\d*", name) and val and val.strip():
+            found.append(val.strip())
+    multi = _os.getenv("SCRAPE_API_KEYS", "").strip()
+    if multi:
+        found += [k.strip() for k in multi.split(",") if k.strip()]
+    seen, out = set(), []
+    for k in found:
+        if k not in seen:
+            seen.add(k); out.append(k)
+    return out
