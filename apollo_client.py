@@ -265,6 +265,7 @@ def person_to_lead_row(p: dict) -> dict:
         "website_url": website or "",
         "linkedin_url": p.get("linkedin_url") or "",
         "apollo_email_status": p.get("email_status") or "",
+        "apollo_id": p.get("id") or "",
         "apollo_person": _json.dumps(apollo_person, ensure_ascii=False),
         "apollo_org": _json.dumps(apollo_org, ensure_ascii=False),
     }

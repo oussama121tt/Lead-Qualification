@@ -894,6 +894,7 @@ def init_db(conn) -> None:
         # Apollo enrichment kept with the lead (FR-1 verified-email flag +
         # the founder's career + org facts, all fed to the scorer)
         ("apollo_email_status", "TEXT"),
+        ("apollo_id", "TEXT"),
         ("apollo_person", "TEXT"),
         ("apollo_org", "TEXT"),
     ]:
@@ -1001,6 +1002,7 @@ def _build_lead_insert_row(row: dict, session_id, now):
         domain_mismatch_reason,
         (row.get("linkedin_url") or "").strip(),
         (row.get("apollo_email_status") or "").strip() or None,
+        (row.get("apollo_id") or "").strip() or None,
         row.get("apollo_person") or None,
         row.get("apollo_org") or None,
         "NEW",
@@ -1033,7 +1035,7 @@ def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
         # Schema safety for a DB that predates these columns (idempotent, cheap):
         # the INSERT below names every merge/enrichment column explicitly.
         for col, coltype in [("linkedin_url", "TEXT"), ("coverage_notes", "TEXT"),
-                             ("apollo_email_status", "TEXT"), ("apollo_person", "TEXT"),
+                             ("apollo_email_status", "TEXT"), ("apollo_id", "TEXT"), ("apollo_person", "TEXT"),
                              ("apollo_org", "TEXT")]:
             _add_column(conn, "leads", col, coltype)
         conn.executemany(
@@ -1041,9 +1043,9 @@ def insert_leads_from_rows(conn, rows: list[dict], batch_id: str,
             INSERT INTO leads
                 (session_id, first_name, last_name, title, company_name, email, website_url,
                  domain_normalized, email_domain, domain_mismatch, domain_mismatch_reason,
-                 linkedin_url, apollo_email_status, apollo_person, apollo_org,
+                 linkedin_url, apollo_email_status, apollo_id, apollo_person, apollo_org,
                  status, batch_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             to_insert,
         )
