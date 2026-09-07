@@ -71,6 +71,10 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
     #     a person already enriched/queued by an earlier recipe in this run is
     #     skipped here — no double credit, no duplicate lead.
     already = 0
+    # Persistent registry (DB) + this run's in-memory set: never enrich the
+    # same Apollo person twice, ever.
+    persisted = apollo_client.load_enriched_ids(conn)
+    seen_ids = set(seen_ids or set()) | persisted
     if seen_ids is not None:
         fresh = []
         for p in survivors:
@@ -128,6 +132,8 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
         for p in survivors:
             if p.get("id"):
                 seen_ids.add(p["id"])
+    # Persist: enriched people are remembered in the DB across runs/machines.
+    apollo_client.record_enriched(conn, enriched, session_id=None)
 
     # 5. INSERT enriched leads into a new session
     lead_rows = [apollo_client.person_to_lead_row(p) for p in enriched]

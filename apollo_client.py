@@ -268,3 +268,45 @@ def person_to_lead_row(p: dict) -> dict:
         "apollo_person": _json.dumps(apollo_person, ensure_ascii=False),
         "apollo_org": _json.dumps(apollo_org, ensure_ascii=False),
     }
+
+
+# ---------------------------------------------------------------------------
+# Persistent registry of every Apollo person ever enriched — so the same
+# founder is never enriched (1 credit) or inserted twice across runs, months,
+# or machines. Distinct from do_not_contact (which is about sending): this is
+# about not repeating work. Checked BEFORE the credit gate.
+# ---------------------------------------------------------------------------
+
+def ensure_enriched_table(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS apollo_enriched ("
+        "apollo_id TEXT PRIMARY KEY, email TEXT, domain TEXT, lead_id INTEGER, "
+        "session_id INTEGER, enriched_at TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_apollo_enriched_email ON apollo_enriched(email)")
+    conn.commit()
+
+
+def load_enriched_ids(conn) -> set:
+    ensure_enriched_table(conn)
+    return {r["apollo_id"] for r in conn.execute("SELECT apollo_id FROM apollo_enriched").fetchall()}
+
+
+def record_enriched(conn, people: list, *, session_id=None) -> int:
+    """Remember enriched people by Apollo id (+ email/domain). Idempotent."""
+    ensure_enriched_table(conn)
+    n = 0
+    for p in people:
+        pid = p.get("id")
+        if not pid:
+            continue
+        org = p.get("organization") or {}
+        conn.execute(
+            "INSERT INTO apollo_enriched (apollo_id, email, domain, session_id, enriched_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (apollo_id) DO NOTHING",
+            (pid, (p.get("email") or "").lower() or None, org.get("primary_domain"), session_id,
+             datetime.now().isoformat(timespec="seconds")),
+        )
+        n += 1
+    conn.commit()
+    return n

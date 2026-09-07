@@ -682,6 +682,16 @@ def _schema_sql() -> str:
             replies INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS apollo_enriched (
+            apollo_id TEXT PRIMARY KEY,
+            email TEXT,
+            domain TEXT,
+            lead_id INTEGER,
+            session_id INTEGER,
+            enriched_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_apollo_enriched_email ON apollo_enriched(email);
+
         CREATE TABLE IF NOT EXISTS do_not_contact (
             {pk},
             email TEXT,
