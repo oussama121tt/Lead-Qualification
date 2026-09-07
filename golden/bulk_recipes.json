@@ -1,0 +1,31 @@
+{
+  "_comment": "Work order 'bulk sourcing' recipe set. Base filters are merged into every recipe by tools/run_bulk_sourcing.py; only q_keywords varies. Narrow verticals run first (cheap, near-zero competitors), broad sweeps after (volume, aggressive prefilter).",
+  "base": {
+    "person_titles": ["founder", "co-founder", "ceo", "owner"],
+    "organization_num_employees_ranges": ["1,10", "11,20"],
+    "organization_founded_year_range": {"min": 2023, "max": 2026},
+    "person_locations": ["United States", "United Kingdom", "Canada", "Australia", "Ireland", "New Zealand"],
+    "contact_email_status": ["verified"]
+  },
+  "narrow": [
+    "health app", "patient app", "care platform",
+    "therapy platform", "clinic app", "telehealth app",
+    "hr platform", "employee app", "payroll app",
+    "recruiting platform", "workforce app",
+    "property app", "tenant app", "landlord platform",
+    "rental app", "booking app", "scheduling app",
+    "marketplace app", "payments app", "invoicing app",
+    "childcare platform", "kids app", "parenting app",
+    "student app", "school platform", "tutoring app",
+    "fitness app", "nutrition app", "wellness platform",
+    "veterinary app", "pet care app",
+    "events app", "ticketing app", "membership app",
+    "legal platform", "document platform", "compliance app",
+    "salon app", "restaurant app", "delivery app"
+  ],
+  "broad": [
+    "app", "mobile app", "consumer app",
+    "platform", "saas app", "web app"
+  ],
+  "broad_max_people": 1500
+}

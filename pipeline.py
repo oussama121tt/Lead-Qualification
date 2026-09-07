@@ -394,15 +394,26 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         # quantity": credits are saved on leads that would be rejected
         # anyway.
         web_evidence = {}
-        should_escalate_web = (
-            verdict.get("needs_human_review")
-            or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD
-            or (
-                verdict.get("segment") == "small_agency_scaling"
-                and bool(deterministic_signals and deterministic_signals.get("hiring_technical"))
-                and verdict.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD
+        esc = load_config().escalation
+        if esc.mode == "off":
+            should_escalate_web = False
+        elif esc.mode == "high_only":
+            # Bulk-sourcing rule: spend SGAI credits only on leads that already
+            # look good — the lane confirms winners, it does not rescue losers.
+            should_escalate_web = (
+                verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                and float(verdict.get("confidence") or 0.0) >= esc.min_confidence
             )
-        )
+        else:
+            should_escalate_web = (
+                verdict.get("needs_human_review")
+                or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD
+                or (
+                    verdict.get("segment") == "small_agency_scaling"
+                    and bool(deterministic_signals and deterministic_signals.get("hiring_technical"))
+                    and verdict.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD
+                )
+            )
         if should_escalate_web:
             events.append(_base({"step": "web_search", "status": None, "error": None}))
             web_evidence = _fetch_web_search_evidence(conn, lead_id, lead, technical_signals=scrape_result.get("technical_signals"), notes=coverage)
@@ -417,7 +428,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
                     existing = verdict.get("disqualify_reason")
                     verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
         else:
-            coverage.append("web escalation skipped: pass-1 verdict was clear-cut")
+            coverage.append(f"web escalation skipped (mode={esc.mode}): pass-1 verdict did not qualify")
         score_elapsed = _now_ts() - score_t0
 
         try:

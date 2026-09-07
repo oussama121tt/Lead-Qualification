@@ -24,15 +24,28 @@ import re
 
 # --- Reject: the person is a service provider / competitor, not a product founder ---
 AGENCY_COMPANY_MARKERS = re.compile(
-    r"\b(agency|studio|consult(?:ing|ancy|ants?)?|labs?|solutions|software\s+house|"
-    r"digital\s+agency|dev\s?shop|web\s+design|it\s+services|systems\s+integrat|"
-    r"outsourc|technolog(?:y|ies)\s+partner|interactive|creative\s+agency)\b",
+    r"\b(agency|agencies|studio|studios|consult(?:ing|ancy|ants?)?|labs?|solutions|"
+    r"software\s+house|digital\s+agency|dev\s?shop|web\s+design|it\s+services|"
+    r"systems?\b|systems\s+integrat|outsourc|technolog(?:y|ies)\s+partner|interactive|"
+    r"creative\s+agency|staffing|recruit(?:ing|ment)\s+agency|we\s+build|"
+    r"development\s+(?:company|partner|services)|mvp\s+(?:development|studio|agency)|"
+    r"app\s+development|software\s+development)\b",
+    re.I,
+)
+# "X Software" / "X Technologies" with no product word is the classic dev-shop
+# naming pattern (work order §2). Product companies say what they DO.
+DEV_SHOP_NAME_PATTERN = re.compile(
+    r"^[\w&.'\- ]{1,40}\s+(software|technologies|technology|tech|systems|digital|it)\s*(inc|llc|ltd|limited|pvt|pty|gmbh|co)?\.?$",
     re.I,
 )
 AGENCY_TITLE_MARKERS = re.compile(
     r"\b(agency\s+owner|freelance|freelancer|consultant|contractor|"
-    r"fractional\s+(?:cto|cpo|coo|cmo)|advisor|mentor|coach|"
-    r"managing\s+director\s+at\s+.*\bagency\b)\b",
+    r"fractional\s+(?:cto|cpo|coo|cmo|cfo)|advisor|mentor|coach|"
+    r"managing\s+director\s+at\s+.*\bagency\b|"
+    # Competitor personas selling to our exact persona (25% of a broad pool):
+    r"technical\s+co-?founder|\bcto\b|chief\s+technology\s+officer|"
+    r"software\s+engineer|\bdeveloper\b|\bengineer\b|solutions\s+architect|"
+    r"we\s+build)\b",
     re.I,
 )
 # --- Reject: clearly not a founder/decision-maker persona ---
@@ -78,6 +91,8 @@ def evaluate_person(person: dict, *, max_headcount: int = 50,
     # 2. Agency / consultancy / dev shop — the #1 competitor category.
     if company and AGENCY_COMPANY_MARKERS.search(company):
         return {"decision": "reject", "reason": f"agency/consultancy company name: '{company}'"}
+    if company and DEV_SHOP_NAME_PATTERN.match(company):
+        return {"decision": "reject", "reason": f"dev-shop naming pattern (X Software/Technologies): '{company}'"}
     if title and AGENCY_TITLE_MARKERS.search(title):
         return {"decision": "reject", "reason": f"service-provider/fractional title: '{title}'"}
 

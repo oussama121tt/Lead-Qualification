@@ -72,6 +72,10 @@ max_people_per_run = 500
 # its own. Verified live: 52% of an unfiltered run's credits went to people
 # whose email_status was 'unavailable' (no email exists) — pure waste.
 require_verified_email = true
+# Per-RUN credit cap for bulk sourcing (tools/run_bulk_sourcing.py): the run
+# stops cleanly and reports when it would exceed this. Independent of the
+# monthly cap above.
+run_credit_cap = 1000
 
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website
@@ -80,5 +84,14 @@ require_verified_email = true
 # bound the target persona (0 = no bound).
 enabled = true
 use_llm = false
-max_headcount = 50
+max_headcount = 20
 min_headcount = 0
+
+[escalation]
+# When the web/LinkedIn evidence lane runs after scoring pass 1.
+#   "ambiguous"  = original FR-3 rule (needs_review / confidence < 0.7 / confident agency)
+#   "high_only"  = ONLY leads with confidence >= min_confidence (saves SGAI credits
+#                  on broad sweeps; the work order for bulk sourcing asks for this)
+#   "off"        = never
+mode = "high_only"
+min_confidence = 0.8
