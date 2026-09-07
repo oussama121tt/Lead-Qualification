@@ -42,14 +42,14 @@ STATE_PATH = HERE / "bulk_run_state.json"
 REJECTS_PATH = HERE.parent / "exports" / "bulk_prefilter_rejects.jsonl"
 
 
-def _load_recipes() -> dict:
-    return json.loads(RECIPES_PATH.read_text(encoding="utf-8"))
+def _load_recipes(path=None) -> dict:
+    return json.loads(Path(path or RECIPES_PATH).read_text(encoding="utf-8"))
 
 
 def _state() -> dict:
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    return {"started_at": None, "credits_spent": 0, "recipes": {}, "sessions": []}
+    return {"started_at": None, "credits_spent": 0, "recipes": {}, "sessions": [], "seen_ids": []}
 
 
 def _save(state: dict) -> None:
@@ -72,12 +72,20 @@ def cmd_plan(args):
     """FREE pass: search + prefilter each recipe, no enrichment. Prints yield
     table and writes prefilter rejects (with reasons) for the evaluation file."""
     cfg = load_config()
-    spec = _load_recipes()
+    spec = _load_recipes(getattr(args, "recipes", None))
     base = spec["base"]
-    conn = dbmod.get_connection()
+    # The plan pass is Apollo-only; the DB is used just for the DNC sets and
+    # the credit display. If the DB is unreachable, proceed without them and
+    # say so — a free yield table now beats a blocked run.
+    conn = None
+    try:
+        conn = dbmod.get_connection()
+        dnc_emails, dnc_domains = dncmod.load_sets(conn)
+    except Exception as e:
+        print(f"[plan] DB unavailable ({str(e)[:80]}...) — running WITHOUT DNC check / credit display")
+        dnc_emails, dnc_domains = set(), set()
     REJECTS_PATH.parent.mkdir(exist_ok=True)
     rej_f = open(REJECTS_PATH, "w", encoding="utf-8")
-    dnc_emails, dnc_domains = dncmod.load_sets(conn)
     rows = []
     reasons = Counter()
     for kind in ("narrow", "broad"):
@@ -105,10 +113,11 @@ def cmd_plan(args):
     print("\n=== PLAN (0 credits spent) ===")
     print(f"recipes: {len(rows)} | pulled: {sum(r[2] for r in rows if r[2] != 'ERR')} | would enrich: {total_keep} | rejected: {sum(r[4] for r in rows if r[2] != 'ERR')}")
     print("top reject reasons:", reasons.most_common(6))
-    apollo_client.ensure_usage_table(conn)
-    print(f"credits used this month: {apollo_client.credits_used_this_month(conn)} / {cfg.apollo.monthly_credit_cap} | run cap: {cfg.apollo.run_credit_cap}")
+    if conn is not None:
+        apollo_client.ensure_usage_table(conn)
+        print(f"credits used this month: {apollo_client.credits_used_this_month(conn)} / {cfg.apollo.monthly_credit_cap} | run cap: {cfg.apollo.run_credit_cap}")
+        conn.close()
     print(f"rejects written: {REJECTS_PATH}")
-    conn.close()
 
 
 def cmd_enrich(args):
@@ -121,6 +130,7 @@ def cmd_enrich(args):
     state = _state()
     state["started_at"] = state["started_at"] or time.strftime("%Y-%m-%dT%H:%M:%S")
     conn = dbmod.get_connection()
+    seen_ids = set(state.get("seen_ids") or [])
     kinds = ["narrow", "broad"] if args.enrich == "all" else [args.enrich]
     for kind in kinds:
         for kw in spec[kind]:
@@ -135,7 +145,7 @@ def cmd_enrich(args):
                 # broad sweeps page deep; temporarily widen the per-run ceiling
                 cfg.apollo.max_people_per_run = spec.get("broad_max_people", 1500)
             try:
-                dry = sourcing.run_recipe(conn, recipe_id=rid, dry_run=True)
+                dry = sourcing.run_recipe(conn, recipe_id=rid, dry_run=True, seen_ids=set(seen_ids))
                 need = dry["to_enrich"]
                 room = (cfg.apollo.run_credit_cap - state["credits_spent"]) if cfg.apollo.run_credit_cap else need
                 if need == 0:
@@ -144,8 +154,9 @@ def cmd_enrich(args):
                 if need > room:
                     print(f"  {name:36s} needs {need} credits, only {room} left in run cap — stopping cleanly.")
                     _save(state); conn.close(); return
-                res = sourcing.run_recipe(conn, recipe_id=rid, label=f"BULK:{name}")
+                res = sourcing.run_recipe(conn, recipe_id=rid, label=f"BULK:{name}", seen_ids=seen_ids)
                 state["credits_spent"] += res["credits_spent"]
+                state["seen_ids"] = sorted(seen_ids)
                 state["recipes"][name] = {"done": True, "pulled": res["pulled"], "enriched": res["enriched"],
                                           "inserted": res["inserted"], "session_id": res["session_id"],
                                           "prefilter": res["prefilter"]}
@@ -205,6 +216,7 @@ if __name__ == "__main__":
     ap.add_argument("--score", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--concurrency", type=int, default=3)
+    ap.add_argument("--recipes", help="alternate recipes JSON (plan pass only)")
     a = ap.parse_args()
     if a.plan: cmd_plan(a)
     elif a.enrich: cmd_enrich(a)

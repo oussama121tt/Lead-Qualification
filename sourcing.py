@@ -29,7 +29,7 @@ from runconfig import load_config
 
 def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = None,
                owner_id: int | None = None, label: str | None = None,
-               dry_run: bool = False) -> dict:
+               dry_run: bool = False, seen_ids: set | None = None) -> dict:
     """Execute one sourcing run.
 
     Either recipe_id (loads stored filters + updates its yield) or filters
@@ -67,6 +67,20 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
     ) if cfg.prefilter.enabled else {"keep": people, "reject": [], "stats": {"total": pulled, "kept": pulled, "rejected": 0, "unclear_resolved_by_llm": 0}}
     survivors = pf["keep"]
 
+    # 2b. Cross-recipe dedupe by Apollo person id (broad sweeps overlap heavily):
+    #     a person already enriched/queued by an earlier recipe in this run is
+    #     skipped here — no double credit, no duplicate lead.
+    already = 0
+    if seen_ids is not None:
+        fresh = []
+        for p in survivors:
+            pid = p.get("id")
+            if pid and pid in seen_ids:
+                already += 1
+                continue
+            fresh.append(p)
+        survivors = fresh
+
     # 3. DNC dedup on the KEEP set (never spend a credit on a must-not-contact)
     dnc_emails, dnc_domains = dncmod.load_sets(conn)
     pre_dnc_survivors = []
@@ -84,6 +98,7 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
     summary = {
         "pulled": pulled,
         "prefilter": pf["stats"],
+        "already_seen_skipped": already,
         "dnc_skipped_before_enrich": dnc_skipped,
         "to_enrich": len(survivors),
         "credits_needed": len(survivors),
@@ -109,6 +124,10 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
     enriched = enrich_result["enriched"]
     summary["enriched"] = len(enriched)
     summary["credits_spent"] = enrich_result["credits"]
+    if seen_ids is not None:
+        for p in survivors:
+            if p.get("id"):
+                seen_ids.add(p["id"])
 
     # 5. INSERT enriched leads into a new session
     lead_rows = [apollo_client.person_to_lead_row(p) for p in enriched]
