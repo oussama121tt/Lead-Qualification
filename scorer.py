@@ -813,6 +813,12 @@ def score_content(
     except Exception as e:
         if _is_json_parse_error(e):
             return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
+        # A provider-level RateLimited (all keys exhausted after backoff) is
+        # NOT a verdict: propagate so the pipeline marks the lead SCORE_FAILED
+        # (retryable) instead of storing a fake "unclear / 0.0". This is the
+        # exact failure that silently zeroed 353 verdicts in the first bulk run.
+        if e.__class__.__name__ == "RateLimited":
+            raise
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
@@ -823,6 +829,8 @@ def score_content(
                 verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
                 return _apply_site_missing_guard(verdict, site_content_missing)
             except Exception as e2:
+                if e2.__class__.__name__ == "RateLimited" or _is_rate_limit_error(e2):
+                    raise  # retryable, never a stored verdict
                 return _apply_site_missing_guard(
                     _empty_verdict(f"api_error_after_retry: {e2}"),
                     site_content_missing,

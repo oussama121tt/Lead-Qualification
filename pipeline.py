@@ -586,6 +586,7 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
         try:
             score_t0 = _now_ts()
             lead_metadata = _build_lead_metadata(lead)
+            cost_cb = _make_cost_cb(conn, session_id, lead_id, "rescore")
             verdict = scorer.score_content(
                 existing_rows,
                 deterministic_signals=deterministic_signals,
@@ -594,8 +595,36 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
                 scoring_criteria=scoring_criteria,
                 scoring_criteria_custom=scoring_criteria_custom,
                 site_content_missing=site_content_missing,
-                cost_cb=_make_cost_cb(conn, session_id, lead_id, "rescore"),
+                cost_cb=cost_cb,
             )
+            # Escalation on rescore: if this lead never got web evidence and
+            # now qualifies under the configured mode, run the web/LinkedIn
+            # lane and score once more with it — a rescore must not be a
+            # second-class pass (it is how a broken batch gets repaired).
+            esc = load_config().escalation
+            if not web_evidence and esc.mode != "off":
+                if esc.mode == "high_only":
+                    qualifies = (verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                                 and float(verdict.get("confidence") or 0.0) >= esc.min_confidence)
+                else:
+                    qualifies = bool(verdict.get("needs_human_review")) or float(verdict.get("confidence") or 0.0) < CONFIDENCE_THRESHOLD
+                if qualifies:
+                    notes_r: list = []
+                    fetched = _fetch_web_search_evidence(conn, lead_id, lead,
+                                                         technical_signals=deterministic_signals, notes=notes_r)
+                    if fetched:
+                        try:
+                            verdict = scorer.score_content(
+                                existing_rows, deterministic_signals=deterministic_signals,
+                                lead_metadata=lead_metadata, web_search_evidence=fetched,
+                                scoring_criteria=scoring_criteria, scoring_criteria_custom=scoring_criteria_custom,
+                                site_content_missing=site_content_missing, cost_cb=cost_cb)
+                        except Exception as e:
+                            notes_r.append(f"rescore web escalation second pass failed: {e}")
+                    try:
+                        dbmod.append_coverage_notes(conn, lead_id, notes_r)
+                    except Exception:
+                        pass
             score_elapsed = _now_ts() - score_t0
 
             if lead.get("domain_mismatch"):

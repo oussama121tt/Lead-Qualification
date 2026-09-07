@@ -1,6 +1,6 @@
 {
  "started_at": "2026-09-07T11:46:27",
- "credits_spent": 8,
+ "credits_spent": 513,
  "recipes": {
   "bulk-narrow-health-app": {
    "done": true,
@@ -199,6 +199,168 @@
    "pulled": 0,
    "enriched": 0,
    "session_id": null
+  },
+  "bulk-narrow-fitness-app": {
+   "done": true,
+   "pulled": 2,
+   "enriched": 2,
+   "inserted": 2,
+   "session_id": 8,
+   "prefilter": {
+    "total": 2,
+    "kept": 2,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-nutrition-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-wellness-platform": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 9,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-veterinary-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-pet-care-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-events-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-ticketing-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-membership-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-legal-platform": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-document-platform": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 10,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-compliance-app": {
+   "done": true,
+   "pulled": 1,
+   "enriched": 1,
+   "inserted": 1,
+   "session_id": 11,
+   "prefilter": {
+    "total": 1,
+    "kept": 1,
+    "rejected": 0,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-narrow-salon-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-restaurant-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-narrow-delivery-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-broad-app": {
+   "done": true,
+   "pulled": 318,
+   "enriched": 295,
+   "inserted": 286,
+   "session_id": 12,
+   "prefilter": {
+    "total": 318,
+    "kept": 304,
+    "rejected": 14,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-broad-mobile-app": {
+   "done": true,
+   "pulled": 5,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-broad-consumer-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-broad-platform": {
+   "done": true,
+   "pulled": 230,
+   "enriched": 205,
+   "inserted": 199,
+   "session_id": 13,
+   "prefilter": {
+    "total": 230,
+    "kept": 209,
+    "rejected": 21,
+    "unclear_resolved_by_llm": 0
+   }
+  },
+  "bulk-broad-saas-app": {
+   "done": true,
+   "pulled": 0,
+   "enriched": 0,
+   "session_id": null
+  },
+  "bulk-broad-web-app": {
+   "done": true,
+   "pulled": 2,
+   "enriched": 0,
+   "session_id": null
   }
  },
  "sessions": [
@@ -207,7 +369,13 @@
   4,
   5,
   6,
-  7
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13
  ],
  "seen_ids": []
 }

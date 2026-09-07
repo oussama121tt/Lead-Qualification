@@ -44,35 +44,98 @@ class LLMProvider(ABC):
                 "tokens_in": int(tokens_in or 0), "tokens_out": int(tokens_out or 0)}
 
 
+def load_groq_keys() -> list[str]:
+    """GROQ_API_KEY plus GROQ_API_KEY1/2/... and GROQ_API_KEY_2/_3... — the
+    free tier is limited PER KEY (8k tokens/min, 1k requests/day), so several
+    keys multiply throughput exactly like the SGAI ring."""
+    found = []
+    for name, val in sorted(os.environ.items(), key=lambda kv: (len(kv[0]), kv[0])):
+        if re.fullmatch(r"GROQ_API_KEY_?\d*", name) and val and val.strip():
+            found.append(val.strip())
+    seen, out = set(), []
+    for k in found:
+        if k not in seen:
+            seen.add(k); out.append(k)
+    return out
+
+
+class RateLimited(RuntimeError):
+    """Raised when every Groq key is rate-limited after backoff. Callers must
+    treat this as a RETRYABLE failure (SCORE_FAILED), never as a verdict."""
+
+
 class GroqProvider(LLMProvider):
     name = "groq"
 
     def __init__(self):
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=os.environ["GROQ_API_KEY"],
-                             base_url="https://api.groq.com/openai/v1")
+        self.keys = load_groq_keys()
+        if not self.keys:
+            raise RuntimeError("no GROQ_API_KEY configured")
+        self.clients = [OpenAI(api_key=k, base_url="https://api.groq.com/openai/v1") for k in self.keys]
+        self._rr = 0
         self.model = os.getenv("GROQ_SCORING_MODEL") or os.getenv("GROQ_EMAIL_MODEL") or "openai/gpt-oss-120b"
+
+    @staticmethod
+    def _is_rate_limit(e: Exception) -> bool:
+        status = getattr(e, "status_code", None)
+        msg = str(e).lower()
+        return status == 429 or "rate_limit" in msg or "rate limit" in msg or "tokens per minute" in msg
+
+    @staticmethod
+    def _retry_after(e: Exception, default: float) -> float:
+        # Groq returns "Please try again in 12.3s" in the message body.
+        m = re.search(r"try again in ([\d.]+)\s*s", str(e))
+        if m:
+            try:
+                return min(float(m.group(1)) + 0.5, 90.0)
+            except ValueError:
+                pass
+        return default
 
     def generate_json(self, prompt: str, *, system: str | None = None,
                       temperature: float | None = None,
                       max_tokens: int = 1024) -> tuple[dict, dict]:
+        import time as _time
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature if temperature is not None else 0.2,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-            timeout=GROQ_TIMEOUT_SECONDS,
-        )
-        usage = getattr(response, "usage", None)
-        meta = self._meta(getattr(usage, "prompt_tokens", 0),
-                          getattr(usage, "completion_tokens", 0))
-        return json.loads(response.choices[0].message.content), meta
+
+        # Rotate keys per call; on 429 move to the next key immediately, and
+        # only sleep once every key has been tried in this round. Up to 4
+        # rounds (~a few minutes worst case) before giving up as RateLimited.
+        n = len(self.clients)
+        last_err = None
+        for round_ in range(4):
+            wait = 0.0
+            for step in range(n):
+                idx = (self._rr + step) % n
+                client = self.clients[idx]
+                try:
+                    response = client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=temperature if temperature is not None else 0.2,
+                        max_tokens=max_tokens,
+                        response_format={"type": "json_object"},
+                        timeout=GROQ_TIMEOUT_SECONDS,
+                    )
+                    self._rr = (idx + 1) % n
+                    usage = getattr(response, "usage", None)
+                    meta = self._meta(getattr(usage, "prompt_tokens", 0),
+                                      getattr(usage, "completion_tokens", 0))
+                    meta["key_index"] = idx
+                    return json.loads(response.choices[0].message.content), meta
+                except Exception as e:
+                    if not self._is_rate_limit(e):
+                        raise
+                    last_err = e
+                    wait = max(wait, self._retry_after(e, 15.0 * (round_ + 1)))
+                    continue
+            _time.sleep(wait or 15.0)
+        raise RateLimited(f"all {n} Groq key(s) rate-limited after backoff: {str(last_err)[:160]}")
 
 
 class AnthropicProvider(LLMProvider):
