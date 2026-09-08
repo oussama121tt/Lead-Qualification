@@ -83,6 +83,39 @@ class TriggersCfg:
 
 
 @dataclass
+class MailboxCfg:
+    name: str
+    daily_cap: int
+    # Warmup ramp (optional): start at ramp_start_cap on ramp_start (ISO date)
+    # and rise linearly to daily_cap over ramp_days. A mailbox with no ramp is
+    # steady-state at full daily_cap.
+    ramp_start: str | None = None
+    ramp_days: int = 0
+    ramp_start_cap: int = 0
+
+
+@dataclass
+class CostCfg:
+    apollo_credit_price_usd: float
+    scrape_price_usd: float
+    operator_rate_usd_hour: float
+    review_minutes_per_lead: float
+
+
+@dataclass
+class SendingCfg:
+    """Outbound-email capacity config for the send-capacity planner.
+
+    The live Gmail sender is still single-account today; these mailboxes model
+    the (future) multi-mailbox fleet and drive the capacity planner's forecast.
+    """
+    mailboxes: list[MailboxCfg]
+    # Touch offsets in days from a contact's add date at which each follow-up
+    # goes out. len() is the touch count. Default = 3 touches (T1@0, T2@3, T3@7).
+    sequence_offsets: tuple[int, ...] = (0, 3, 7)
+
+
+@dataclass
 class Config:
     fast: bool
     linkedin: LinkedInCfg
@@ -92,6 +125,8 @@ class Config:
     apollo: ApolloCfg
     prefilter: PrefilterCfg
     triggers: TriggersCfg
+    sending: SendingCfg
+    costs: CostCfg
 
 
 _cached: Config | None = None
@@ -166,7 +201,30 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
             # budget (1 nominal credit per governed search run); 0 = off.
             sgai_monthly_credit_cap=int(raw.get("triggers", {}).get("sgai_monthly_credit_cap", 1000)),
         ),
+        sending=_load_sending(raw),
+        costs=CostCfg(
+            apollo_credit_price_usd=float(raw.get("costs", {}).get("apollo_credit_price_usd", 0.0)),
+            scrape_price_usd=float(raw.get("costs", {}).get("scrape_price_usd", 0.0)),
+            operator_rate_usd_hour=float(raw.get("costs", {}).get("operator_rate_usd_hour", 0.0)),
+            review_minutes_per_lead=float(raw.get("costs", {}).get("review_minutes_per_lead", 0.0)),
+        ),
     )
     if path is None:
         _cached = cfg
     return cfg
+
+
+def _load_sending(raw: dict) -> SendingCfg:
+    send = raw.get("sending", {})
+    mb_list = []
+    for m in send.get("mailboxes", []):
+        mb_list.append(MailboxCfg(
+            name=str(m.get("name", "")),
+            daily_cap=int(m.get("daily_cap", 0)),
+            ramp_start=(str(m["ramp_start"]) if m.get("ramp_start") else None),
+            ramp_days=int(m.get("ramp_days", 0)),
+            ramp_start_cap=int(m.get("ramp_start_cap", 0)),
+        ))
+    offsets_raw = send.get("sequence_offsets", [0, 3, 7])
+    offsets = tuple(int(o) for o in offsets_raw)
+    return SendingCfg(mailboxes=mb_list, sequence_offsets=offsets)

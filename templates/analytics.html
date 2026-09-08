@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analytics — Signal → Outcome — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border, #eee); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #ccc); background: var(--surface-2, #f6f6f6); cursor: pointer; text-decoration: none; color: inherit; display: inline-block; }
+    .btn-primary { background: #00ABE4; color: #fff; border-color: #00ABE4; }
+    .lift-up { color: #2e7d32; font-weight: 600; }
+    .lift-down { color: #c62828; font-weight: 600; }
+    .lift-neutral { color: var(--text-muted, #888); }
+    .kpis { display: flex; gap: 12px; flex-wrap: wrap; }
+    .kpi { flex: 1; min-width: 120px; border: 1px solid var(--border, #e0e0e0); border-radius: 8px; padding: 10px 14px; }
+    .kpi .n { font-size: 22px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics_costs') }}">Cost per outcome</a> · <a href="{{ url_for('analytics_channels') }}">Channels</a></p>
+    <h1>Signal → Outcome attribution</h1>
+    <p class="muted">Which signals actually predict replies. Lift &gt; 1 = that signal replies at a higher rate than the overall baseline. Populated nightly from the Apollo analytics sync (<code>tools/run_outcomes_sync.py</code>).</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for c, m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <h3 style="margin-top:0">Baseline</h3>
+      <div class="kpis">
+        <div class="kpi"><div class="muted">Leads</div><div class="n">{{ baseline.leads or 0 }}</div></div>
+        <div class="kpi"><div class="muted">Sent</div><div class="n">{{ baseline.sent or 0 }}</div></div>
+        <div class="kpi"><div class="muted">Replies</div><div class="n">{{ baseline.replies or 0 }}</div></div>
+        <div class="kpi"><div class="muted">Baseline reply rate</div><div class="n">{{ ((baseline.reply_rate or 0)*100)|round(2) }}%</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Last Apollo sync</h3>
+      {% if last_sync %}
+        <p class="muted">{{ last_sync.month }} — fetched {{ last_sync.fetched_at|format_datetime }} · {{ last_sync.messages }} messages · {{ last_sync.opened }} opened · {{ last_sync.clicked }} clicked · {{ last_sync.replied }} replied</p>
+      {% else %}
+        <p class="muted">No sync yet — outcomes come in once you pull them (needs APOLLO_API_KEY in .env).</p>
+      {% endif %}
+      <form action="{{ url_for('analytics_sync') }}" method="post" style="margin-top:8px">
+        <button class="btn btn-primary" type="submit">Sync outcomes now</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Per-signal reply rate vs baseline</h3>
+      {% if signals %}
+      <table>
+        <tr><th>Signal</th><th>Leads</th><th>Sent</th><th>Replies</th><th>Reply rate</th><th>Lift</th></tr>
+        {% for row in signals %}
+        <tr>
+          <td><strong>{{ row.family }}</strong> · {{ row.value }}</td>
+          <td>{{ row.leads }}</td>
+          <td>{{ row.sent }}</td>
+          <td>{{ row.replies }}</td>
+          <td>{{ ((row.reply_rate or 0)*100)|round(2) }}%</td>
+          <td>
+            {% if row.lift == None %}
+              {% if row.sent == 0 %}
+                <span class="lift-neutral">—</span>
+              {% elif row.sent < min_sent %}
+                <span class="lift-neutral" title="Need at least {{ min_sent }} sends for a meaningful lift">not enough data ({{ row.sent }}/{{ min_sent }} sends)</span>
+              {% else %}
+                <span class="lift-neutral">—</span>
+              {% endif %}
+            {% elif row.lift > 1 %}<span class="lift-up">{{ row.lift }}×</span>
+            {% elif row.lift < 1 %}<span class="lift-down">{{ row.lift }}×</span>
+            {% else %}<span class="lift-neutral">1.00×</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No leads scored yet — run the pipeline, then send. This table gets useful after ~500 sends.</p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

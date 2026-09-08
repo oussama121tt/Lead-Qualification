@@ -15,13 +15,15 @@ import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 import pandas as pd
 from flask import Flask, Response, flash, jsonify, redirect, render_template, request, session, url_for, stream_with_context
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import capacity as capacitymod
+import campaigns as campaignsmod
 import db as dbmod
 from db import _now as _db_now
 import dedup as dedupmod
@@ -30,6 +32,8 @@ import export as exportmod
 import pipeline as pipelinemod
 import recipes as recipesmod
 import sourcing as sourcingmod
+import analytics as analyticsmod
+import apollo_analytics as apollo_analyticsmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 
@@ -189,38 +193,53 @@ def _background_pipeline(conn, session_id: int, throttle_seconds: float, concurr
         conn.close()
 
 
+_init_lock = threading.Lock()
+_init_done = False
+
+
+def _ensure_schema_init():
+    """Runs the idempotent schema migration exactly once per process, lazily,
+    on the FIRST real DB use (first open_db / first request) instead of at
+    import time. At-import init used to hit Neon on every `import app` (tests,
+    CLI, build) and blocked ~60s until the connection timed out. Requests that
+    never touch the DB (offline tests) never trigger it."""
+    global _init_done
+    if _init_done:
+        return
+    with _init_lock:
+        if _init_done:
+            return
+        try:
+            _init_schema_once()
+        except Exception as _init_e:
+            # Don't crash requests when Neon is unreachable; the next DB use
+            # retries. (Offline tests never open_db, so they never land here.)
+            print(f"[init] schema init deferred: {_init_e}")
+            return
+        _init_done = True
+
+
 @contextmanager
 def open_db():
+    _ensure_schema_init()
     conn = dbmod.get_connection()
     try:
-        # NB: init_db() is NOT called here. It must run only ONCE at app startup
-        # (see _init_schema_once): calling it on every request would do ~35+
-        # network round-trips to Neon (CREATE/ALTER IF NOT EXISTS) = several
-        # seconds of latency on every page.
+        # NB: init_db()/schema DDL is NOT here — _ensure_schema_init() ran it
+        # exactly once on the first DB use (see above). Running it per-request
+        # would do ~35+ network round-trips to Neon (CREATE/ALTER IF NOT EXISTS)
+        # = several seconds of latency on every page.
         yield conn
     finally:
         conn.close()
 
 
 def _init_schema_once():
-    """Creates/updates the schema once at startup (idempotent)."""
+    """Creates/updates the schema once per process (idempotent)."""
     conn = dbmod.get_connection()
     try:
         dbmod.init_db(conn)
     finally:
         conn.close()
-
-
-# Run once at import so gunicorn (Render) also migrates - __main__ only
-# covers `python app.py`. In tests without DATABASE_URL, fail silently.
-_init_done = False
-try:
-    _init_schema_once()
-    _init_done = True
-except Exception as _init_e:
-    # Don't crash import (tests, build); will retry on first request
-    print(f"[init] schema init deferred: {_init_e}")
-    _init_done = False
 
 
 # ---------------------------------------------------------------------------
@@ -796,7 +815,7 @@ def _get_email_job(session_id: int) -> dict | None:
 def _background_generate_emails(session_id: int, lead_ids: list[int], include_unapproved: bool):
     import emailer
 
-    conn = dbmod.get_connection(DB_PATH)
+    conn = dbmod.get_connection()
     generated = failed = skipped = unapproved = 0
     try:
         scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
@@ -904,9 +923,13 @@ def _background_send_emails(session_id: int, payload: list[dict]):
     would be killed by the WSGI worker timeout after ~3 emails)."""
     from gmail_sender import THROTTLE_SECONDS, send_email
 
-    conn = dbmod.get_connection(DB_PATH)
-    sent = failed = skipped = 0
+    conn = dbmod.get_connection()
+    sent = failed = skipped = dnc_skipped = 0
     try:
+        # DNC registry is checked again at send time, not just at import: a
+        # lead that entered the registry after import (a sent email, an export,
+        # a manual add) is never mailed. Skips it with a visible reason.
+        dnc_emails, dnc_domains = dncmod.load_sets(conn)
         scores = {lead["id"]: lead for lead in dbmod.get_leads_with_scores(conn, session_id=session_id)}
         for i, item in enumerate(payload):
             _set_email_job(session_id, kind="send", status="running",
@@ -917,6 +940,17 @@ def _background_send_emails(session_id: int, payload: list[dict]):
                 continue
             if lead.get("email_status") == "sent":
                 skipped += 1
+                continue
+            # Blocked by the do-not-contact registry: email and/or domain.
+            reason = dncmod.check_lead(
+                lead.get("email"), lead.get("domain_normalized"),
+                dnc_emails, dnc_domains,
+            )
+            if reason:
+                dnc_skipped += 1
+                dbmod.update_lead_email_status(
+                    conn, item["lead_id"], status="do_not_contact", error=reason,
+                )
                 continue
             subject = item["subject"] or lead.get("email_subject") or ""
             body = item["body"] or lead.get("email_body") or ""
@@ -945,7 +979,8 @@ def _background_send_emails(session_id: int, payload: list[dict]):
                 dbmod.update_lead_email_status(conn, item["lead_id"], status="failed", error=str(e))
             if i < len(payload) - 1:
                 time.sleep(THROTTLE_SECONDS)
-        message = f"{sent} email(s) sent, {failed} failed, {skipped} already sent (skipped)."
+        message = (f"{sent} email(s) sent, {failed} failed, {skipped} already sent, "
+                   f"{dnc_skipped} blocked by do-not-contact.")
         _set_email_job(session_id, kind="send", status="done",
                        done=len(payload), total=len(payload), message=message)
     except Exception as e:
@@ -1143,6 +1178,9 @@ def results_view(session_id: int):
             "total": len(scores_data),
             "scored": len([l for l in scores_data if l.get("segment")]),
             "approved": len(approved),
+            "approved_without_draft": len(
+                [l for l in approved if not exportmod._first_line_from(l).strip()]
+            ),
             "to_review": len(to_review),
             "out_of_target": len(out_of_target),
             "not_selected": len(not_selected),
@@ -1300,9 +1338,7 @@ def bulk_approve(session_id: int):
             ]
         n = 0
         for lid in selected:
-            conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lid,))
-            conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lid,))
-            dbmod.set_lead_review(conn, lid, "APPROVED")
+            dbmod.mark_lead_approved(conn, lid)
             n += 1
         conn.commit()
     flash(f"{n} lead(s) approved.", "success")
@@ -1312,8 +1348,9 @@ def bulk_approve(session_id: int):
 @app.route("/download/instantly.csv", methods=["GET"])
 def download_instantly_csv():
     """Approval-gated Instantly/Smartlead export with {{first_line}}. Records
-    every exported lead in the do-not-contact registry so the next import
-    cannot re-contact them."""
+    every exported lead both in the do-not-contact registry AND in
+    export_history (same table as scores.csv) so the next batch's dedup
+    treats same-domain re-exports as already sent."""
     selected_session_id, denied = _resolve_accessible_session(request.args.get("session_id", type=int))
     if denied is not None:
         return denied
@@ -1326,6 +1363,7 @@ def download_instantly_csv():
                      "domain_normalized": dbmod._normalize_domain(r.get("website_url", ""))}
                     for r in rows]
         dncmod.add_many_from_leads(conn, dnc_rows, reason="instantly_export")
+        dbmod.record_export(conn, [r["id"] for r in rows if r.get("id")], session_id=selected_session_id)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
     if not rows:
         flash("No approved leads to export. Approve leads first (or use ?all=1).", "warning")
@@ -1355,9 +1393,19 @@ def sourcing_view():
         import apollo_client
         apollo_client.ensure_usage_table(conn)
         used = apollo_client.credits_used_this_month(conn)
+        campaigns_list = []
+        for c in campaignsmod.list_all(conn):
+            d = dict(c)
+            d["lead_count"] = (
+                conn.execute("SELECT COUNT(*) FROM leads WHERE session_id = ?",
+                             (d.get("session_id"),)).fetchone()[0]
+                if d.get("session_id") else 0
+            )
+            campaigns_list.append(d)
     from runconfig import load_config
     cfg = load_config()
     return render_template("sourcing.html", recipes=recipe_list,
+                           campaigns=campaigns_list,
                            credits_used=used, credit_cap=cfg.apollo.monthly_credit_cap,
                            apollo_ready=bool(os.getenv("APOLLO_API_KEY")))
 
@@ -1380,11 +1428,40 @@ def sourcing_create_recipe():
     return redirect(url_for("sourcing_view"))
 
 
-def _background_sourcing(job_id, recipe_id, owner_id, dry_run):
+@app.route("/sourcing/recipe/<int:recipe_id>/outcomes", methods=["POST"])
+def sourcing_record_outcomes(recipe_id: int):
+    """Manually record send/reply outcomes for a recipe.
+
+    Option B outcome-tracking: there is no Apollo analytics write-back wired up
+    yet, so sent/replies are entered by hand (or via tools/run_recipe_outcomes.py
+    for a batch). This feeds recipes.record_outcomes so the recipe UI's
+    Sent/Replies/Reply-rate are backed by real, intentional data rather than
+    silently blank — and the UI labels them as manually-entered.
+    """
+    try:
+        sent = int(request.form.get("sent") or 0)
+        replies = int(request.form.get("replies") or 0)
+    except (TypeError, ValueError):
+        flash("Sent/Replies must be whole numbers.", "error")
+        return redirect(url_for("sourcing_view"))
+    if sent < 0 or replies < 0 or replies > sent:
+        flash("Replies can't exceed sent, and neither can be negative.", "error")
+        return redirect(url_for("sourcing_view"))
+    with open_db() as conn:
+        if recipesmod.get(conn, recipe_id) is None:
+            flash("Recipe not found.", "error")
+            return redirect(url_for("sourcing_view"))
+        recipesmod.record_outcomes(conn, recipe_id, sent=sent, replies=replies)
+    flash(f"Recorded {sent} sent / {replies} replies for recipe #{recipe_id} (manual entry).", "success")
+    return redirect(url_for("sourcing_view"))
+
+
+def _background_sourcing(job_id, recipe_id, owner_id, dry_run, campaign_id=None):
     conn = dbmod.get_connection()
     try:
         _set_sourcing_job(job_id, status="running")
-        summary = sourcingmod.run_recipe(conn, recipe_id=recipe_id, owner_id=owner_id, dry_run=dry_run)
+        summary = sourcingmod.run_recipe(conn, recipe_id=recipe_id, owner_id=owner_id,
+                                         dry_run=dry_run, campaign_id=campaign_id)
         _set_sourcing_job(job_id, status="done", summary=summary)
     except Exception as e:
         _set_sourcing_job(job_id, status="failed", error=str(e))
@@ -1411,6 +1488,438 @@ def sourcing_job_status(recipe_id: int):
         return jsonify(_sourcing_jobs.get(recipe_id) or {"status": "idle"})
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — Campaigns: recipe run -> keyboard review queue -> Ship
+# Ship produces capacity-scheduled Instantly-format CSVs + DNC/export-history
+# recording. It is an EXPORT, never a send and never an Apollo enroll.
+# ---------------------------------------------------------------------------
+
+def _fleet_mailboxes(cfg):
+    from capacity import Mailbox, SequenceSchedule  # noqa: F401 (SequenceSchedule re-exported for callers)
+    return [
+        Mailbox(name=m.name, daily_cap=m.daily_cap,
+                ramp_start=(date.fromisoformat(m.ramp_start) if m.ramp_start else None),
+                ramp_days=m.ramp_days, ramp_start_cap=m.ramp_start_cap)
+        for m in cfg.sending.mailboxes
+    ]
+
+
+def _sent_contacts(conn):
+    """Global already-committed snapshot for capacity math, two sources:
+
+    1. Actually-sent leads: `email_sent_at` set → touch 1 completed, T2/T3
+       still scheduled (same interpretation as the /capacity route).
+    2. Shipped-but-not-yet-sent leads: every SCHIPPED campaign's stored batch
+       plan reserves its leads' T1/T2/T3 on their batch dates (touches_sent=0),
+       so a second campaign scheduled the same day SEES the first campaign's
+       committed slots — the whole reason this planner exists. Ship is an
+       export (it never sets email_sent_at), so without this a lead shipped in
+       campaign A would be invisible to campaign B and the two together could
+       bust a future date's cap even though each individually fit.
+
+    A lead that appears in both is counted once: `email_sent_at` is the
+    stronger signal (it is genuinely underway), so the plan entry is skipped.
+    """
+    sent_ids = set()
+    contacts = []
+    rows = conn.execute("SELECT id, email_sent_at FROM leads WHERE email_sent_at IS NOT NULL").fetchall()
+    for r in rows:
+        sent_ids.add(r["id"])
+        try:
+            sent_on = r["email_sent_at"][:10]
+            contacts.append({"added_on": date.fromisoformat(sent_on), "touches_sent": 1})
+        except (ValueError, TypeError):
+            continue
+    campaignsmod.ensure_table(conn)
+    plan_rows = conn.execute(
+        "SELECT ship_plan FROM campaigns WHERE status = 'shipped' AND ship_plan IS NOT NULL"
+    ).fetchall()
+    for r in plan_rows:
+        try:
+            batches = json.loads(r["ship_plan"]).get("batches", [])
+        except (TypeError, ValueError):
+            continue
+        for day_s, ids in batches:
+            try:
+                d = date.fromisoformat(day_s)
+            except (ValueError, TypeError):
+                continue
+            for lid in ids:
+                if lid in sent_ids:
+                    continue  # already booked from source 1
+                contacts.append({"added_on": d, "touches_sent": 0})
+    return contacts
+
+
+@app.route("/campaigns/new", methods=["POST"])
+def campaign_new():
+    """Three-click flow start: pick a recipe, a `reviewing` campaign is created,
+    and its sourcing run starts in the background — results land in a fresh
+    session linked as the campaign's review queue."""
+    recipe_id = request.form.get("recipe_id", type=int)
+    if not recipe_id:
+        flash("Campaign needs a recipe.", "error")
+        return redirect(url_for("sourcing_view"))
+    name = (request.form.get("name") or "").strip()
+    with open_db() as conn:
+        if recipesmod.get(conn, recipe_id) is None:
+            flash("Recipe not found.", "error")
+            return redirect(url_for("sourcing_view"))
+        campaignsmod.ensure_table(conn)
+        campaign_id = campaignsmod.create(conn, recipe_id, name or None)
+    owner_id = session.get("user_id")
+    _set_sourcing_job(campaign_id, status="running")
+    threading.Thread(target=_background_sourcing,
+                     args=(campaign_id, recipe_id, owner_id, False, campaign_id),
+                     daemon=True).start()
+    flash("Campaign created — sourcing run started; review its queue when it lands.", "info")
+    return redirect(url_for("campaign_view", campaign_id=campaign_id))
+
+
+@app.route("/campaign/<int:campaign_id>", methods=["GET"])
+def campaign_view(campaign_id: int):
+    from runconfig import load_config
+    cfg = load_config()
+    with open_db() as conn:
+        camp = campaignsmod.get(conn, campaign_id)
+        if camp is None:
+            flash("Campaign not found.", "error")
+            return redirect(url_for("sourcing_view"))
+        queued = []
+        approved_count = 0
+        rejected_count = 0
+        if camp.get("session_id"):
+            leads = dbmod.get_leads_with_scores(conn, session_id=camp["session_id"])
+            queued = [
+                l for l in leads
+                if not l.get("is_duplicate")
+                and l.get("review_status") not in dbmod.VALID_REVIEW_STATUSES
+            ]
+            approved_count = sum(1 for l in leads if l.get("review_status") == "APPROVED")
+            rejected_count = sum(1 for l in leads if l.get("review_status") == "REJECTED")
+        job = dict(_sourcing_jobs.get(campaign_id) or {})
+    plan_batches = []
+    if camp.get("ship_plan"):
+        try:
+            plan_batches = json.loads(camp["ship_plan"]).get("batches", [])
+        except (TypeError, ValueError):
+            plan_batches = []
+    seq_offsets = cfg.sending.sequence_offsets or []
+    return render_template("campaign_view.html", camp=camp, job=job, queued=queued,
+                           approved_count=approved_count, rejected_count=rejected_count,
+                           plan_batches=plan_batches, seq_offsets=seq_offsets)
+
+
+@app.route("/campaign/<int:campaign_id>/review", methods=["GET", "POST"])
+def campaign_review(campaign_id: int):
+    """Keyboard review queue over the campaign's un-decided leads.
+
+    GET renders the whole queue (review_status not yet set) server-side.
+    POST records ONE decision (A=APPROVED / X=REJECTED) plus an optional hook
+    override (the E key's text input), returning remaining-count JSON so the
+    JS advances instantly — twenty-plus A/X per lead is a burst of 20 requests,
+    not 20 reloads.
+    """
+    with open_db() as conn:
+        camp = campaignsmod.get(conn, campaign_id)
+        if camp is None:
+            if request.method == "POST":
+                return jsonify({"ok": False, "error": "campaign not found"}), 404
+            flash("Campaign not found.", "error")
+            return redirect(url_for("sourcing_view"))
+        if camp.get("session_id") is None:
+            if request.method == "POST":
+                return jsonify({"ok": False, "error": "no sourcing session linked yet"}), 409
+            flash("The sourcing run hasn't inserted leads yet — check back shortly.", "info")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+
+        if request.method == "POST":
+            lead_id = request.form.get("lead_id", type=int)
+            decision = request.form.get("decision") or ""
+            hook = (request.form.get("hook") or "").strip()
+            if lead_id is None:
+                return jsonify({"ok": False, "error": "lead_id required"}), 400
+            all_leads = dbmod.get_leads_with_scores(conn, session_id=camp["session_id"])
+            queued_leads = [l for l in all_leads if not l.get("is_duplicate")]
+            ids = {l["id"] for l in queued_leads}
+            if lead_id not in ids:
+                return jsonify({"ok": False, "error": "lead not in campaign queue"}), 404
+            # Hook override persists on the lead row regardless of decision.
+            if hook:
+                dbmod.update_lead_hook_override(conn, lead_id, hook)
+            if decision in dbmod.VALID_REVIEW_STATUSES:
+                if decision == "APPROVED":
+                    dbmod.mark_lead_approved(conn, lead_id)
+                    conn.commit()
+                else:
+                    dbmod.set_lead_review(conn, lead_id, decision)
+            # Re-query AFTER the write so remaining is the true queue size.
+            remaining = sum(
+                1 for l in dbmod.get_leads_with_scores(conn, session_id=camp["session_id"])
+                if l.get("review_status") not in dbmod.VALID_REVIEW_STATUSES
+            )
+            return jsonify({"ok": True, "remaining": remaining, "decision": decision or None,
+                            "hook": hook or None})
+
+        leads = dbmod.get_leads_with_scores(conn, session_id=camp["session_id"])
+    queued = [
+        l for l in leads
+        if not l.get("is_duplicate")
+        and l.get("review_status") not in dbmod.VALID_REVIEW_STATUSES
+    ]
+    cards = [_queue_card(l) for l in queued]
+    return render_template("campaign_queue.html", camp=camp, cards=cards,
+                           total=len(queued))
+
+
+def _queue_card(lead: dict) -> dict:
+    """Display shape for one queue card — keeps Jinja free of JSON parsing."""
+    hooks = lead.get("personalization_hooks") or ""
+    hook_list = []
+    if isinstance(hooks, str) and hooks.strip()[:1] in "[{":
+        try:
+            hooks = json.loads(hooks)
+        except (json.JSONDecodeError, TypeError):
+            hooks = []
+    if isinstance(hooks, list):
+        for h in hooks:
+            if isinstance(h, dict):
+                hook_list.append(str(h.get("hook") or ""))
+            else:
+                hook_list.append(str(h))
+    return {
+        "id": lead["id"],
+        "company": lead.get("company_name") or "",
+        "name": " ".join(filter(None, [lead.get("first_name"), lead.get("last_name")])),
+        "email": lead.get("email") or "",
+        "title": lead.get("title") or lead.get("job_title") or "",
+        "segment": lead.get("segment") or "",
+        "offer": lead.get("recommended_offer") or "",
+        "hooks": hook_list,
+        "trigger_hook": lead.get("trigger_hook") or "",
+        "hook_override": lead.get("hook_override") or "",
+        "website": lead.get("website_url") or "",
+    }
+
+
+@app.route("/campaign/<int:campaign_id>/ship", methods=["POST"])
+def campaign_ship(campaign_id: int):
+    """Freezes the approved queue into capacity-scheduled Instantly batches.
+
+    NOT a send. For each send date the approved leads are split so the batch
+    fits what the fleet can absorb that day (capacity.schedule_by_capacity),
+    the plan is stored on the campaign, every shipped lead is recorded in the
+    DNC registry + export_history (identical guarantee to /download/instantly.csv),
+    and per-batch CSVs are regenerated on demand.
+    """
+    from runconfig import load_config
+    from capacity import SequenceSchedule
+
+    cfg = load_config()
+    with open_db() as conn:
+        camp = campaignsmod.get(conn, campaign_id)
+        if camp is None:
+            flash("Campaign not found.", "error")
+            return redirect(url_for("sourcing_view"))
+        if camp["status"] == "shipped":
+            flash("Campaign already shipped (a campaign ships once).", "warning")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+        sid = camp.get("session_id")
+        if sid is None:
+            flash("No sourcing session linked yet — wait for the run to finish.", "error")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+        leads = dbmod.get_leads_with_scores(conn, session_id=sid)
+        approved = [l for l in leads
+                    if not l.get("is_duplicate") and l.get("review_status") == "APPROVED"]
+        if not approved:
+            flash("Nothing to ship — approve leads in the review queue first.", "warning")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+        batch_ids = [l["id"] for l in approved]
+
+        mailboxes = _fleet_mailboxes(cfg)
+        seq = SequenceSchedule(offsets=cfg.sending.sequence_offsets)
+        try:
+            batches = capacitymod.schedule_by_capacity(
+                mailboxes, seq, _sent_contacts(conn), date.today(), batch_ids)
+        except ValueError as e:
+            flash(str(e), "error")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+
+        plan = {"batches": [[d.isoformat(), ids] for d, ids in batches]}
+        # DNC + export history: exactly what the instant-instant export records.
+        dnc_rows = [{"email": l["email"],
+                     "domain_normalized": dbmod._normalize_domain(l.get("website_url", ""))}
+                    for l in approved]
+        dncmod.add_many_from_leads(conn, dnc_rows, reason="instantly_export")
+        dbmod.record_export(conn, batch_ids, session_id=sid)
+        campaignsmod.mark_shipped(conn, campaign_id, ship_plan=json.dumps(plan))
+        n_batches = len(batches)
+        n_leads = len(batch_ids)
+    flash(f"Shipped {n_leads} approved lead(s) into {n_batches} capacity-scheduled "
+          f"batch(es) — CSVs are listed below.", "success")
+    return redirect(url_for("campaign_view", campaign_id=campaign_id))
+
+
+@app.route("/campaign/<int:campaign_id>/batch/<int:batch_idx>/download", methods=["GET"])
+def campaign_batch_download(campaign_id: int, batch_idx: int):
+    """Re-generates one shipped batch's Instantly CSV from the stored plan."""
+    with open_db() as conn:
+        camp = campaignsmod.get(conn, campaign_id)
+        if camp is None or not camp.get("ship_plan"):
+            flash("Campaign not found or not shipped yet.", "error")
+            return redirect(url_for("sourcing_view"))
+        try:
+            batches = json.loads(camp["ship_plan"]).get("batches", [])
+            day_s, ids = batches[batch_idx]
+        except (TypeError, ValueError, IndexError):
+            flash("Batch not found.", "error")
+            return redirect(url_for("campaign_view", campaign_id=campaign_id))
+        leads = dbmod.get_leads_with_scores(conn, session_id=camp["session_id"])
+        by_id = {l["id"]: l for l in leads}
+        rows = [by_id[i] for i in ids if i in by_id]
+    csv_text = exportmod.instantly_csv_for_leads(rows)
+    return _csv_response(f"campaign_{campaign_id}_batch_{day_s}.csv", csv_text)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Analytics: Signal→Outcome attribution (Task 16), Cost per outcome
+# (Task 17) and Channel comparison (Task 18). lead_outcomes is populated
+# nightly from apollo_analytics.sync_analytics_report (Task 13); the /analytics
+# sync button runs it on demand. Channels are set per session.
+# ---------------------------------------------------------------------------
+
+@app.route("/analytics", methods=["GET"])
+def analytics():
+    with open_db() as conn:
+        signals, baseline = analyticsmod.attribution(conn)
+        last_sync = analyticsmod.last_sync_summary(conn)
+    return render_template("analytics.html", signals=signals, baseline=baseline,
+                           last_sync=last_sync, min_sent=analyticsmod.MIN_SENT_FOR_LIFT)
+
+
+@app.route("/analytics/sync", methods=["POST"])
+def analytics_sync():
+    """Runs the Task 13 Apollo analytics pull now (nightly = tools/run_outcomes_sync.py).
+    days=1 to match the nightly job's default lookback (the cron wrapper runs the
+    same window), so a manual button click and the cron produce the same sweep."""
+    try:
+        with open_db() as conn:
+            result = apollo_analyticsmod.sync_analytics_report(conn, days=1)
+    except apollo_analyticsmod.ApolloAnalyticsError as e:
+        flash(f"Analytics sync failed: {e}", "error")
+        return redirect(url_for("analytics"))
+    flash(f"Analytics sync ({result['month']}): {result['matched']}/{result['messages']} "
+          f"messages matched to leads, {result['replied']} replies, "
+          f"{result['unmatched']} unmatched.", "info")
+    return redirect(url_for("analytics"))
+
+
+@app.route("/analytics/costs", methods=["GET"])
+def analytics_costs():
+    from runconfig import load_config
+    cfg = load_config()
+    with open_db() as conn:
+        data = analyticsmod.cost_per_outcome(conn, cfg=cfg.costs)
+    return render_template("analytics_costs.html", data=data)
+
+
+@app.route("/analytics/channels", methods=["GET"])
+def analytics_channels():
+    owner_id = None if session.get("role") == "admin" else session.get("user_id")
+    with open_db() as conn:
+        channels = analyticsmod.channel_comparison(conn)
+        sessions = analyticsmod.session_channels(conn, owner_id=owner_id)
+    return render_template("analytics_channels.html", channels=channels,
+                           sessions=sessions, channel_names=analyticsmod.CHANNELS)
+
+
+@app.route("/analytics/sessions/<int:session_id>/channel", methods=["POST"])
+def analytics_set_channel(session_id: int):
+    channel = (request.form.get("channel") or "").strip().lower()
+    if channel not in analyticsmod.CHANNELS:
+        flash(f"Unknown channel: {channel or '(empty)'}", "error")
+        return redirect(url_for("analytics_channels"))
+    with open_db() as conn:
+        row = dbmod.get_analysis_session(conn, session_id)
+        if row is None:
+            flash("Session not found.", "error")
+            return redirect(url_for("analytics_channels"))
+        if not _assert_session_access(row):
+            flash("Access not authorized to this analysis.", "danger")
+            return redirect(url_for("analytics_channels"))
+        dbmod.set_session_channel(conn, session_id, channel)
+    flash(f"Session #{session_id} channel set to {channel}.", "info")
+    return redirect(url_for("analytics_channels"))
+
+
+@app.route("/capacity", methods=["GET"])
+def capacity_view():
+    """Send-capacity planner (3.4): forecasts sends/day, shows how many NEW
+    contacts can be added on a date, flags follow-up collisions, and shows the
+    per-mailbox warmup ramp. Separate concern from the recipe UI.
+
+    The model is pure (capacity.py); this route just feeds it the fleet config
+    (config.toml [sending]) and a snapshot of already-added contacts built from
+    the leads table. With no per-touch tracking yet, a lead whose email_sent_at
+    is set is treated as touch 1 of the sequence completed (T2/T3 still pending).
+    """
+    from runconfig import load_config
+    from capacity import Mailbox, SequenceSchedule
+
+    cfg = load_config()
+    mailboxes = _fleet_mailboxes(cfg)
+    seq = SequenceSchedule(offsets=cfg.sending.sequence_offsets)
+
+    horizon = 30
+    start = date.today()
+
+    # Snapshot of already-added contacts: any lead with a sent email booked at
+    # least touch 1; the remaining touches are still scheduled.
+    with open_db() as conn:
+        contacts = _sent_contacts(conn)
+
+    fx = capacitymod.forecast(mailboxes, seq, contacts, start, horizon_days=horizon)
+    collisions = capacitymod.find_collisions(mailboxes, seq, contacts, start, horizon_days=horizon)
+    max_new_today = capacitymod.max_new_contacts(mailboxes, seq, contacts, start, horizon_days=horizon)
+    ramps = {m.name: capacitymod.ramp_schedule(m, start, horizon_days=horizon)
+             for m in mailboxes}
+
+    # Single-date view for the "you can add N on date D" box (default today).
+    target_s = request.args.get("target")
+    target = date.fromisoformat(target_s) if target_s else start
+    max_new_target = capacitymod.max_new_contacts(
+        mailboxes, seq, contacts, target, horizon_days=horizon)
+
+    forecast_rows = []
+    for d, info in sorted(fx.items()):
+        forecast_rows.append({
+            "date": d.isoformat(),
+            "capacity": info["capacity"],
+            "scheduled": info["scheduled"],
+            "forecast": info["forecast"],
+            "collision": info["collision"],
+        })
+    collision_rows = [{"date": d.isoformat(), "scheduled": sched, "capacity": cap}
+                      for d, sched, cap in collisions]
+    ramp_rows = {
+        name: [{"date": d.isoformat(), "cap": cap} for d, cap in sched]
+        for name, sched in ramps.items()
+    }
+
+    return render_template(
+        "capacity.html",
+        today=start.isoformat(),
+        target=target.isoformat(),
+        forecast_rows=forecast_rows,
+        collision_rows=collision_rows,
+        max_new_today=max_new_today,
+        max_new_target=max_new_target,
+        ramp_rows=ramp_rows,
+        touch_count=seq.touch_count,
+        total_capacity_today=capacitymod.total_capacity(mailboxes, start),
+    )
+
+
 @app.route("/lead/<int:lead_id>/approve", methods=["POST"])
 def approve_lead(lead_id: int):
     """Manual review outcome: clear the review flag so the lead moves to 'Ready to approve'."""
@@ -1424,8 +1933,7 @@ def approve_lead(lead_id: int):
         _, denied = _require_session(row["session_id"])
         if denied is not None:
             return denied
-        conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lead_id,))
-        conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lead_id,))
+        dbmod.mark_lead_approved(conn, lead_id)
         conn.commit()
         flash(f"{row['company_name'] or 'Lead'} marked as ready to approve.", "success")
     return redirect(url_for("lead_review_view", lead_id=lead_id))
@@ -1598,7 +2106,15 @@ def review_lead(lead_id: int):
         return redirect(url_for("dashboard", session_id=session_id, lead_id=lead_id))
 
     with open_db() as conn:
-        dbmod.set_lead_review(conn, lead_id, decision, segment_override=segment_override)
+        if decision == "APPROVED":
+            # Single consolidated approve path: status + needs_human_review +
+            # review_status + segment override all at once (see db.mark_lead_approved).
+            # mark_lead_approved does not commit (bulk_approve / approve_lead call
+            # mark_lead_approved as part of a batch then commit once); commit here.
+            dbmod.mark_lead_approved(conn, lead_id, segment_override=segment_override)
+            conn.commit()
+        else:
+            dbmod.set_lead_review(conn, lead_id, decision, segment_override=segment_override)
 
     flash(f"Lead #{lead_id} marked {decision}.", "success")
     return redirect(url_for("dashboard", session_id=session_id, lead_id=lead_id))

@@ -19,7 +19,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('history') }}">History</a></p>
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('history') }}">History</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics') }}">Analytics</a></p>
     <h1>Apollo sourcing</h1>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -50,7 +50,7 @@
       <h3>Recipes</h3>
       {% if recipes %}
       <table>
-        <tr><th>Name</th><th>Runs</th><th>Pulled</th><th>Qualified</th><th>Enriched</th><th>Sent</th><th>Replies</th><th>Qual. rate</th><th>Reply rate</th><th></th></tr>
+        <tr><th>Name</th><th>Runs</th><th>Pulled</th><th>Qualified</th><th>Enriched</th><th>Sent*</th><th>Replies*</th><th>Qual. rate</th><th>Reply rate</th><th></th></tr>
         {% for r in recipes %}
         <tr>
           <td>{{ r.name }}</td>
@@ -64,14 +64,67 @@
               <button class="btn" type="submit">Dry run</button>
             </form>
             <form action="{{ url_for('sourcing_run', recipe_id=r.id) }}" method="post" style="display:inline">
-              <button class="btn btn-primary" type="submit" onclick="return confirm('Spend up to {{ r.leads_pulled and 500 or 500 }} credits?')">Run (spend credits)</button>
+              <button class="btn btn-primary" type="submit" onclick="return confirm('Run this recipe? This spends credits.')">Run (spend credits)</button>
             </form>
+            <details class="muted" style="display:inline-block; margin-left:6px">
+              <summary>Enter outcomes</summary>
+              <form action="{{ url_for('sourcing_record_outcomes', recipe_id=r.id) }}" method="post" style="display:inline">
+                sent <input type="text" name="sent" size="3" value="{{ r.sent }}">
+                replies <input type="text" name="replies" size="3" value="{{ r.replies }}">
+                <button class="btn" type="submit">Save</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      <p class="muted">* Sent/Replies are <strong>manually entered</strong> (Option B) — auto-sync from Apollo analytics isn't wired up yet, so they're updated on demand, not tracked live.</p>
+      {% else %}
+      <p class="muted">No recipes yet. Your validated finding: many NARROW vertical searches beat a few broad ones. Save one above.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Campaigns</h3>
+      <p class="muted">A campaign is a sourced batch reviewed with a keyboard-driven queue, then shipped as Instantly-ready CSVs scheduled by send capacity.</p>
+      {% if campaigns %}
+      <table>
+        <tr><th>Name</th><th>Status</th><th>Leads</th><th></th></tr>
+        {% for c in campaigns %}
+        <tr>
+          <td>{{ c.name or 'Campaign #' ~ c.id }}</td>
+          <td>{{ c.status }}</td>
+          <td>{{ c.lead_count }}</td>
+          <td>
+            <a class="btn btn-primary" href="{{ url_for('campaign_view', campaign_id=c.id) }}">View</a>
           </td>
         </tr>
         {% endfor %}
       </table>
       {% else %}
-      <p class="muted">No recipes yet. Your validated finding: many NARROW vertical searches beat a few broad ones. Save one above.</p>
+      <p class="muted">No campaigns yet. Start one from a recipe below.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Start campaign from recipe</h3>
+      {% if recipes %}
+      <form action="{{ url_for('campaign_new') }}" method="post" style="margin-bottom:8px">
+        <label class="muted">Recipe:
+        <select name="recipe_id">
+          {% for r in recipes %}
+          <option value="{{ r.id }}">{{ r.name }}</option>
+          {% endfor %}
+        </select>
+        </label>
+        <label class="muted" style="margin-left:8px">Name (optional):
+        <input type="text" name="name" placeholder="health-founders-sep26" style="width:200px">
+        </label>
+        <button class="btn btn-primary" type="submit" style="margin-left:12px" onclick="return confirm('Start a sourcing run for this recipe? This spends credits.')">Start campaign</button>
+      </form>
+      <p class="muted">The sourcing run runs in the background. When it lands, review the leads with the keyboard queue (A approve / X reject / → skip / E hook) then Ship as CSVs.</p>
+      {% else %}
+      <p class="muted">Add a recipe first.</p>
       {% endif %}
     </div>
   </div>

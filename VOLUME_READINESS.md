@@ -70,7 +70,12 @@ APOLLO_API_KEY=...          # required for live Apollo calls
 
 ## Tests
 
-21 new offline tests (no API key, no DB server): `prefilter` rules, `dnc` registry + import flagging, Apollo credit governor (blocks over-cap before any HTTP call), Instantly export gating + `{{first_line}}`. Plus a mocked end-to-end sourcing run. Total suite: **51 tests, all green** (`python -m pytest tests -q`).
+Offline test suite (no API key, no DB server) covers the volume layer directly: `prefilter` rules (test_prefilter.py), `dnc` registry + import flagging (test_dnc.py), Apollo credit governor — blocks over-cap before any HTTP call + per-run cost estimate (test_apollo_governor.py, test_sourcing.py), Instantly export gating + `{{first_line}}` (test_instantly_export.py), recipe save/run/counters + outcome recording + versioning (test_recipes.py), send-time DNC gate (test_dnc_send.py), and the DNC-before-enrich guard + mocked end-to-end sourcing run (test_sourcing.py). Total suite: **132 tests, all green** (`python -m pytest tests -q`).
+
+Specific guards worth calling out:
+- **DNC-before-enrich** (test_sourcing.py): a lead on the DNC registry is dropped before `enrich_people` is called, so no enrich credit is spent on it — covered for the partial- and all-DNC cases.
+- **Hard credit cap** (test_sourcing.py, test_apollo_governor.py): enrichment over the monthly cap raises before any HTTP call.
+- **Cost estimate before spend** (test_sourcing.py): a dry-run reports `credits_needed` + current usage while spending zero credits.
 
 ## Honest status
 

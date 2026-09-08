@@ -106,3 +106,41 @@ enabled = true
 use_llm = false
 max_headcount = 50
 min_headcount = 0
+
+[sending]
+# Outbound-email capacity model for the send-capacity planner (/capacity).
+# NOTE: the live Gmail sender is still single-account today; this models the
+# (future) multi-mailbox fleet that drives the forecast. Each mailbox has a
+# daily send cap and an optional warmup ramp: ramp_start (ISO date) + ramp_days
+# + ramp_start_cap, rising linearly to daily_cap.
+#   A mailbox with no ramp_* keys is steady-state at full daily_cap.
+[[sending.mailboxes]]
+name = "primary"
+daily_cap = 30
+
+# Example of a second, ramping mailbox (uncomment to model it):
+# [[sending.mailboxes]]
+# name = "ramp-2"
+# daily_cap = 30
+# ramp_start = "2026-09-01"
+# ramp_days = 10
+# ramp_start_cap = 0
+
+# Touch offsets (days from a contact's add date) at which each follow-up goes
+# out. len() is the touch count — every new contact books this many send slots,
+# so sustainable new-contact rate ~= total daily capacity / touch count.
+sequence_offsets = [0, 3, 7]
+
+[costs]
+# Phase 4 — cost-per-outcome model (Task 17): what a positive reply / closed
+# deal actually costs across recipe/segment/channel. These are ESTIMATES that
+# feed $/reply and $/close on the Analytics → Cost screens; set them to your
+# real invoice numbers.
+# Apollo enrichment credit price (people bulk_match = 1 credit per person).
+apollo_credit_price_usd = 0.05
+# Per-website scrape estimate (Firecrawl credit or free-first fetch time).
+scrape_price_usd = 0.01
+# Operator time: hourly rate and minutes spent reviewing ONE lead (A/X/E queue
+# plus reading the verdict). time_cost = reviewed leads * minutes/60 * rate.
+operator_rate_usd_hour = 30.0
+review_minutes_per_lead = 5

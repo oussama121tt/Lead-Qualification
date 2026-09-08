@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Send capacity — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border, #eee); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .collision { background: var(--danger-bg, #fff0f0); color: #b00020; font-weight: bold; }
+    .big { font-size: 26px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('analytics') }}">Analytics</a></p>
+    <h1>Send capacity planner</h1>
+
+    <div class="card">
+      <strong>Touch count:</strong> {{ touch_count }} (every new contact books {{ touch_count }} send slots).
+      <br>
+      <strong>Total capacity today:</strong> {{ total_capacity_today }} sends/day.
+      <br>
+      <span class="muted">Core arithmetic: sustainable new-contact rate ≈ total daily capacity ÷ touch count. A contact added today also reserves its T2/T3 slots on future dates.</span>
+    </div>
+
+    <div class="card">
+      <h3>You can add <span class="big">{{ max_new_today }}</span> contacts today</h3>
+      <form method="get" style="margin-top:6px">
+        <label>Check a different date:
+          <input type="date" name="target" value="{{ target }}">
+        </label>
+        <button class="btn btn-primary" type="submit">Plan</button>
+        <span class="muted">(max on {{ target }}: <strong>{{ max_new_target }}</strong>)</span>
+      </form>
+    </div>
+
+    {% if collision_rows %}
+    <div class="card" style="border-color:#b00020">
+      <h3>Collision warnings</h3>
+      <p class="muted">Future dates where already-scheduled follow-ups exceed capacity (e.g. a burst added earlier whose T2s/T3s land together).</p>
+      <table>
+        <tr><th>Date</th><th>Scheduled sends</th><th>Capacity</th></tr>
+        {% for c in collision_rows %}
+        <tr>
+          <td>{{ c.date }}</td>
+          <td class="collision">{{ c.scheduled }}</td>
+          <td>{{ c.capacity }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% else %}
+    <div class="card">
+      <h3>Collision warnings</h3>
+      <p class="muted">None within the 30-day window.</p>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <h3>Sends/day forecast (30 days)</h3>
+      <table>
+        <tr><th>Date</th><th>Capacity</th><th>Scheduled</th><th>Forecast</th><th></th></tr>
+        {% for r in forecast_rows %}
+        <tr class="{{ 'collision' if r.collision else '' }}">
+          <td>{{ r.date }}</td>
+          <td>{{ r.capacity }}</td>
+          <td>{{ r.scheduled }}</td>
+          <td>{{ r.forecast }}</td>
+          <td>{% if r.collision %}⚠ over capacity{% else %}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Mailbox ramp schedules</h3>
+      {% for name, rows in ramp_rows.items() %}
+      <h4>{{ name }}</h4>
+      <table>
+        <tr><th>Date</th><th>Daily cap</th></tr>
+        {% for r in rows %}
+        <tr><td>{{ r.date }}</td><td>{{ r.cap }}</td></tr>
+        {% endfor %}
+      </table>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>

@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 import apollo_client
+import campaigns as campaignsmod
 import db as dbmod
 import dnc as dncmod
 import prefilter as prefiltermod
@@ -29,12 +30,15 @@ from runconfig import load_config
 
 def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = None,
                owner_id: int | None = None, label: str | None = None,
-               dry_run: bool = False) -> dict:
+               dry_run: bool = False, campaign_id: int | None = None) -> dict:
     """Execute one sourcing run.
 
     Either recipe_id (loads stored filters + updates its yield) or filters
     (ad-hoc) must be given. dry_run stops after the pre-filter and reports
     what WOULD be enriched, spending zero credits.
+
+    campaign_id links the run's results to a campaign (Phase 2): when set, the
+    newly created session becomes the campaign's review queue.
     """
     cfg = load_config()
     recipe = None
@@ -55,12 +59,26 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
     pulled = len(people)
 
     # 2. PRE-FILTER (free) — Stage-0
-    pf = prefiltermod.prefilter_people(
-        people,
-        max_headcount=cfg.prefilter.max_headcount,
-        min_headcount=cfg.prefilter.min_headcount,
-        use_llm=cfg.prefilter.use_llm,
-    ) if cfg.prefilter.enabled else {"keep": people, "reject": [], "stats": {"total": pulled, "kept": pulled, "rejected": 0, "unclear_resolved_by_llm": 0}}
+    if cfg.prefilter.enabled:
+        # FR-7: Stage-0's optional Groq pass must be cost-logged like every
+        # other LLM stage. No session/lead exists yet (the session is created
+        # below, only for survivors), so these calls are logged with
+        # purpose="prefilter" and null session/lead — they appear in llm_calls
+        # (and any global cost report) but not under a session's spend.
+        import pipeline as pipelinemod
+        cost_cb = (
+            pipelinemod._make_cost_cb(conn, None, None, "prefilter")
+            if cfg.prefilter.use_llm else None
+        )
+        pf = prefiltermod.prefilter_people(
+            people,
+            max_headcount=cfg.prefilter.max_headcount,
+            min_headcount=cfg.prefilter.min_headcount,
+            use_llm=cfg.prefilter.use_llm,
+            cost_cb=cost_cb,
+        )
+    else:
+        pf = {"keep": people, "reject": [], "stats": {"total": pulled, "kept": pulled, "rejected": 0, "unclear_resolved_by_llm": 0}}
     survivors = pf["keep"]
 
     # 3. DNC dedup on the KEEP set (never spend a credit on a must-not-contact)
@@ -115,6 +133,8 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
         source_filename="apollo_api",
         owner_id=owner_id,
     )
+    if campaign_id is not None:
+        campaignsmod.set_session(conn, campaign_id, session_id)
     batch_id = f"apollo_{uuid.uuid4().hex[:8]}"
     ins = dbmod.insert_leads_from_rows(conn, lead_rows, batch_id, session_id=session_id)
     summary["inserted"] = ins["inserted"]

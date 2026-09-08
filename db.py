@@ -687,6 +687,20 @@ def _schema_sql() -> str:
             replies INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS apollo_recipe_versions (
+            {pk},
+            recipe_id BIGINT NOT NULL,
+            version INTEGER NOT NULL,
+            filters TEXT,
+            created_at TEXT,
+            runs INTEGER NOT NULL DEFAULT 0,
+            leads_pulled INTEGER NOT NULL DEFAULT 0,
+            qualified INTEGER NOT NULL DEFAULT 0,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            sent INTEGER NOT NULL DEFAULT 0,
+            replies INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS do_not_contact (
             {pk},
             email TEXT,
@@ -723,6 +737,45 @@ def _schema_sql() -> str:
         );
         CREATE INDEX IF NOT EXISTS idx_public_findings_lead ON lead_public_findings(lead_id);
 
+        CREATE TABLE IF NOT EXISTS lead_outcomes (
+            {pk},
+            lead_id INTEGER NOT NULL,
+            email TEXT,
+            channel TEXT,
+            recipe_id BIGINT,
+            sent_at TIMESTAMPTZ,
+            opened INTEGER,
+            clicked INTEGER,
+            replied INTEGER,
+            reply_sentiment TEXT,
+            meeting_booked INTEGER,
+            closed_won INTEGER,
+            revenue DOUBLE PRECISION,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (lead_id) REFERENCES leads(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_outcomes_lead ON lead_outcomes(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_lead_outcomes_channel ON lead_outcomes(channel);
+
+        CREATE TABLE IF NOT EXISTS apollo_analytics_sync_report (
+            {pk},
+            month TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            apollo_message_id TEXT,
+            to_email TEXT,
+            emailer_campaign_id TEXT,
+            sent_at TIMESTAMPTZ,
+            status TEXT,
+            opened INTEGER NOT NULL DEFAULT 0,
+            clicked INTEGER NOT NULL DEFAULT 0,
+            replied INTEGER NOT NULL DEFAULT 0,
+            reply_sentiment TEXT,
+            raw_json TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_report_msg_month ON apollo_analytics_sync_report(month, apollo_message_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_report_email ON apollo_analytics_sync_report(to_email);
+
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON analysis_sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -740,6 +793,7 @@ _SEQUENCE_TRIGGER_TABLES = (
     "analysis_sessions", "users", "leads", "lead_content",
     "lead_technical_signals", "lead_scores", "lead_search_evidence",
     "export_history", "lead_public_findings", "lead_trigger_events",
+    "lead_outcomes",
 )
 
 
@@ -908,6 +962,17 @@ def init_db(conn) -> None:
         ("trigger_hook", "TEXT"),
     ]:
         _add_column(conn, "leads", col, coltype)
+
+    # Phase 2 — Campaigns: per-lead hook override. The keyboard review queue
+    # lets the operator type a hook that takes precedence over the AI-found
+    # personalization hooks in emailer.build_prompt (overrides render in the
+    # prompt, never stored in the hooks list).
+    _add_column(conn, "leads", "hook_override", "TEXT")
+
+    # Phase 4 — Analytics: source channel on sessions. NULL means cold_email
+    # (the legacy default) — the analytics screens COALESCE() it, so no trigger
+    # back-fill is needed.
+    _add_column(conn, "analysis_sessions", "channel", "TEXT")
 
     _ensure_sequence_housekeeping(conn)
     conn.commit()
@@ -1429,6 +1494,21 @@ def mark_duplicate(conn, lead_id: int, duplicate_of_id: int, reason: str) -> Non
 VALID_REVIEW_STATUSES = ("APPROVED", "REJECTED")
 
 
+def mark_lead_approved(conn, lead_id: int, segment_override: str | None = None) -> None:
+    """Full approve action shared by the review UI (single + bulk): moves the
+    lead to SCORED, clears the needs-human-review flag for the pipeline, AND
+    records review_status='APPROVED' together with any segment override. This
+    is the single code path that defines what "approved" means — every approve
+    route (approve_lead, bulk_approve, review_lead) funnels through it, so the
+    Instantly export and next-batch dedup can never see a half-approved lead."""
+    conn.execute("UPDATE leads SET status = 'SCORED' WHERE id = ?", (lead_id,))
+    conn.execute("UPDATE lead_scores SET needs_human_review = 0 WHERE lead_id = ?", (lead_id,))
+    conn.execute(
+        "UPDATE leads SET review_status = ?, review_segment_override = ?, reviewed_at = ? WHERE id = ?",
+        ("APPROVED", segment_override, _now(), lead_id),
+    )
+
+
 def set_lead_review(
     conn,
     lead_id: int,
@@ -1441,6 +1521,68 @@ def set_lead_review(
     conn.execute(
         "UPDATE leads SET review_status = ?, review_segment_override = ?, reviewed_at = ? WHERE id = ?",
         (decision, segment_override, _now(), lead_id),
+    )
+    conn.commit()
+
+
+def update_lead_hook_override(conn, lead_id: int, hook: str | None) -> None:
+    """Sets the per-lead hook override (Phase 2 keyboard review queue). An empty
+    text clears it back to "use the AI-found hooks". The override lives on the
+    lead row and wins in emailer.build_prompt when set."""
+    conn.execute("UPDATE leads SET hook_override = ? WHERE id = ?", (hook, lead_id))
+    conn.commit()
+
+
+def _as_flag(v) -> int | None:
+    """Normalizes an outcome flag: None stays None ("don't know / don't touch"),
+    truthy -> 1, falsy -> 0. Used by upsert_lead_outcome so None and 0 mean
+    different things to a re-sync."""
+    if v is None:
+        return None
+    return 1 if v else 0
+
+
+def set_session_channel(conn, session_id: int, channel: str) -> None:
+    """Sets the outward channel an analysis session's leads came from
+    (cold_email / upwork / discord / inbound). NULL in the DB = cold_email."""
+    channel = (channel or "").strip().lower() or "cold_email"
+    conn.execute("UPDATE analysis_sessions SET channel = ? WHERE id = ?", (channel, session_id))
+    conn.commit()
+
+
+def upsert_lead_outcome(conn, lead_id: int, *, email=None, channel=None, recipe_id=None,
+                        sent_at=None, opened=None, clicked=None, replied=None,
+                        reply_sentiment=None, meeting_booked=None, closed_won=None,
+                        revenue=None) -> None:
+    """Task 16 — rows one lead's outcome. Weekly-nightly source is the Apollo
+    analytics sync report; meetings/revenue also come from the operator.
+
+    Values passed as None leave the stored value untouched on a re-sync, so a
+    later sync never clobbers a manual meeting/revenue entry with "unknown".
+    Explicit False/0 records the event did NOT happen. The row is keyed by the
+    lead (one outcome per lead)."""
+    now = _now()
+    conn.execute(
+        "INSERT INTO lead_outcomes "
+        "(lead_id, email, channel, recipe_id, sent_at, opened, clicked, replied, "
+        " reply_sentiment, meeting_booked, closed_won, revenue, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (lead_id) DO UPDATE SET "
+        "email = COALESCE(EXCLUDED.email, lead_outcomes.email), "
+        "channel = COALESCE(EXCLUDED.channel, lead_outcomes.channel), "
+        "recipe_id = COALESCE(EXCLUDED.recipe_id, lead_outcomes.recipe_id), "
+        "sent_at = COALESCE(EXCLUDED.sent_at, lead_outcomes.sent_at), "
+        "opened = COALESCE(EXCLUDED.opened, lead_outcomes.opened), "
+        "clicked = COALESCE(EXCLUDED.clicked, lead_outcomes.clicked), "
+        "replied = COALESCE(EXCLUDED.replied, lead_outcomes.replied), "
+        "reply_sentiment = COALESCE(EXCLUDED.reply_sentiment, lead_outcomes.reply_sentiment), "
+        "meeting_booked = COALESCE(EXCLUDED.meeting_booked, lead_outcomes.meeting_booked), "
+        "closed_won = COALESCE(EXCLUDED.closed_won, lead_outcomes.closed_won), "
+        "revenue = COALESCE(EXCLUDED.revenue, lead_outcomes.revenue), "
+        "updated_at = EXCLUDED.updated_at",
+        (lead_id, email, channel, recipe_id, sent_at,
+         _as_flag(opened), _as_flag(clicked), _as_flag(replied), reply_sentiment,
+         _as_flag(meeting_booked), _as_flag(closed_won), revenue, now, now),
     )
     conn.commit()
 
@@ -1749,9 +1891,11 @@ def record_export(conn, lead_ids: list, session_id: int | None = None) -> int:
     if not lead_ids:
         return 0
     now = _now()
+    # IN-clause (NOT postgres ANY): works on both Postgres and SQLite (tests).
+    placeholders = ",".join("?" for _ in lead_ids)
     rows = conn.execute(
-        "SELECT id, domain_normalized, session_id FROM leads WHERE id = ANY(%s)",
-        (lead_ids,),
+        f"SELECT id, domain_normalized, session_id FROM leads WHERE id IN ({placeholders})",
+        lead_ids,
     ).fetchall()
     rows_to_insert = []
     for row in rows:

@@ -116,12 +116,16 @@ def _as_text(value) -> str:
 
 
 def build_prompt(lead: dict, homepage_content: str) -> str:
+    # Phase 2: a reviewer-set hook_override (keyboard review queue) takes
+    # precedence over the AI-found hooks — it's the operator's call, and if
+    # present it is the ONLY hooks source for this lead.
+    hooks = lead.get("hook_override") or lead.get("personalization_hooks")
     return EMAIL_PROMPT_TEMPLATE.format(
         company_name=lead["company_name"] or "this company",
         contact_first_name=lead.get("first_name") or "",
         segment=lead.get("segment") or "unknown",
         recommended_offer=lead.get("recommended_offer") or "none",
-        personalization_hooks=_as_text(lead.get("personalization_hooks")),
+        personalization_hooks=_as_text(hooks),
         evidence_quotes=_as_text(lead.get("evidence_quotes")),
         homepage_content=(homepage_content or "")[:MAX_HOMEPAGE_CHARS],
         sender_signature=_sender_signature(),

@@ -160,6 +160,16 @@
       {% endif %}
     {% endwith %}
 
+    {% if summary.approved_without_draft %}
+    <div class="warning-banner" style="margin-bottom:1rem;">
+      <i class="ti ti-alert-triangle" style="font-size:18px;color:var(--text-warning);" aria-hidden="true"></i>
+      <span style="flex:1;font-size:14px;">
+        <strong>{{ summary.approved_without_draft }} approved lead(s)</strong> have no email draft ({{ '{{first_line}}' }} is not personalized).
+        They will still be exported, but with a blank {{ '{{first_line}}' }}. Use <em>Prepare emails</em> to draft them first, or export anyway.
+      </span>
+    </div>
+    {% endif %}
+
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5rem;flex-wrap:wrap;gap:8px;">
       <div>
         <h1 style="margin:0;">Analyzed leads</h1>
