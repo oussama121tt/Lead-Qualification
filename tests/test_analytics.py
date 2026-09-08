@@ -73,9 +73,9 @@ def test_signal_families_reconciles_both_signal_shapes():
     assert ("budget", "1000") in fams
     assert ("technical", "bubbleapp") in fams
     assert ("technical", "wix") in fams
-    assert ("app_builder", "bubble") in fams   # drifted copy kept as own family
-    assert ("site_builder", "webflow") in fams
-    assert ("on_builder_subdomain", "yes") in fams
+    assert ("technical", "app_builder:bubble") in fams   # wide col folds as sub-value
+    assert ("technical", "site_builder:webflow") in fams
+    assert ("technical", "on_builder_subdomain:yes") in fams
     assert ("sensitive_data", "pii") in fams
     assert ("sensitive_data", "none") not in fams
 

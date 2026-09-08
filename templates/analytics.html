@@ -60,7 +60,14 @@
         <tr><th>Signal</th><th>Leads</th><th>Sent</th><th>Replies</th><th>Reply rate</th><th>Lift</th></tr>
         {% for row in signals %}
         <tr>
-          <td><strong>{{ row.family }}</strong> · {{ row.value }}</td>
+          <td>
+            <strong>{{ row.family }}</strong> ·
+            {% if row.family == "technical" and ":" in row.value %}
+              {{ row.value.split(":", 1)[1] }} <span class="muted">({{ row.value.split(":", 1)[0]|replace("_", " ") }})</span>
+            {% else %}
+              {{ row.value }}
+            {% endif %}
+          </td>
           <td>{{ row.leads }}</td>
           <td>{{ row.sent }}</td>
           <td>{{ row.replies }}</td>

@@ -10,7 +10,9 @@ Task 18  Channel comparison: cold email vs upwork vs discord vs inbound on
 
 Signal naming drift is reconciled HERE as a derived view (no migration):
   * the scraper writes wide fingerprint columns on lead_technical_signals
-    (app_builder_fingerprint, site_builder_fingerprint, on_builder_subdomain);
+    (app_builder_fingerprint, site_builder_fingerprint, on_builder_subdomain),
+    folded into the `technical` family as sub-values (app_builder:<v>,
+    site_builder:<v>, on_builder_subdomain:yes);
   * the scorer stores JSON lists on lead_scores (technical_signals,
     pain_signals, sensitive_data_categories) plus budget_signal/segment;
   * trigger monitor writes relational rows on lead_trigger_events(trigger).
@@ -142,7 +144,9 @@ def _load_triggers(conn, session_id=None) -> dict[int, list[str]]:
 
 def signal_families(row: dict) -> list[tuple[str, str]]:
     """Canonical (family, value) pairs for one derived lead row. Handles BOTH
-    signal shapes: the scorer's JSON lists and the scraper's wide columns."""
+    signal shapes: the scorer's JSON lists and the scraper's wide columns,
+    which fold into their family (app_builder:/site_builder:/
+    on_builder_subdomain: sub-values of `technical`)."""
     fams: list[tuple[str, str]] = []
     seg = row.get("segment")
     if seg:
@@ -159,12 +163,12 @@ def signal_families(row: dict) -> list[tuple[str, str]]:
         fams.append(("technical", v))
     app_builder = row.get("app_builder_fingerprint")
     if app_builder:
-        fams.append(("app_builder", str(app_builder)))
+        fams.append(("technical", f"app_builder:{app_builder}"))
     site_builder = row.get("site_builder_fingerprint")
     if site_builder:
-        fams.append(("site_builder", str(site_builder)))
+        fams.append(("technical", f"site_builder:{site_builder}"))
     if row.get("on_builder_subdomain"):
-        fams.append(("on_builder_subdomain", "yes"))
+        fams.append(("technical", "on_builder_subdomain:yes"))
     return fams
 
 
