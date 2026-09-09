@@ -23,8 +23,11 @@ from __future__ import annotations
 import re
 
 # --- Reject: the person is a service provider / competitor, not a product founder ---
+# NOTE: 'studio' is deliberately NOT here — a product studio is a target
+# (golden case george = small_agency_scaling). Only unambiguous service
+# providers are rejected; ambiguous names fall through to 'unclear'/'keep'.
 AGENCY_COMPANY_MARKERS = re.compile(
-    r"\b(agency|agencies|studio|studios|consult(?:ing|ancy|ants?)?|labs?|solutions|"
+    r"\b(agency|agencies|consult(?:ing|ancy|ants?)?|labs?|solutions|"
     r"software\s+house|digital\s+agency|dev\s?shop|web\s+design|it\s+services|"
     r"systems?\b|systems\s+integrat|outsourc|technolog(?:y|ies)\s+partner|interactive|"
     r"creative\s+agency|staffing|recruit(?:ing|ment)\s+agency|we\s+build|"
@@ -42,10 +45,12 @@ AGENCY_TITLE_MARKERS = re.compile(
     r"\b(agency\s+owner|freelance|freelancer|consultant|contractor|"
     r"fractional\s+(?:cto|cpo|coo|cmo|cfo)|advisor|mentor|coach|"
     r"managing\s+director\s+at\s+.*\bagency\b|"
-    # Competitor personas selling to our exact persona (25% of a broad pool):
-    r"technical\s+co-?founder|\bcto\b|chief\s+technology\s+officer|"
-    r"software\s+engineer|\bdeveloper\b|\bengineer\b|solutions\s+architect|"
-    r"we\s+build)\b",
+    # Service personas selling to our exact persona. NOTE: plain "CTO",
+    # "engineer" or "technical co-founder" titles are deliberately NOT
+    # rejected: a CTO / engineering founder of their OWN product company IS
+    # the technical_founder segment (golden cases marius, eric). Only the
+    # fractional / consulting / "we build for you" variants are competitors.
+    r"we\s+build\s+(?:your|apps|mvps|software|products))\b",
     re.I,
 )
 # --- Reject: clearly not a founder/decision-maker persona ---
@@ -186,9 +191,35 @@ def prefilter_people(people: list[dict], *, max_headcount: int = 50,
 
 
 def _to_int(v) -> int | None:
+    """Parse Apollo headcount values into a number. Apollo returns employee
+    counts in several shapes: a plain int, a hyphenated range ("11-50",
+    "5000+", "1-10"), or a comma-separated range ("11,50", "250,1000" —
+    the filter format leaks into search results), with occasional thousands
+    grouping ("1,001-5,000"). For ranges we use the LOWER bound: a target-band
+    company ("11-50") must never be treated as 1150 (the old bug) and
+    false-rejected. None/empty/garbage → None."""
     if v is None:
         return None
-    if isinstance(v, int):
-        return v
-    m = re.sub(r"[^\d]", "", str(v))
-    return int(m) if m else None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v)
+    s = str(v).strip()
+    if not s:
+        return None
+
+    # Hyphen/tilde/" to " range ("11-50", "1,001-5,000", "11 to 50") → lower bound.
+    m = re.search(r"[-–—~]|\bto\b", s)
+    if m:
+        left = s[: m.start()].replace(",", "").replace(" ", "").strip()
+        if left.isdigit():
+            return int(left)
+
+    # Comma-separated range ("11,50", "250,1000") → lower bound. Only when it
+    # is NOT thousands-grouped ("1,001" is a single number, not 1..001).
+    if re.fullmatch(r"\d{1,5},\d{1,5}", s) and not re.fullmatch(r"\d{1,3}(,\d{3})+", s):
+        return int(s.split(",", 1)[0])
+
+    # Single number, possibly comma-grouped or with a trailing "+".
+    digits = s.replace(",", "").replace("+", "").strip()
+    if digits.isdigit():
+        return int(digits)
+    return None

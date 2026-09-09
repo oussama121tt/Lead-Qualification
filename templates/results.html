@@ -160,6 +160,16 @@
       {% endif %}
     {% endwith %}
 
+    {% if summary.approved_without_draft %}
+    <div class="warning-banner" style="margin-bottom:1rem;">
+      <i class="ti ti-alert-triangle" style="font-size:18px;color:var(--text-warning);" aria-hidden="true"></i>
+      <span style="flex:1;font-size:14px;">
+        <strong>{{ summary.approved_without_draft }} approved lead(s)</strong> have no email draft ({{ '{{first_line}}' }} is not personalized).
+        They will still be exported, but with a blank {{ '{{first_line}}' }}. Use <em>Prepare emails</em> to draft them first, or export anyway.
+      </span>
+    </div>
+    {% endif %}
+
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5rem;flex-wrap:wrap;gap:8px;">
       <div>
         <h1 style="margin:0;">Analyzed leads</h1>
@@ -193,6 +203,12 @@
         <p class="stat-label">Waiting</p>
         <p class="stat-value">{{ summary.pending }}</p>
       </div>
+      {% if summary.triggered %}
+      <div class="stat-card stat-success" style="outline:2px solid var(--success);">
+        <p class="stat-label">Triggered</p>
+        <p class="stat-value">{{ summary.triggered }}</p>
+      </div>
+      {% endif %}
       {% if summary.llm_spend %}
       <div class="stat-card">
         <p class="stat-label">LLM spend (session)</p>
@@ -233,6 +249,7 @@
         <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
         {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
+        {% if lead.trigger_hook %}<span class="tag-pill" title="Trigger monitoring event — this lead surfaced because of a change since scoring.">{{ lead.trigger_hook }}</span>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -270,6 +287,7 @@
         <span class="badge badge-fw badge-warning">{{ lead.email_status }}</span>
         {% endif %}
         {% if lead.already_exported %}<span class="tag-pill" title="Same domain was exported in a previous batch; excluded from new CSV exports.">Already exported</span>{% endif %}
+        {% if lead.trigger_hook %}<span class="tag-pill" title="Trigger monitoring event — this lead surfaced because of a change since scoring.">{{ lead.trigger_hook }}</span>{% endif %}
         <a class="btn-outline btn-small" href="{{ url_for('lead_review_view', lead_id=lead.id) }}"><i class="ti ti-eye" style="font-size:14px;vertical-align:-2px;" aria-hidden="true"></i>Review</a>
       </div>
       {% endfor %}

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Channel comparison — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border, #eee); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .money { white-space: nowrap; }
+    .btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border, #ccc); background: var(--surface-2, #f6f6f6); cursor: pointer; font-size: 12px; }
+    .btn-primary { background: #00ABE4; color: #fff; border-color: #00ABE4; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('analytics') }}">Attribution</a> · <a href="{{ url_for('analytics_costs') }}">Cost per outcome</a></p>
+    <h1>Channel comparison</h1>
+    <p class="muted">Cold email vs Upwork vs Discord vs inbound on the same axes — the "should cold email continue at all" screen.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for c, m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <h3 style="margin-top:0">By channel</h3>
+      {% if channels %}
+      <table>
+        <tr><th>Channel</th><th>Leads</th><th>Sent</th><th>Cost</th><th>Replies</th><th>Reply rate</th><th>Closes</th><th>Revenue</th><th>$/reply</th><th>$/close</th><th>Cycle (days)</th></tr>
+        {% for r in channels %}
+        <tr>
+          <td><strong>{{ r.channel }}</strong></td>
+          <td>{{ r.leads }}</td>
+          <td>{{ r.sent }}</td>
+          <td class="money">${{ "%.2f"|format(r.cost) }}</td>
+          <td>{{ r.replies }}</td>
+          <td>{{ ((r.reply_rate or 0)*100)|round(2) }}%</td>
+          <td>{{ r.closed_won }}</td>
+          <td class="money">${{ "%.2f"|format(r.revenue) }}</td>
+          <td class="money">{% if r.cost_per_reply != None %}${{ "%.2f"|format(r.cost_per_reply) }}{% else %}—{% endif %}</td>
+          <td class="money">{% if r.cost_per_close != None %}${{ "%.2f"|format(r.cost_per_close) }}{% else %}—{% endif %}</td>
+          <td>{% if r.cycle_days != None %}{{ r.cycle_days }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No sessions yet — channels are assigned per analysis session.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Session channels</h3>
+      {% if sessions %}
+      <table>
+        <tr><th>Session</th><th>Label</th><th>Created</th><th>Channel</th><th></th></tr>
+        {% for s in sessions %}
+        <tr>
+          <td>#{{ s.id }}</td>
+          <td>{{ s.label or '—' }}</td>
+          <td>{{ s.created_at|format_datetime }}</td>
+          <td><strong>{{ s.channel }}</strong></td>
+          <td>
+            <form action="{{ url_for('analytics_set_channel', session_id=s.id) }}" method="post" style="margin:0">
+              <select name="channel">
+                {% for c in channel_names %}
+                <option value="{{ c }}" {{ 'selected' if c == s.channel }}>{{ c }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-primary" type="submit">Save</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No sessions that you can access.</p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

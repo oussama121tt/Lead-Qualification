@@ -1,0 +1,287 @@
+{
+  "_README": "Apollo-shaped Stage-0 pre-filter golden fixtures. Each record mirrors what Apollo people search returns: title, organization_name, estimated_num_employees (string range or int — the values prefilter._to_int parses), agreed employment_history array, founded_year. 'case_id' links good_targets to golden/cases.jsonl (Task-1 golden set); Stage-0 must NEVER reject a good target (a cheap filter that kills good leads is expensive). known_bad are the unambiguous rejects Stage-0 exists to catch.",
+  "good_targets": [
+    {
+      "id": "apollo-roxie", "case_id": "roxie",
+      "first_name": "Roxanne", "last_name": "Price",
+      "title": "Founder & CEO",
+      "linkedin_url": "https://www.linkedin.com/in/roxie-price",
+      "headline": "Parenting app for booking childcare",
+      "organization_name": "RoxyCare",
+      "estimated_num_employees": "1-10",
+      "founded_year": 2022,
+      "employment_history": [
+        {"organization_name": "RoxyCare", "title": "Founder & CEO", "started_at": "2022-01", "ended_at": null},
+        {"organization_name": "Little Sprouts Nursery", "title": "Centre Manager", "started_at": "2016-04", "ended_at": "2021-12"}
+      ]
+    },
+    {
+      "id": "apollo-carlee", "case_id": "carlee",
+      "first_name": "Carlee", "last_name": "Nguyen",
+      "title": "Co-Founder",
+      "linkedin_url": "https://www.linkedin.com/in/carlee-nguyen",
+      "headline": "Customer ops SaaS",
+      "organization_name": "SuperOrder",
+      "estimated_num_employees": "1-10",
+      "founded_year": 2023,
+      "employment_history": [
+        {"organization_name": "SuperOrder", "title": "Co-Founder", "started_at": "2023-03", "ended_at": null},
+        {"organization_name": "Fizzle CRM", "title": "Product Manager", "started_at": "2019-07", "ended_at": "2023-02"}
+      ]
+    },
+    {
+      "id": "apollo-dan", "case_id": "dan",
+      "first_name": "Dan", "last_name": "Kowalski",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/dan-kowalski",
+      "headline": "Internal tooling for small teams",
+      "organization_name": "DeskPilot",
+      "estimated_num_employees": "1",
+      "founded_year": 2023,
+      "employment_history": [
+        {"organization_name": "DeskPilot", "title": "Founder", "started_at": "2023-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-marius", "case_id": "marius",
+      "first_name": "Marius", "last_name": "Ionescu",
+      "title": "CTO",
+      "linkedin_url": "https://www.linkedin.com/in/marius-ionescu",
+      "headline": "Engineering tooling startup",
+      "organization_name": "Teamflow",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2021,
+      "employment_history": [
+        {"organization_name": "Teamflow", "title": "CTO", "started_at": "2021-09", "ended_at": null},
+        {"organization_name": "Nexa Systems", "title": "Senior Engineer", "started_at": "2016-02", "ended_at": "2021-08"}
+      ]
+    },
+    {
+      "id": "apollo-hao", "case_id": "hao",
+      "first_name": "Hao", "last_name": "Lin",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/hao-lin",
+      "headline": "AI copilot for content teams",
+      "organization_name": "SparkRepl",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2022,
+      "employment_history": [
+        {"organization_name": "SparkRepl", "title": "Founder", "started_at": "2022-05", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-george", "case_id": "george",
+      "first_name": "George", "last_name": "Bennett",
+      "title": "Owner",
+      "linkedin_url": "https://www.linkedin.com/in/george-bennett",
+      "headline": "Small studio scaling a product line",
+      "organization_name": "Studio North",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2019,
+      "employment_history": [
+        {"organization_name": "Studio North", "title": "Owner", "started_at": "2019-06", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-eric", "case_id": "eric",
+      "first_name": "Eric", "last_name": "Mensah",
+      "title": "Founder & Engineer",
+      "linkedin_url": "https://www.linkedin.com/in/eric-mensah",
+      "headline": "Dev tooling",
+      "organization_name": "ShipFast",
+      "estimated_num_employees": "1-10",
+      "founded_year": 2022,
+      "employment_history": [
+        {"organization_name": "ShipFast", "title": "Founder & Engineer", "started_at": "2022-02", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-sule", "case_id": "sule",
+      "first_name": "Sule", "last_name": "Okafor",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/sule-okafor",
+      "headline": "No-code booking platform",
+      "organization_name": "NimbusApp",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2020,
+      "employment_history": [
+        {"organization_name": "NimbusApp", "title": "Founder", "started_at": "2020-11", "ended_at": null},
+        {"organization_name": "BrightPath Marketing", "title": "Campaign Manager", "started_at": "2014-01", "ended_at": "2020-09"}
+      ]
+    },
+    {
+      "id": "apollo-pauline", "case_id": "pauline",
+      "first_name": "Pauline", "last_name": "Dupont",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/pauline-dupont",
+      "headline": "Care coordination for families",
+      "organization_name": "CareBunch",
+      "estimated_num_employees": "1-10",
+      "founded_year": 2021,
+      "employment_history": [
+        {"organization_name": "CareBunch", "title": "Founder", "started_at": "2021-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-thomas", "case_id": "thomas",
+      "first_name": "Thomas", "last_name": "Schmidt",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/thomas-schmidt",
+      "headline": "Student productivity app",
+      "organization_name": "StudyPal",
+      "estimated_num_employees": "1-10",
+      "founded_year": 2023,
+      "employment_history": [
+        {"organization_name": "StudyPal", "title": "Founder", "started_at": "2023-08", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-sascha", "case_id": "sascha",
+      "first_name": "Sascha", "last_name": "Weber",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/sascha-weber",
+      "headline": "Side project built on Lovable",
+      "organization_name": "SideProject Co",
+      "estimated_num_employees": "1",
+      "founded_year": 2024,
+      "employment_history": [
+        {"organization_name": "SideProject Co", "title": "Founder", "started_at": "2024-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-shakeim", "case_id": "shakeim",
+      "first_name": "Shakeim", "last_name": "Johnson",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/shakeim-johnson",
+      "headline": "Lean operations SaaS",
+      "organization_name": "LeanOps",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2021,
+      "employment_history": [
+        {"organization_name": "LeanOps", "title": "Founder", "started_at": "2021-03", "ended_at": null}
+      ]
+    }
+  ],
+  "known_bad": [
+    {
+      "id": "apollo-devshop",
+      "first_name": "Marcus", "last_name": "Foster",
+      "title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/marcus-foster",
+      "headline": "Custom software for clients",
+      "organization_name": "Northside Dev Shop",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2016,
+      "employment_history": [
+        {"organization_name": "NimbusDev", "title": "Founder", "started_at": "2016-05", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-consultancy",
+      "first_name": "Priya", "last_name": "Sharma",
+      "title": "Principal",
+      "linkedin_url": "https://www.linkedin.com/in/priya-sharma",
+      "headline": "Fractional exec advisory",
+      "organization_name": "Meridian Consulting Group",
+      "estimated_num_employees": "201-500",
+      "founded_year": 2010,
+      "employment_history": [
+        {"organization_name": "Meridian Consulting Group", "title": "Principal Consultant", "started_at": "2010-02", "ended_at": null},
+        {"organization_name": "Deloitte", "title": "Senior Consultant", "started_at": "2005-09", "ended_at": "2010-01"}
+      ]
+    },
+    {
+      "id": "apollo-agency",
+      "first_name": "Diego", "last_name": "Ramirez",
+      "title": "Creative Director",
+      "linkedin_url": "https://www.linkedin.com/in/diego-ramirez",
+      "headline": "Web for SMB clients",
+      "organization_name": "Bright Digital Agency",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2015,
+      "employment_history": [
+        {"organization_name": "Bright Digital Agency", "title": "Creative Director", "started_at": "2015-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-fractional",
+      "first_name": "Janet", "last_name": "Osei",
+      "title": "Fractional CTO",
+      "linkedin_url": "https://www.linkedin.com/in/janet-osei",
+      "headline": "Part-time CTO for startups",
+      "organization_name": "Osei Advisory",
+      "estimated_num_employees": "1",
+      "founded_year": 2020,
+      "employment_history": [
+        {"organization_name": "Osei Advisory", "title": "Fractional CTO", "started_at": "2020-07", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-consultant-title",
+      "first_name": "Ben", "last_name": "Alvarez",
+      "title": "Growth Consultant",
+      "linkedin_url": "https://www.linkedin.com/in/ben-alvarez",
+      "headline": "Independent growth consulting",
+      "organization_name": "Independent",
+      "estimated_num_employees": "1",
+      "founded_year": 2019,
+      "employment_history": [
+        {"organization_name": "Independent", "title": "Growth Consultant", "started_at": "2019-03", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-enterprise-notion",
+      "case_id": "notion",
+      "first_name": "Ivan", "last_name": "Zhao",
+      "title": "Co-Founder",
+      "linkedin_url": "https://www.linkedin.com/in/ivan-zhao",
+      "headline": "Productivity tooling",
+      "organization_name": "Notion",
+      "estimated_num_employees": "501-1000",
+      "founded_year": 2013,
+      "employment_history": [
+        {"organization_name": "Notion", "title": "Co-Founder", "started_at": "2013-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-enterprise-airtable",
+      "case_id": "airtable",
+      "first_name": "Emily", "last_name": "Gao",
+      "title": "CEO",
+      "linkedin_url": "https://www.linkedin.com/in/emily-gao",
+      "headline": "Cloud collaboration",
+      "organization_name": "Airtable",
+      "estimated_num_employees": "1001-5000",
+      "founded_year": 2012,
+      "employment_history": [
+        {"organization_name": "Airtable", "title": "CEO", "started_at": "2012-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-competitor",
+      "first_name": "Aisha", "last_name": "Khan",
+      "title": "CEO",
+      "linkedin_url": "https://www.linkedin.com/in/aisha-khan",
+      "headline": "AI implementation for SMBs",
+      "organization_name": "Apex IT Services",
+      "estimated_num_employees": "51-200",
+      "founded_year": 2018,
+      "employment_history": [
+        {"organization_name": "Apex IT Services", "title": "CEO", "started_at": "2018-01", "ended_at": null}
+      ]
+    },
+    {
+      "id": "apollo-recruiter",
+      "first_name": "Tom", "last_name": "Barrett",
+      "title": "Recruiter",
+      "linkedin_url": "https://www.linkedin.com/in/tom-barrett",
+      "headline": "Talent acquisition",
+      "organization_name": "Barrett Talent Partners",
+      "estimated_num_employees": "11-50",
+      "founded_year": 2017,
+      "employment_history": [
+        {"organization_name": "Barrett Talent Partners", "title": "Recruiter", "started_at": "2017-04", "ended_at": null}
+      ]
+    }
+  ]
+}

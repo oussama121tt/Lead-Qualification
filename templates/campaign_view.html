@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Campaign #{{ camp.id }} — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border, #eee); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #ccc); background: var(--surface-2, #f6f6f6); cursor: pointer; text-decoration: none; color: inherit; display: inline-block; }
+    .btn-primary { background: #00ABE4; color: #fff; border-color: #00ABE4; }
+    .btn:disabled { opacity:.5; cursor:not-allowed }
+    .status { font-weight:600 }
+    .shipped { color: #2e7d32 }
+    .reviewing { color: #ef6c00 }
+    .job { font-size:13px; margin-top:8px; padding:8px; border:1px dashed #ccc; border-radius:6px }
+    .kbd { display:inline-block; padding:2px 6px; border:1px solid #aaa; border-radius:4px; font-family:monospace; font-size:12px; background:#f8f8f8; margin:0 2px }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics') }}">Analytics</a></p>
+    <h1>Campaign #{{ camp.id }} — {{ camp.name or 'Untitled' }}</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for c, m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <div>Status: <span class="status {{ 'shipped' if camp.status=='shipped' else 'reviewing' }}">{{ camp.status }}</span></div>
+      <div class="muted">Recipe #{{ camp.recipe_id or '—' }} · Session #{{ camp.session_id or 'pending' }} · Created {{ camp.created_at or '—' }}</div>
+
+      {% if job.status == 'running' %}
+      <div class="job">Sourcing run in progress — the queue will appear here once it finishes. This page auto-refreshes every 8 seconds.</div>
+      <script>setTimeout(()=>location.reload(), 8000)</script>
+      {% elif job.status == 'failed' %}
+      <div class="job">Sourcing run failed: {{ job.error }}. Retry from the recipe row in <a href="{{ url_for('sourcing_view') }}">Sourcing</a>.</div>
+      {% endif %}
+
+      <div style="margin-top:12px">
+        <strong>Queue (to review):</strong> {{ queued|length }}
+        · <strong>Approved:</strong> {{ approved_count }}
+        · <strong>Rejected:</strong> {{ rejected_count }}
+      </div>
+
+      {% if camp.status != 'shipped' %}
+        <div style="margin-top:12px">
+          {% if camp.session_id and queued|length %}
+            <a class="btn btn-primary" href="{{ url_for('campaign_review', campaign_id=camp.id) }}">Review queue (keyboard)</a>
+          {% elif camp.session_id and queued|length == 0 and approved_count == 0 %}
+            <span class="muted">The sourcing run inserted no reviewable leads yet.</span>
+          {% endif %}
+
+          {% if camp.session_id and approved_count %}
+          <form action="{{ url_for('campaign_ship', campaign_id=camp.id) }}" method="post" style="display:inline; margin-left:8px">
+            <button class="btn btn-primary" type="submit" style="background:#388e3c; border-color:#388e3c"
+                    onclick="return confirm('Ship {{ approved_count }} approved lead(s) as capacity-scheduled Instantly CSVs? This records them in the DNC registry.')">Ship approved</button>
+          </form>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+
+    {% if camp.status == 'shipped' %}
+    <div class="card">
+      <h3>Shipped batches</h3>
+      <div class="muted" style="margin-bottom:8px">One CSV per send date. Each batch's size equals what the fleet could absorb that day (capacity page). Every exported lead is recorded in the DNC registry.</div>
+      {% if plan_batches %}
+      <table>
+        <tr><th>Send date</th><th>Leads</th><th>CSV</th></tr>
+        {% for day, ids in plan_batches %}
+        <tr>
+          <td>{{ day }}</td>
+          <td>{{ ids|length }}</td>
+          <td><a class="btn" href="{{ url_for('campaign_batch_download', campaign_id=camp.id, batch_idx=loop.index0) }}">Download</a></td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No batches recorded.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="card muted" style="font-size:12px">
+      <strong>Keyboard review queue:</strong> open the queue page then press
+      <span class="kbd">A</span> approve,
+      <span class="kbd">X</span> reject,
+      <span class="kbd">→</span> skip to next,
+      <span class="kbd">E</span> edit hook override, then <span class="kbd">Enter</span> to save it.
+      The queue respects 20+ decisions in rapid burst.
+    </div>
+  </div>
+</body>
+</html>

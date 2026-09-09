@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cost per outcome — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border, #eee); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .money { white-space: nowrap; }
+    .kpis { display: flex; gap: 12px; flex-wrap: wrap; }
+    .kpi { flex: 1; min-width: 120px; border: 1px solid var(--border, #e0e0e0); border-radius: 8px; padding: 10px 14px; }
+    .kpi .n { font-size: 20px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('analytics') }}">Attribution</a> · <a href="{{ url_for('analytics_channels') }}">Channels</a></p>
+    <h1>Cost per outcome</h1>
+    <p class="muted">Total cost vs replies / closed deals, split by recipe, segment and channel. Includes Apollo credits, LLM calls (<code>llm_calls.cost_usd</code>), scraping and operator review time — estimates set in <code>[costs]</code> in config.toml.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for c, m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <div class="kpis">
+        <div class="kpi"><div class="muted">Leads</div><div class="n">{{ data.totals.leads }}</div></div>
+        <div class="kpi"><div class="muted">Sent</div><div class="n">{{ data.totals.sent }}</div></div>
+        <div class="kpi"><div class="muted">Replies</div><div class="n">{{ data.totals.replies }}</div></div>
+        <div class="kpi"><div class="muted">Cost</div><div class="n money">${{ "%.2f"|format(data.totals.cost) }}</div></div>
+      </div>
+    </div>
+
+    {% for section in [("recipes", "By recipe"), ("segments", "By segment"), ("channels", "By channel")] %}
+    <div class="card">
+      <h3 style="margin-top:0">{{ section[1] }}</h3>
+      {% set rows = data[section[0]] %}
+      {% if rows %}
+      <table>
+        <tr><th>Group</th><th>Leads</th><th>Sent</th><th>Replies</th><th>Closed</th><th>Revenue</th><th>Cost</th><th>Net</th><th>$/reply</th><th>$/close</th></tr>
+        {% for r in rows %}
+        <tr>
+          <td><strong>{{ r.label }}</strong></td>
+          <td>{{ r.leads }}</td>
+          <td>{{ r.sent }}</td>
+          <td>{{ r.replies }}</td>
+          <td>{{ r.closed_won }}</td>
+          <td class="money">${{ "%.2f"|format(r.revenue) }}</td>
+          <td class="money">${{ "%.2f"|format(r.cost) }}</td>
+          <td class="money">${{ "%.2f"|format(r.net_revenue) }}</td>
+          <td class="money">{% if r.cost_per_reply != None %}${{ "%.2f"|format(r.cost_per_reply) }}{% else %}—{% endif %}</td>
+          <td class="money">{% if r.cost_per_close != None %}${{ "%.2f"|format(r.cost_per_close) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No data in this split yet.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="card muted" style="font-size:13px">
+      Assumptions (config.toml [costs]): Apollo credit ${{ "%.4f"|format(data.assumptions.apollo_credit_price_usd) }} ·
+      scrape ${{ "%.4f"|format(data.assumptions.scrape_price_usd) }} ·
+      operator ${{ "%.2f"|format(data.assumptions.operator_rate_usd_hour) }}/h at
+      {{ "%.0f"|format(data.assumptions.review_minutes_per_lead) }} min/review.
+      Segment/channel Apollo spend is apportioned by lead-count share of total credits used.
+    </div>
+  </div>
+</body>
+</html>

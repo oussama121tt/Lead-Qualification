@@ -9,6 +9,7 @@ This documents the volume layer added so the system can **source, filter and pre
 | **Apollo sourcing** | `apollo_client.py`, `sourcing.py` | Pull leads directly from the Apollo API — search (free) → Stage-0 pre-filter (free) → credit-gated enrich (1 credit/survivor) → insert into a session. No human CSV export. |
 | **Stage-0 pre-filter** | `prefilter.py` | Deterministic rules on FREE Apollo fields (title/company/headcount) drop obvious non-fits — agencies, consultancies, fractional CTOs, enterprise, non-decision-makers — **before any credit or fetch is spent.** Optional cheap Groq pass for ambiguous cases. Conservative: when unsure it KEEPS, never rejects. |
 | **Apollo credit governor** | `apollo_client.py` (`apollo_usage` table) | Persistent monthly credit counter. Blocks any enrichment that would exceed `[apollo].monthly_credit_cap` (default 3600) **before** the call. Records actual usage after. |
+| **SGAI credit governor** | `sgai_client.py` (`sgai_usage` table) | INDEPENDENT monthly cap for the PAID trigger lane — the ONE ScrapeGraphAI web search behind `funding_announced`/`product_hunt` per lead per run, gated on `[triggers].sgai_monthly_credit_cap` (placeholder 1000, 1 nominal credit/search). Separate table + cap from Apollo so one vendor's budget can never throttle the other; `trigger_state` records `apollo_budget_reached` vs `sgai_budget_reached`. |
 | **Saved recipes + yield** | `recipes.py` (`apollo_recipes` table) | Named, reusable Apollo searches, each tracking runs / pulled / qualified / enriched / sent / replies → the UI shows "this recipe yields 85% qualified but 0% replies". Supports your validated finding: run MANY narrow vertical searches, not a few broad ones. |
 | **Do-not-contact registry** | `dnc.py` (`do_not_contact` table) | Email + domain, permanent, checked **on import** (not just export). Auto-populated on every Instantly export and every Gmail send. The fix for the near-miss 22-person re-email. |
 | **Instantly/Smartlead export** | `export.py` (`instantly_csv_string`), `/download/instantly.csv` | Approval-gated CSV with `{{first_line}}` as a custom variable. Only exports leads in "Ready to approve" (or explicitly APPROVED); records every exported lead in the DNC registry. |
@@ -35,6 +36,9 @@ A **dry run** stops after the pre-filter and reports what *would* be enriched �
 monthly_credit_cap = 3600   # hard monthly enrichment cap; 0 = off
 search_page_size = 100      # Apollo max
 max_people_per_run = 500    # safety ceiling per recipe run
+
+[triggers]
+sgai_monthly_credit_cap = 1000  # PAID trigger search lane (1 nominal credit/run); PLACEHOLDER pending real SGAI quota
 
 [prefilter]
 enabled = true
@@ -66,7 +70,12 @@ APOLLO_API_KEY=...          # required for live Apollo calls
 
 ## Tests
 
-21 new offline tests (no API key, no DB server): `prefilter` rules, `dnc` registry + import flagging, Apollo credit governor (blocks over-cap before any HTTP call), Instantly export gating + `{{first_line}}`. Plus a mocked end-to-end sourcing run. Total suite: **51 tests, all green** (`python -m pytest tests -q`).
+Offline test suite (no API key, no DB server) covers the volume layer directly: `prefilter` rules (test_prefilter.py), `dnc` registry + import flagging (test_dnc.py), Apollo credit governor — blocks over-cap before any HTTP call + per-run cost estimate (test_apollo_governor.py, test_sourcing.py), Instantly export gating + `{{first_line}}` (test_instantly_export.py), recipe save/run/counters + outcome recording + versioning (test_recipes.py), send-time DNC gate (test_dnc_send.py), and the DNC-before-enrich guard + mocked end-to-end sourcing run (test_sourcing.py). Total suite: **132 tests, all green** (`python -m pytest tests -q`).
+
+Specific guards worth calling out:
+- **DNC-before-enrich** (test_sourcing.py): a lead on the DNC registry is dropped before `enrich_people` is called, so no enrich credit is spent on it — covered for the partial- and all-DNC cases.
+- **Hard credit cap** (test_sourcing.py, test_apollo_governor.py): enrichment over the monthly cap raises before any HTTP call.
+- **Cost estimate before spend** (test_sourcing.py): a dry-run reports `credits_needed` + current usage while spending zero credits.
 
 ## Honest status
 
