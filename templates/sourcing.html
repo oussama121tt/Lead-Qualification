@@ -78,7 +78,7 @@
         </tr>
         {% endfor %}
       </table>
-      <p class="muted">* Sent/Replies are <strong>manually entered</strong> (Option B) — auto-sync from Apollo analytics isn't wired up yet, so they're updated on demand, not tracked live.</p>
+      <p class="muted">* Sent/Replies per recipe are <strong>manually entered</strong> here. Per-lead outcomes (sent / opened / clicked / replied) sync nightly from Apollo into the <a href="{{ url_for('analytics') }}">Analytics</a> screens, or on demand with the Sync button there.</p>
       {% else %}
       <p class="muted">No recipes yet. Your validated finding: many NARROW vertical searches beat a few broad ones. Save one above.</p>
       {% endif %}

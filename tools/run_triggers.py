@@ -59,6 +59,9 @@ def main() -> int:
     print(f"  due        : {len(due)}")
     print(f"  checked    : {summary['checked']}")
     print(f"  fired      : {summary['fired']}")
+    print(f"  failed     : {summary.get('failed', 0)}")
+    for err in summary.get("errors") or []:
+        print(f"    ! lead {err['lead_id']} {err['company']} — {err['error']}")
     for ev in summary["events"]:
         print(f"    - {ev['trigger']:<20} lead {ev['lead_id']} — {ev['detail']}")
     paused = summary["budget_paused"]

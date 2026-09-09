@@ -1809,8 +1809,11 @@ def analytics_sync():
         flash(f"Analytics sync failed: {e}", "error")
         return redirect(url_for("analytics"))
     flash(f"Analytics sync ({result['month']}): {result['matched']}/{result['messages']} "
-          f"messages matched to leads, {result['replied']} replies, "
+          f"messages matched to leads; {result['opened']} opened, {result['clicked']} clicked, "
+          f"{result['replied']} replied, {result.get('bounced', 0)} bounced; "
           f"{result['unmatched']} unmatched.", "info")
+    for stat, err in (result.get("stats_errors") or {}).items():
+        flash(f"Engagement sweep '{stat}' failed: {err}", "warning")
     return redirect(url_for("analytics"))
 
 

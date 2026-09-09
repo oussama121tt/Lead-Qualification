@@ -137,6 +137,21 @@ class _PgCursor:
     def fetchall(self):
         return [_PgRow(dict(r)) for r in self._cur.fetchall()]
 
+    def fetchmany(self, size=None):
+        rows = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        return [_PgRow(dict(r)) for r in rows]
+
+    def __iter__(self):
+        # sqlite3 cursors are iterable (`for r in conn.execute(...)`), and the
+        # analytics / outcomes code relies on that. Without this the same code
+        # raised "'_PgCursor' object is not iterable" in production only.
+        for r in self._cur:
+            yield _PgRow(dict(r))
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
 
 class _PgConnection:
     """PostgreSQL connection wrapper exposing the execute/fetch API used by the rest of the code."""

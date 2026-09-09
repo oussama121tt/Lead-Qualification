@@ -454,10 +454,13 @@ def test_live_keyboard_playwright():
             page.keyboard.press("e")
             page.fill("#hook-1", "test hook")
             page.keyboard.press("Enter")
-            page.wait_for_function("document.getElementById('lead-counter').textContent.includes('Remaining: 1')")
-            # X → reject
+            # Saving a hook is not a decision: the counter stays at the server's
+            # true undecided count (2) and the card stays active for A/X.
+            page.wait_for_selector("#hook-saved-2:not(:empty)")
+            page.wait_for_function("document.getElementById('lead-counter').textContent.includes('Remaining: 2')")
+            # X → reject lead 2 (with the hook already stored on it)
             page.keyboard.press("x")
-            page.wait_for_function("document.getElementById('lead-counter').textContent.includes('Remaining: 0')")
+            page.wait_for_function("document.getElementById('lead-counter').textContent.includes('Remaining: 1')")
             browser.close()
 
         # Verify DB state

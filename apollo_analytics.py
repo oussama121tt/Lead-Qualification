@@ -245,8 +245,13 @@ def _fold_into_outcomes(conn, rows: list[dict]) -> tuple[int, int]:
     return len(seen), len(rows) - len(seen)
 
 
+# Engagement states the search endpoint can filter on (emailer_message_stats[]).
+ENGAGEMENT_STATS = ("opened", "clicked", "replied", "bounced")
+
+
 def sync_analytics_report(conn, *, key: str | None = None, days: int = 7,
-                          max_emails: int = 5000, _get=_get) -> dict:
+                          max_emails: int = 5000, _get=_get,
+                          stats=ENGAGEMENT_STATS) -> dict:
     """Task 13 nightly entrypoint: pull Apollo per-message outreach outcomes
     for the last `days`, save raw rows to apollo_analytics_sync_report, then
     fold them into lead_outcomes by email.
@@ -287,6 +292,15 @@ def sync_analytics_report(conn, *, key: str | None = None, days: int = 7,
             break
         page += 1
 
+    # Engagement enrichment. The plain search payload carries NO opened /
+    # clicked fields (verified live: only `replied` is present, and only on
+    # replied messages), so without this pass opens and clicks would stay 0
+    # forever. The same endpoint filtered by emailer_message_stats[] returns
+    # exactly the messages in each engagement state; we sweep each state and
+    # flag the rows by message id. A failing sweep is reported, never hidden.
+    stats_errors = _enrich_engagement(rows, key=api_key, _get=_get,
+                                      max_pages=max(1, max_emails // 100),
+                                      stats=stats)
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     _save_report_rows(conn, month, rows, raw_messages)
     matched, unmatched = _fold_into_outcomes(conn, rows)
@@ -298,8 +312,46 @@ def sync_analytics_report(conn, *, key: str | None = None, days: int = 7,
         "opened": sum(1 for r in rows if r["opened"]),
         "clicked": sum(1 for r in rows if r["clicked"]),
         "replied": sum(1 for r in rows if r["replied"]),
+        "bounced": sum(1 for r in rows if r["status"] == "bounced"),
+        "stats_errors": stats_errors,
         "month": month,
     }
+
+
+def _enrich_engagement(rows: list[dict], *, key: str, _get=_get, max_pages: int = 50,
+                       stats=ENGAGEMENT_STATS) -> dict:
+    """Flags `rows` (in place) with opened/clicked/replied/bounced by sweeping
+    the stats-filtered search for each state. Returns {stat: error_message}
+    for sweeps that failed (empty dict when every sweep succeeded)."""
+    if not rows or not stats:
+        return {}
+    by_id = {r["apollo_message_id"]: r for r in rows if r.get("apollo_message_id")}
+    errors: dict[str, str] = {}
+    for stat in stats:
+        page = 1
+        try:
+            while page <= max_pages:
+                data = search_outreach_emails(page=page, per_page=100, statuses=[stat],
+                                              key=key, _get=_get)
+                messages = data.get("emailer_messages") or []
+                if not messages:
+                    break
+                for m in messages:
+                    row = by_id.get(m.get("id"))
+                    if row is None:
+                        continue
+                    if stat == "bounced":
+                        row["status"] = "bounced"
+                    else:
+                        row[stat] = 1
+                pagination = data.get("pagination") or {}
+                total_pages = pagination.get("total_pages")
+                if total_pages and page >= int(total_pages):
+                    break
+                page += 1
+        except Exception as exc:  # one failed sweep must not lose the others
+            errors[stat] = f"{exc.__class__.__name__}: {exc}"[:200]
+    return errors
 
 
 # ---------------------------------------------------------------------------

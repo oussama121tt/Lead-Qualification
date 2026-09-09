@@ -34,6 +34,7 @@ the real implementations and can be swapped in tests.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -154,6 +155,9 @@ def _default_linkedin_harvest(linkedin_url: str, cfg_linkedin, conn) -> dict:
 # ---------------------------------------------------------------------------
 
 
+log = logging.getLogger(__name__)
+
+
 class _Ctx:
     """Per-run shared state + injectable seams."""
 
@@ -231,8 +235,11 @@ class _Ctx:
         Returns the search results dict, or None when paused by the cap.
         """
         try:
+            # needed=1: this search bills one nominal credit, so at exactly
+            # the cap the lane must pause instead of overshooting by one.
             sgai_client.check_credit_budget(
-                self.conn, 0, self.cfg.triggers.sgai_monthly_credit_cap
+                self.conn, 0 if self._sgai_tolled else 1,
+                self.cfg.triggers.sgai_monthly_credit_cap,
             )
         except sgai_client.SgaiCreditCapReached:
             self.budget_flags["sgai"] = True
@@ -1030,13 +1037,22 @@ def _key_for(check) -> str:
 def run_due_leads(conn, leads, cfg, *, now=None, **seams) -> dict:
     """Runs the tier-appropriate checks on all due leads; returns a summary."""
     summary = {
-        "checked": 0, "fired": 0, "events": [],
+        "checked": 0, "fired": 0, "failed": 0, "events": [], "errors": [],
         "budget_paused": {"apollo": 0, "sgai": 0},
     }
     for lead in leads:
         try:
             events = run_checks_for_lead(conn, lead, cfg, now=now, **seams)
-        except Exception:
+        except Exception as exc:
+            # Per-lead isolation, but never silent: the failure is counted and
+            # named in the summary so the scheduler log shows WHICH lead broke.
+            summary["failed"] += 1
+            summary["errors"].append({
+                "lead_id": lead.get("id"),
+                "company": lead.get("company_name") or lead.get("website_url") or "",
+                "error": f"{exc.__class__.__name__}: {exc}"[:300],
+            })
+            log.warning("trigger run failed for lead %s: %s", lead.get("id"), exc)
             continue
         summary["checked"] += 1
         if events:

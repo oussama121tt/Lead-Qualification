@@ -42,7 +42,9 @@ def main() -> int:
     print(f"[outcomes-sync] {result['month']}: {result['messages']} messages, "
           f"{result['matched']} matched to leads, {result['replied']} replies, "
           f"{result['opened']} opened, {result['clicked']} clicked, "
-          f"{result['unmatched']} unmatched.")
+          f"{result.get('bounced', 0)} bounced, {result['unmatched']} unmatched.")
+    for stat, err in (result.get("stats_errors") or {}).items():
+        print(f"[outcomes-sync] WARNING engagement sweep '{stat}' failed: {err}")
     return 0
 
 

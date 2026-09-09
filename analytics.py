@@ -49,7 +49,11 @@ def _flag(row: dict, col: str) -> int:
 
 
 def _is_sent(row: dict) -> bool:
-    return bool(row.get("outcome_sent_at") or row.get("email_sent_at"))
+    # A reply implies a send: a manually entered outcome with replied=1 but no
+    # sent date must not count as a reply-without-send (that inflates the
+    # baseline reply rate and makes a signal's rate exceed 100%).
+    return bool(row.get("outcome_sent_at") or row.get("email_sent_at")
+                or _flag(row, "replied") == 1)
 
 
 def _replied(row: dict) -> bool:

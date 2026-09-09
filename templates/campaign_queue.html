@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review queue — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; margin-bottom: 16px; background: var(--surface-1, #fff); }
+    .muted { color: var(--text-muted, #888); font-size: 13px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #ccc); background: var(--surface-2, #f6f6f6); cursor: pointer; text-decoration: none; color: inherit; display: inline-block; }
+    .btn-primary { background: #00ABE4; color: #fff; border-color: #00ABE4; }
+    .btn-danger { background: #b00020; color: #fff; border-color: #b00020; }
+    kbd { display: inline-block; min-width: 22px; text-align: center; padding: 2px 6px; border: 1px solid var(--border, #bbb); border-bottom-width: 3px; border-radius: 6px; background: var(--surface-2, #f6f6f6); font: 600 12px/1.4 ui-monospace, monospace; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .q-card { display: none; }
+    .q-card.active { display: block; border-color: #00ABE4; box-shadow: 0 0 0 3px rgba(0,171,228,.15); }
+    .q-card.done { opacity: .5; }
+    .q-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+    .q-company { font-size: 22px; font-weight: 700; margin: 0; }
+    .q-person { font-size: 15px; margin: 2px 0 0; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; background: var(--surface-2, #eef6fb); border: 1px solid var(--border, #d6e7f0); margin-right: 6px; }
+    .pill-trigger { background: #fff4e0; border-color: #f0c070; }
+    .hooks { margin: 12px 0 0; padding-left: 18px; }
+    .hooks li { margin: 4px 0; }
+    .hook-box { margin-top: 12px; }
+    .hook-box input { width: 100%; padding: 8px; border: 1px solid var(--border, #ccc); border-radius: 8px; font-size: 14px; }
+    .hook-saved { color: #2e7d32; font-size: 13px; }
+    .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .decided { font-weight: 600; }
+    .decided.APPROVED { color: #2e7d32; }
+    .decided.REJECTED { color: #b00020; }
+    #status-line { min-height: 18px; margin-bottom: 8px; }
+    .empty { text-align: center; padding: 40px 0; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('campaign_view', campaign_id=camp.id) }}">Campaign #{{ camp.id }}</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a></p>
+    <h1>Review queue</h1>
+
+    <div class="card toolbar">
+      <div>
+        <strong id="lead-counter">Remaining: {{ total }}</strong>
+        <span class="muted" id="position"></span>
+      </div>
+      <div class="muted">
+        <kbd>A</kbd> approve &nbsp; <kbd>X</kbd> reject &nbsp; <kbd>→</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>E</kbd> edit hook &nbsp; <kbd>Enter</kbd> save hook &nbsp; <kbd>Esc</kbd> cancel
+      </div>
+    </div>
+    <div class="muted" id="status-line"></div>
+
+    {% if cards %}
+      {% for c in cards %}
+      <div class="card q-card" id="card-{{ c.id }}" data-lead-id="{{ c.id }}">
+        <div class="q-head">
+          <div>
+            <p class="q-company">{{ c.company or '(no company)' }}</p>
+            <p class="q-person">{{ c.name }}{% if c.title %} · {{ c.title }}{% endif %}{% if c.email %} · <span class="muted">{{ c.email }}</span>{% endif %}</p>
+          </div>
+          <div>
+            {% if c.segment %}<span class="pill">{{ c.segment }}</span>{% endif %}
+            {% if c.offer %}<span class="pill">offer: {{ c.offer }}</span>{% endif %}
+            {% if c.trigger_hook %}<span class="pill pill-trigger" title="Trigger monitoring event">⚡ {{ c.trigger_hook }}</span>{% endif %}
+          </div>
+        </div>
+        {% if c.website %}<p class="muted" style="margin:6px 0 0"><a href="{{ c.website }}" target="_blank" rel="noopener">{{ c.website }}</a></p>{% endif %}
+
+        {% if c.hooks %}
+        <ul class="hooks">
+          {% for h in c.hooks %}<li>{{ h }}</li>{% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted" style="margin-top:12px">No personalization hooks found by the scorer.</p>
+        {% endif %}
+
+        <div class="hook-box">
+          <label class="muted" for="hook-{{ c.id }}">Hook override (used instead of the hooks above when drafting the email)</label>
+          <input type="text" id="hook-{{ c.id }}" class="hook-input" value="{{ c.hook_override }}" placeholder="Press E to write your own opener hook, Enter to save">
+          <span class="hook-saved" id="hook-saved-{{ c.id }}"></span>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-primary" type="button" onclick="decide('APPROVED')">Approve (A)</button>
+          <button class="btn btn-danger" type="button" onclick="decide('REJECTED')">Reject (X)</button>
+          <button class="btn" type="button" onclick="move(1)">Skip (→)</button>
+          <span class="decided" id="decided-{{ c.id }}"></span>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="card empty">
+        <p>Nothing left to review.</p>
+        <p><a class="btn btn-primary" href="{{ url_for('campaign_view', campaign_id=camp.id) }}">Back to campaign — ship the approved leads</a></p>
+      </div>
+    {% endif %}
+  </div>
+
+  <script>
+    // Server-rendered queue. Every decision is ONE POST to the current URL
+    // (window.location.href), so the page never reloads between leads.
+    var QUEUE = {{ cards | map(attribute='id') | list | tojson }};
+    var idx = 0;
+    var decided = {};            // lead_id -> 'APPROVED' | 'REJECTED'
+    var editing = false;
+    var busy = false;
+
+    function card(i) { return document.getElementById('card-' + QUEUE[i]); }
+    function current() { return QUEUE[idx]; }
+
+    function render() {
+      for (var i = 0; i < QUEUE.length; i++) {
+        var el = card(i);
+        if (!el) continue;
+        el.classList.toggle('active', i === idx);
+        el.classList.toggle('done', !!decided[QUEUE[i]]);
+      }
+      var pos = document.getElementById('position');
+      if (pos) pos.textContent = QUEUE.length ? '(' + (idx + 1) + ' of ' + QUEUE.length + ')' : '';
+    }
+
+    function setCounter(n) {
+      document.getElementById('lead-counter').textContent = 'Remaining: ' + n;
+    }
+
+    function status(msg, isError) {
+      var el = document.getElementById('status-line');
+      el.textContent = msg || '';
+      el.style.color = isError ? '#b00020' : '';
+    }
+
+    function nextUndecided(from, step) {
+      // Walk in `step` direction to the next lead without a decision; if all
+      // are decided, stay where we are.
+      var n = QUEUE.length;
+      for (var k = 1; k <= n; k++) {
+        var j = ((from + step * k) % n + n) % n;
+        if (!decided[QUEUE[j]]) return j;
+      }
+      return from;
+    }
+
+    function move(step) {
+      if (!QUEUE.length) return;
+      idx = nextUndecided(idx, step);
+      render();
+    }
+
+    function post(fields) {
+      var body = new URLSearchParams();
+      Object.keys(fields).forEach(function (k) { body.append(k, fields[k]); });
+      return fetch(window.location.href, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+        body: body.toString(),
+        credentials: 'same-origin'
+      }).then(function (r) { return r.json(); });
+    }
+
+    function decide(decision) {
+      if (busy || !QUEUE.length) return;
+      var leadId = current();
+      var input = document.getElementById('hook-' + leadId);
+      var hook = input ? input.value : '';
+      busy = true;
+      status('Saving...');
+      post({ lead_id: leadId, decision: decision, hook: hook.trim() })
+        .then(function (data) {
+          busy = false;
+          if (!data.ok) { status(data.error || 'Save failed', true); return; }
+          decided[leadId] = decision;
+          var tag = document.getElementById('decided-' + leadId);
+          if (tag) { tag.textContent = decision; tag.className = 'decided ' + decision; }
+          setCounter(data.remaining);
+          status(data.remaining === 0 ? 'Queue finished. Go back to the campaign to ship the approved leads.' : '');
+          move(1);
+        })
+        .catch(function () { busy = false; status('Network error. Decision not saved.', true); });
+    }
+
+    function saveHook() {
+      var leadId = current();
+      var input = document.getElementById('hook-' + leadId);
+      if (!input) return;
+      var hook = input.value.trim();
+      busy = true;
+      post({ lead_id: leadId, hook: hook })
+        .then(function (data) {
+          busy = false;
+          if (!data.ok) { status(data.error || 'Hook not saved', true); return; }
+          var saved = document.getElementById('hook-saved-' + leadId);
+          if (saved) saved.textContent = hook ? 'Hook saved. Press A to approve with it.' : 'Hook cleared.';
+          setCounter(data.remaining);
+          stopEditing();
+        })
+        .catch(function () { busy = false; status('Network error. Hook not saved.', true); });
+    }
+
+    function startEditing() {
+      var input = document.getElementById('hook-' + current());
+      if (!input) return;
+      editing = true;
+      input.focus();
+      input.select();
+    }
+
+    function stopEditing() {
+      editing = false;
+      var input = document.getElementById('hook-' + current());
+      if (input) input.blur();
+    }
+
+    document.addEventListener('keydown', function (ev) {
+      if (!QUEUE.length) return;
+      if (editing) {
+        if (ev.key === 'Enter') { ev.preventDefault(); saveHook(); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); stopEditing(); }
+        return;
+      }
+      if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
+      if (ev.key === 'a' || ev.key === 'A') { ev.preventDefault(); decide('APPROVED'); }
+      else if (ev.key === 'x' || ev.key === 'X') { ev.preventDefault(); decide('REJECTED'); }
+      else if (ev.key === 'e' || ev.key === 'E') { ev.preventDefault(); startEditing(); }
+      else if (ev.key === 'ArrowRight') { ev.preventDefault(); move(1); }
+      else if (ev.key === 'ArrowLeft') { ev.preventDefault(); move(-1); }
+    });
+
+    // Clicking into a hook input enters edit mode too (mouse users).
+    document.querySelectorAll('.hook-input').forEach(function (input) {
+      input.addEventListener('focus', function () { editing = true; });
+      input.addEventListener('blur', function () { editing = false; });
+    });
+
+    render();
+  </script>
+</body>
+</html>
