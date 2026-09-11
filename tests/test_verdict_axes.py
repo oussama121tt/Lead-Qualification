@@ -72,3 +72,17 @@ def test_apollo_sequences_config_maps_offers():
     assert seq.sequence_for("general_audit") == seq.general_audit
     assert seq.sequence_for("pipeline") is None               # not built yet -> never sent
     assert seq.sequence_for("none") is None
+
+
+def test_ai_built_with_unknown_founder_is_ai_solo_founder_and_keeps_model_confidence():
+    v = scorer._validate_verdict(_v(founder_profile="unknown", build_evidence="ai_built", confidence=0.85,
+                                    needs_human_review=False))
+    assert v["segment"] == "ai_solo_founder" and v["recommended_offer"] == "ai_audit"
+    assert v["confidence"] == 0.85 and v["needs_human_review"] is False
+    v2 = scorer._validate_verdict(_v(founder_profile="unknown", build_evidence="ai_built", confidence=0.6))
+    assert v2["segment"] == "ai_solo_founder" and v2["needs_human_review"] is True
+
+
+def test_technical_founder_beats_ai_built_when_both_present():
+    v = scorer._validate_verdict(_v(founder_profile="technical", build_evidence="ai_built", confidence=0.9))
+    assert v["segment"] == "technical_founder"

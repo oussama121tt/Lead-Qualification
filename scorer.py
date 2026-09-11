@@ -86,11 +86,12 @@ the founder non_technical; a career of engineering roles is sufficient to judge 
 even when the website says nothing; semi_technical for product, data or no-code builders; unknown
 only when history is absent. build_evidence: ai_built when a STRONG or MEDIUM AI-build signal
 exists, hand_built when a technical team or engineering hires are evidenced, otherwise unknown.
-Derive the segment from them: non_technical + ai_built is ai_solo_founder with high confidence;
-non_technical + unknown is still ai_solo_founder with confidence 0.5 to 0.7 (the founder question
-is settled, only the build method is open), never unclear; technical is technical_founder; an
-agency or studio that is scaling is small_agency_scaling. Use unclear only when founder_profile
-is unknown AND the site gives no usable evidence. Decide in order: enough evidence,
+Derive the segment from them: ai_built with a non_technical, semi_technical or unknown founder is
+ai_solo_founder, and its confidence follows the strength of the build signal (STRONG signals
+justify 0.8 or more); non_technical + unknown build is still ai_solo_founder with confidence 0.5
+to 0.7 (the founder question is settled, only the build method is open), never unclear;
+technical is technical_founder; an agency or studio that is scaling is small_agency_scaling. Use
+unclear only when BOTH founder_profile and build_evidence are unknown. Decide in order: enough evidence,
 founder_profile, build_evidence, scaling agency, too_big, wrong_field, otherwise unclear.
 Identify sensitive categories only when the product is evidenced to HANDLE that data: a patient
 portal, record storage, uploads, telehealth, payments, identity checks, employee records. Topical
@@ -360,19 +361,30 @@ def _validate_verdict(verdict: dict) -> dict:
     # Derivation rule, enforced in code: a settled founder question must not
     # collapse into "unclear" just because the build method is unknown.
     derived_from = None
-    if verdict.get("segment") == "unclear" and verdict["founder_profile"] == "non_technical":
-        verdict["segment"] = "ai_solo_founder"
-        verdict["recommended_offer"] = "ai_audit"
-        derived_from = "non_technical"
-    elif verdict.get("segment") == "unclear" and verdict["founder_profile"] == "technical":
+    cap_band = False
+    if verdict.get("segment") == "unclear" and verdict["founder_profile"] == "technical":
         verdict["segment"] = "technical_founder"
         verdict["recommended_offer"] = "general_audit"
-        derived_from = "technical"
+        derived_from, cap_band = "technical", True
+    elif verdict.get("segment") == "unclear" and verdict["build_evidence"] == "ai_built":
+        # Build settled by a STRONG/MEDIUM signal, founder not technical: that
+        # IS the ai_solo_founder profile. Confidence follows the build signal,
+        # so the model's own number stands (below 0.7 it is reviewed anyway).
+        verdict["segment"] = "ai_solo_founder"
+        verdict["recommended_offer"] = "ai_audit"
+        derived_from = "ai_built"
+    elif verdict.get("segment") == "unclear" and verdict["founder_profile"] == "non_technical":
+        verdict["segment"] = "ai_solo_founder"
+        verdict["recommended_offer"] = "ai_audit"
+        derived_from, cap_band = "non_technical", True
     if derived_from:
         conf = float(verdict.get("confidence") or 0.0)
-        # Founder settled, build open: honest band is 0.5-0.7 -> human review.
-        verdict["confidence"] = round(min(max(conf, 0.5), 0.7), 2)
-        verdict["needs_human_review"] = True
+        if cap_band:
+            # Founder settled, build open: honest band is 0.5-0.7 -> human review.
+            verdict["confidence"] = round(min(max(conf, 0.5), 0.7), 2)
+            verdict["needs_human_review"] = True
+        elif conf < CONFIDENCE_THRESHOLD:
+            verdict["needs_human_review"] = True
         note = f"segment_derived_from_founder_profile:{derived_from}"
         existing = verdict.get("disqualify_reason")
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
