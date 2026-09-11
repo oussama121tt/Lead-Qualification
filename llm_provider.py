@@ -144,27 +144,39 @@ class AnthropicProvider(LLMProvider):
     def __init__(self):
         from anthropic import Anthropic
 
-        self.client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        # Model named by the original spec (FR: cost/quality balance).
-        self.model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        self.client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=3)
+        # Current generation by default (Sonnet 5: $2/$10 per MTok). Override
+        # with ANTHROPIC_MODEL=claude-opus-5 for the strongest verdicts.
+        self.model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+        # Reasoning depth for the verdict: low|medium|high (adaptive thinking).
+        self.effort = os.environ.get("ANTHROPIC_EFFORT", "medium")
 
     def generate_json(self, prompt: str, *, system: str | None = None,
                       temperature: float | None = None,
                       max_tokens: int = 1024) -> tuple[dict, dict]:
+        # Claude 4.6+ / 5 family: `temperature` is rejected (400) and thinking
+        # is adaptive; thinking tokens count against max_tokens, so give the
+        # verdict room. The system prompt is stable across leads -> cache it.
         kwargs = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            "max_tokens": max(int(max_tokens or 0), 8000),
             "messages": [{"role": "user", "content": prompt}],
+            "thinking": {"type": "adaptive"},
+            "extra_body": {"output_config": {"effort": self.effort}},
         }
         if system:
-            kwargs["system"] = system
-        if temperature is not None:
-            kwargs["temperature"] = temperature
+            kwargs["system"] = [{"type": "text", "text": system,
+                                 "cache_control": {"type": "ephemeral"}}]
         response = self.client.messages.create(**kwargs)
+        if getattr(response, "stop_reason", None) == "refusal":
+            raise RuntimeError(f"anthropic refusal: {getattr(response, 'stop_details', None)}")
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise RuntimeError("anthropic response truncated at max_tokens")
         text = next((b.text for b in response.content if b.type == "text"), "")
         usage = getattr(response, "usage", None)
         meta = self._meta(getattr(usage, "input_tokens", 0),
                           getattr(usage, "output_tokens", 0))
+        meta["cache_read_input_tokens"] = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         return _parse_json_text(text), meta
 
 

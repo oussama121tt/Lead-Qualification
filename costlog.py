@@ -18,6 +18,8 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b": (0.15, 0.60),   # Groq list price; verify on the pricing page if it changes
     # Anthropic (first-party API rates)
     "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-fable-5-1": (10.00, 50.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-opus-5": (5.00, 25.00),
 }
