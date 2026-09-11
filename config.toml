@@ -142,6 +142,8 @@ min_headcount = 0
 #   "high_only"  = ONLY leads with confidence >= min_confidence (saves SGAI credits
 #                  on broad sweeps; the work order for bulk sourcing asks for this)
 #   "off"        = never
+# off | high_only (targets at >= min_confidence) | targets (every target-segment lead,
+# full web + LinkedIn evidence; the "prove every persona" mode) | default (review/low-conf rule)
 mode = "high_only"
 min_confidence = 0.8
 

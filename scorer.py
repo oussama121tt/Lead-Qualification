@@ -101,8 +101,8 @@ location, employee_data, none. Set sensitive_data_categories to a list of those 
 data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none.
 Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
 or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
-default builder subdomain, or shrinking headcount in budget_blockers. A strong blocker caps the
-budget signal at weak.
+default builder subdomain, or shrinking headcount in budget_blockers. Budget is informational:
+it never changes the segment, the confidence or needs_human_review.
 
 Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 {
@@ -427,13 +427,12 @@ def _validate_verdict(verdict: dict) -> dict:
         value = verdict.get(field, [])
         verdict[field] = value if isinstance(value, list) else []
 
-    # A recorded budget blocker (nonprofit funding, student founder, side
-    # project, default builder subdomain, shrinking headcount) means the
-    # commercial case is uncertain even when the segment is clear: the prompt
-    # asks for review, the golden set expects it, so enforce it in code.
-    if verdict["budget_blockers"]:
-        verdict["needs_human_review"] = True
-        verdict["budget_signal"] = "weak" if verdict["budget_signal"] in ("strong", "moderate") else verdict["budget_signal"]
+    # Budget is INFORMATIONAL at this stage (owner decision 2026-09-11): the
+    # offer targets very early founders, so a weak budget today is expected
+    # and must not push a good-fit lead into the review queue. budget_signal,
+    # budget_evidence and budget_blockers are still recorded for the sheet
+    # and for later attribution; they never change segment, confidence or
+    # needs_human_review.
 
     if forced_correction:
         try:

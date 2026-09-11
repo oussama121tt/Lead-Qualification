@@ -88,15 +88,14 @@ def test_technical_founder_beats_ai_built_when_both_present():
     assert v["segment"] == "technical_founder"
 
 
-def test_budget_blocker_forces_review_and_caps_signal():
+def test_budget_is_informational_only():
+    """Owner decision 2026-09-11: very early founders are the target, so a weak
+    budget or a blocker is recorded but never forces review or caps anything."""
     v = scorer._validate_verdict(_v(segment="ai_solo_founder", recommended_offer="ai_audit", confidence=0.85,
                                     needs_human_review=False, budget_signal="strong",
                                     budget_blockers=["student founder"]))
-    assert v["needs_human_review"] is True
-    assert v["budget_signal"] == "weak"
-    clean = scorer._validate_verdict(_v(segment="ai_solo_founder", recommended_offer="ai_audit", confidence=0.85,
-                                        needs_human_review=False, budget_signal="strong", budget_blockers=[]))
-    assert clean["needs_human_review"] is False and clean["budget_signal"] == "strong"
+    assert v["needs_human_review"] is False
+    assert v["budget_signal"] == "strong" and v["budget_blockers"] == ["student founder"]
 
 
 def test_evidence_quote_from_employment_history_is_grounded(monkeypatch):

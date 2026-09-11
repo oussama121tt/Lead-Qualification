@@ -431,6 +431,14 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
                 verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
                 and float(verdict.get("confidence") or 0.0) >= esc.min_confidence
             )
+        elif esc.mode == "targets":
+            # Full-evidence rule: every lead that pass 1 places in a target
+            # segment (any confidence) gets web evidence and, when the founder
+            # lane is enabled, the founder's own LinkedIn posts. Rejects and
+            # unclear leads never spend credits.
+            should_escalate_web = (
+                verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+            )
         else:
             should_escalate_web = (
                 verdict.get("needs_human_review")
@@ -633,6 +641,8 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
                 if esc.mode == "high_only":
                     qualifies = (verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
                                  and float(verdict.get("confidence") or 0.0) >= esc.min_confidence)
+                elif esc.mode == "targets":
+                    qualifies = verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
                 else:
                     qualifies = bool(verdict.get("needs_human_review")) or float(verdict.get("confidence") or 0.0) < CONFIDENCE_THRESHOLD
                 if qualifies:
