@@ -33,6 +33,7 @@ import pipeline as pipelinemod
 import recipes as recipesmod
 import sourcing as sourcingmod
 import analytics as analyticsmod
+import ops as opsmod
 import apollo_analytics as apollo_analyticsmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
@@ -1853,6 +1854,22 @@ def analytics_set_channel(session_id: int):
         dbmod.set_session_channel(conn, session_id, channel)
     flash(f"Session #{session_id} channel set to {channel}.", "info")
     return redirect(url_for("analytics_channels"))
+
+
+@app.route("/ops", methods=["GET"])
+def ops_view():
+    """Operations dashboard: what is scoring right now and how fast, verdict
+    quality, LLM spend, Apollo / ScrapeGraphAI balances, outreach state."""
+    with open_db() as conn:
+        snap = opsmod.snapshot(conn, external=request.args.get("external", "1") != "0")
+    return render_template("ops.html", s=snap)
+
+
+@app.route("/ops.json", methods=["GET"])
+def ops_json():
+    with open_db() as conn:
+        snap = opsmod.snapshot(conn, external=request.args.get("external", "1") != "0")
+    return jsonify(snap)
 
 
 @app.route("/capacity", methods=["GET"])

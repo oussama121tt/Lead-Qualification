@@ -19,7 +19,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('history') }}">History</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics') }}">Analytics</a></p>
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('history') }}">History</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics') }}">Analytics</a> · <a href="{{ url_for('ops_view') }}">Ops</a></p>
     <h1>Apollo sourcing</h1>
 
     {% with messages = get_flashed_messages(with_categories=true) %}

@@ -29,3 +29,19 @@ def test_sending_config_loaded():
     # Default sequence: 3 touches at 0/3/7 days.
     assert cfg.sending.sequence_offsets == (0, 3, 7)
     assert len(cfg.sending.sequence_offsets) == 3
+
+
+def test_founder_lane_env_override(monkeypatch):
+    import runconfig
+    def fresh():
+        cc = getattr(runconfig.load_config, "cache_clear", None)
+        if cc:
+            cc()
+        runconfig._cached = None
+        return runconfig.load_config(fast=False)
+    monkeypatch.delenv("LINKEDIN_FOUNDER_LANE", raising=False)
+    assert fresh().linkedin.founder_lane_enabled is True
+    monkeypatch.setenv("LINKEDIN_FOUNDER_LANE", "0")
+    assert fresh().linkedin.founder_lane_enabled is False
+    monkeypatch.delenv("LINKEDIN_FOUNDER_LANE", raising=False)
+    fresh()

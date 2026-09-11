@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
+  <title>Ops — Lead Qualification Engine</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    .shell { max-width: 1180px; margin: 0 auto; padding: 24px 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 16px; background: var(--surface-1, #fff); }
+    .card h3 { margin: 0 0 10px; font-size: 15px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border, #eee); vertical-align: top; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--text-muted, #888); font-size: 12px; }
+    .big { font-size: 28px; font-weight: 700; line-height: 1.1; }
+    .kpi { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
+    .kpi div { min-width: 110px; }
+    .kpi .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted, #888); }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .on { background: #2e7d32; box-shadow: 0 0 0 4px rgba(46,125,50,.15); }
+    .off { background: #9e9e9e; }
+    .warn { color: #b26a00; }
+    .bad { color: #b00020; }
+    .bar { height: 8px; background: var(--surface-2, #eee); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+    .bar > i { display: block; height: 100%; background: #00ABE4; }
+    .bar > i.low { background: #b26a00; }
+    .bar > i.empty { background: #b00020; }
+    .toolbar { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+    code { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('analytics') }}">Analytics</a> · <a href="{{ url_for('analytics_costs') }}">Costs</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('ops_json') }}">JSON</a></p>
+    <div class="toolbar">
+      <h1 style="margin:0">Operations</h1>
+      <span class="muted">snapshot {{ s.generated_at }} UTC · auto-refresh 30 s · vendor balances cached 60 s</span>
+    </div>
+
+    {% set p = s.pipeline %}
+    <div class="card" style="margin:16px 0">
+      <h3><span class="dot {{ 'on' if p.active else 'off' }}"></span>{{ 'Scoring is running' if p.active else 'Nothing scoring right now' }}</h3>
+      <div class="kpi">
+        <div><div class="lbl">Verdicts, last 5 min</div><div class="big">{{ p.scored_5m }}</div></div>
+        <div><div class="lbl">Per minute</div><div class="big">{{ p.rate_per_min }}</div></div>
+        <div><div class="lbl">Last hour</div><div class="big">{{ p.scored_1h }}</div></div>
+        <div><div class="lbl">Still pending</div><div class="big">{{ p.pending }}</div></div>
+        <div><div class="lbl">ETA</div><div class="big">{% if p.eta_min is not none %}{{ p.eta_min }} min{% else %}—{% endif %}</div></div>
+        <div><div class="lbl">LLM calls, last hour</div><div class="big">{{ s.llm.calls_1h }}</div></div>
+      </div>
+      {% if p.running_sessions %}
+      <div class="muted">Sessions marked running: {% for r in p.running_sessions %}#{{ r.id }} {{ r.label or '' }}{{ ', ' if not loop.last }}{% endfor %}</div>
+      {% endif %}
+      <table style="margin-top:8px">
+        <tr><th>Latest verdicts</th><th>Segment</th><th class="num">Conf</th><th>At</th></tr>
+        {% for r in p.last %}
+        <tr><td>{{ (r.company_name or '')[:40] }}</td><td>{{ r.segment }}</td><td class="num">{{ r.confidence }}</td><td class="muted">{{ (r.scored_at or '')[:19] }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Lead bank</h3>
+        <div class="kpi">
+          <div><div class="lbl">Total</div><div class="big">{{ p.total }}</div></div>
+          <div><div class="lbl">Duplicates / DNC</div><div class="big">{{ p.duplicates }}</div></div>
+        </div>
+        <table>
+          {% for st, n in p.by_status|dictsort(by='value', reverse=true) %}
+          <tr><td>{{ st }}</td><td class="num">{{ n }}</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      {% set q = s.quality %}
+      <div class="card">
+        <h3>Verdict quality (latest per lead)</h3>
+        <table>
+          <tr><th>Segment</th><th class="num">Leads</th></tr>
+          {% for k, n in q.segment|dictsort(by='value', reverse=true) %}
+          <tr><td>{{ k }}</td><td class="num">{{ n }}</td></tr>
+          {% endfor %}
+        </table>
+        <table style="margin-top:8px">
+          <tr><th>Founder</th><th class="num"></th><th>Build</th><th class="num"></th></tr>
+          {% set fps = q.founder_profile|dictsort(by='value', reverse=true) %}
+          {% set bes = q.build_evidence|dictsort(by='value', reverse=true) %}
+          {% for i in range([fps|length, bes|length]|max) %}
+          <tr>
+            <td>{{ fps[i][0] if i < fps|length else '' }}</td><td class="num">{{ fps[i][1] if i < fps|length else '' }}</td>
+            <td>{{ bes[i][0] if i < bes|length else '' }}</td><td class="num">{{ bes[i][1] if i < bes|length else '' }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        <div class="muted" style="margin-top:8px">Needs human review: <strong>{{ q.needs_review }}</strong> · verdicts that lost a quote to the grounding guard, last hour: <strong class="{{ 'warn' if q.grounding_losses_1h else '' }}">{{ q.grounding_losses_1h }}</strong></div>
+      </div>
+
+      {% set v = s.vendors %}
+      <div class="card">
+        <h3>Apollo credits</h3>
+        {% if v.apollo and not v.apollo.error %}
+        {% set left = v.apollo.left or 0 %}{% set lim = v.apollo.limit or 1 %}
+        <div class="big">{{ left }} <span class="muted" style="font-size:14px">of {{ v.apollo.limit }} left this cycle</span></div>
+        <div class="bar"><i class="{{ 'empty' if left == 0 else ('low' if left < lim * 0.15 else '') }}" style="width: {{ (100 * left / lim)|round(1) }}%"></i></div>
+        <div class="muted" style="margin-top:6px">Account consumed: {{ v.apollo.consumed }} · spent by this system this month: {{ v.apollo_used_here }} (governor cap in config.toml)</div>
+        {% else %}
+        <div class="bad">Balance unavailable: {{ v.apollo.error if v.apollo else 'not fetched' }}</div>
+        <div class="muted">Spent by this system this month: {{ v.apollo_used_here }}</div>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h3>ScrapeGraphAI credits ({{ v.sgai.n_keys if v.sgai and not v.sgai.error else '?' }} keys)</h3>
+        {% if v.sgai and not v.sgai.error %}
+        <div class="big">{{ v.sgai.total_remaining }} <span class="muted" style="font-size:14px">remaining across the ring</span></div>
+        <table style="margin-top:6px">
+          <tr><th>Key</th><th class="num">Remaining</th><th class="num">Used</th><th>Plan</th></tr>
+          {% for k in v.sgai.per_key %}
+          <tr>
+            <td>#{{ k.n }} …{{ k.tail }}</td>
+            <td class="num {{ 'bad' if k.remaining == 0 else ('warn' if k.remaining is not none and k.remaining < 50 else '') }}">{{ k.remaining if k.remaining is not none else k.error }}</td>
+            <td class="num">{{ k.used if k.used is not none else '' }}</td><td class="muted">{{ k.plan or '' }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        <div class="muted" style="margin-top:6px">Trigger-lane searches billed this month: {{ v.sgai_used_here }}</div>
+        {% else %}
+        <div class="bad">Balances unavailable: {{ v.sgai.error if v.sgai else 'not fetched' }}</div>
+        {% endif %}
+      </div>
+
+      {% set l = s.llm %}
+      <div class="card">
+        <h3>LLM spend</h3>
+        <div class="kpi">
+          <div><div class="lbl">Today</div><div class="big">${{ '%.2f'|format(l.today_usd) }}</div></div>
+          <div><div class="lbl">This month</div><div class="big">${{ '%.2f'|format(l.month_usd) }}</div></div>
+        </div>
+        <table>
+          <tr><th>Today by model</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">USD</th></tr>
+          {% for r in l.today %}
+          <tr><td>{{ r.provider }} · {{ r.model }}</td><td class="num">{{ r.calls }}</td><td class="num">{{ r.tokens_in }}</td><td class="num">{{ r.tokens_out }}</td><td class="num">{{ '%.3f'|format(r.usd) }}</td></tr>
+          {% else %}
+          <tr><td colspan="5" class="muted">No LLM calls today.</td></tr>
+          {% endfor %}
+        </table>
+        {% if l.provider_status.anthropic %}
+        {% set a = l.provider_status.anthropic %}
+        <div class="muted" style="margin-top:8px">
+          Anthropic rate limit (last call {{ (a.updated_at or '')[:19] }}):
+          requests {{ a.get('requests_remaining', '?') }}/{{ a.get('requests_limit', '?') }} per min ·
+          input tokens {{ a.get('input_tokens_remaining', '?') }}/{{ a.get('input_tokens_limit', '?') }} ·
+          output tokens {{ a.get('output_tokens_remaining', '?') }}/{{ a.get('output_tokens_limit', '?') }}
+          {% if a.get('retry_after') %}· <span class="bad">retry-after {{ a.retry_after }}s</span>{% endif %}
+        </div>
+        {% endif %}
+        {% if l.provider_status.groq %}
+        {% set g = l.provider_status.groq %}
+        <div class="muted">Groq (last call {{ (g.updated_at or '')[:19] }}): tokens remaining {{ g.get('tokens_remaining', '?') }}/{{ g.get('tokens_limit', '?') }} per min · requests {{ g.get('requests_remaining', '?') }}/{{ g.get('requests_limit', '?') }} per day</div>
+        {% endif %}
+      </div>
+
+      {% set o = s.outreach %}
+      <div class="card">
+        <h3>Outreach</h3>
+        <div class="kpi">
+          <div><div class="lbl">Approved</div><div class="big">{{ o.approved }}</div></div>
+          <div><div class="lbl">Rejected</div><div class="big">{{ o.rejected }}</div></div>
+          <div><div class="lbl">Drafted</div><div class="big">{{ o.drafted }}</div></div>
+          <div><div class="lbl">Enrolled</div><div class="big">{{ o.enrolled }}</div></div>
+          <div><div class="lbl">Do not contact</div><div class="big">{{ o.dnc }}</div></div>
+        </div>
+        {% set oc = o.outcomes[0] if o.outcomes else None %}
+        <div class="muted">Exported ever: {{ o.exported }} · outcomes rows: {{ oc.n if oc else 0 }} ({{ oc.opened if oc else 0 }} opened, {{ oc.replied if oc else 0 }} replied) · trigger events: {{ o.trigger_events }}</div>
+        {% if o.campaigns %}
+        <table style="margin-top:8px">
+          <tr><th>Campaign</th><th>Status</th><th>Session</th></tr>
+          {% for c in o.campaigns %}
+          <tr><td><a href="{{ url_for('campaign_view', campaign_id=c.id) }}">{{ c.name or ('#' ~ c.id) }}</a></td><td>{{ c.status }}</td><td>{{ c.session_id or '—' }}</td></tr>
+          {% endfor %}
+        </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

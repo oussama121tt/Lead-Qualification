@@ -3,6 +3,9 @@
 # or the fast flag in runconfig.load_config).
 
 [linkedin]
+# Founder deep-harvest lane. Off during bulk scoring runs (the lane's anti-ban
+# pauses would stall the run); LINKEDIN_FOUNDER_LANE=0 in the env also disables it.
+founder_lane_enabled = true
 # Randomized per-profile delay (seconds) before each LinkedIn profile harvest,
 # picked uniformly in [min, max]. Human-mimicking pacing.
 delay_min = 45

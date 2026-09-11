@@ -122,3 +122,18 @@ def test_evidence_quote_from_employment_history_is_grounded(monkeypatch):
     assert "ungrounded_evidence_quotes_removed" not in (v.get("disqualify_reason") or "")
     # Hooks stay situational: a biographical hook grounded only in metadata is still dropped.
     assert v["personalization_hooks"] == []
+
+
+def test_tolerant_grounding_accepts_punctuation_and_element_joins():
+    source = ("Our team\nKaren Hastie\nCEO and founder\nA seasoned entrepreneur with 20 years in retail\n"
+              "Moeen Ahmad\nCTO\nWith over a decade building payment systems")
+    norm = scorer._normalize_for_grounding(source)
+    # exact
+    assert scorer._is_grounded("A seasoned entrepreneur with 20 years in retail", norm)
+    # punctuation / line joins the model adds
+    assert scorer._is_grounded("Karen Hastie, CEO and founder, a seasoned entrepreneur with 20 years in retail", norm)
+    assert scorer._is_grounded("Moeen Ahmad, CTO - with over a decade building payment systems.", norm)
+    # fabricated content still fails
+    assert not scorer._is_grounded("Karen Hastie raised a $4M seed round from Sequoia", norm)
+    # a short citation cannot sneak through on fragments alone
+    assert not scorer._is_grounded("CEO, founder, retail, decade", norm)

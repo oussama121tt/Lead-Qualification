@@ -24,10 +24,34 @@ DEFAULT_THROTTLE_SECONDS = 15  # Firecrawl free tier ~10 req/min
 DEFAULT_CONCURRENCY = int(os.getenv("PIPELINE_CONCURRENCY", "3") or "3")
 
 
+_status_persisted_at: dict[str, float] = {}
+
+
+def _persist_provider_status(conn, provider: str | None, min_interval_s: float = 30.0) -> None:
+    """Throttled upsert of the provider's latest rate-limit headers (see
+    llm_provider.LAST_STATUS) so /ops can show them. Never raises."""
+    if not provider:
+        return
+    try:
+        import llm_provider as _lp
+        import ops as _ops
+        status = _lp.LAST_STATUS.get(provider)
+        if not status:
+            return
+        now = time.monotonic()
+        if now - _status_persisted_at.get(provider, 0.0) < min_interval_s:
+            return
+        _ops.record_provider_status(conn, provider, status)
+        _status_persisted_at[provider] = now
+    except Exception:
+        pass
+
+
 def _make_cost_cb(conn, session_id: int | None, lead_id: int | None, purpose: str):
     """Callback handed to scorer/emailer so EVERY LLM call is logged to
     llm_calls with tokens, latency, and estimated cost (FR-7)."""
     def cb(meta: dict, latency_ms: int):
+        _persist_provider_status(conn, meta.get("provider"))
         costlog.log_call(
             conn,
             session_id=session_id,
@@ -162,8 +186,11 @@ def _fetch_web_search_evidence(conn, lead_id: int, lead: dict, technical_signals
     # key, failure), the classic search path below still covers the lead —
     # and the coverage note says exactly what happened. Nothing silent.
     harvest_hits = None
-    if person_profile_url:
-        cfg = load_config()
+    cfg = load_config()
+    if person_profile_url and not cfg.linkedin.founder_lane_enabled:
+        notes.append("linkedin founder lane disabled ([linkedin].founder_lane_enabled / LINKEDIN_FOUNDER_LANE=0); "
+                     "person evidence limited to snippet search")
+    elif person_profile_url:
         harvest = linkedin_lane.harvest_founder_profile(person_profile_url, cfg.linkedin, conn)
         notes.extend(harvest.get("notes") or [])
         if harvest["status"] == "ok":

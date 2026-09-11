@@ -19,7 +19,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('analytics') }}">Attribution</a> · <a href="{{ url_for('analytics_channels') }}">Channels</a></p>
+    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('analytics') }}">Attribution</a> · <a href="{{ url_for('analytics_channels') }}">Channels</a> · <a href="{{ url_for('ops_view') }}">Ops</a></p>
     <h1>Cost per outcome</h1>
     <p class="muted">Total cost vs replies / closed deals, split by recipe, segment and channel. Includes Apollo credits, LLM calls (<code>llm_calls.cost_usd</code>), scraping and operator review time — estimates set in <code>[costs]</code> in config.toml.</p>
 

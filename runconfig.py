@@ -34,6 +34,10 @@ class LinkedInCfg:
     liked_keep: int
     max_posts: int
     bypass_caps: bool
+    # Founder deep-harvest lane on/off. The lane paces itself (45-180 s per
+    # profile, a 15-40 min pause every 15-20 profiles) so it must never sit
+    # inside a bulk scoring run. LINKEDIN_FOUNDER_LANE=0 in the env overrides.
+    founder_lane_enabled: bool = True
 
 
 @dataclass
@@ -194,6 +198,8 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
             liked_keep=li["liked_keep"],
             max_posts=li["max_posts"],
             bypass_caps=bypass_caps,
+            founder_lane_enabled=(os.getenv("LINKEDIN_FOUNDER_LANE", "").strip() not in ("0", "false", "no"))
+            and bool(li.get("founder_lane_enabled", True)),
         ),
         website=WebsiteCfg(
             page_timeout=raw["website"]["page_timeout"],

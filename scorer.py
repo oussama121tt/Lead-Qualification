@@ -534,6 +534,40 @@ def _normalize_for_grounding(s: str) -> str:
     return re.sub(r"\s+", " ", t.lower())
 
 
+_PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
+_FRAGMENT_SPLIT_RE = re.compile(r"[,;:.!?\-\u2013\u2014\u2022|/()\[\]\n]+")
+MIN_FRAGMENT_CHARS = 20
+
+
+def _loose(s: str) -> str:
+    """Normalization for the tolerant pass: letters/digits/spaces only."""
+    return re.sub(r"\s+", " ", _PUNCT_RE.sub(" ", _normalize_for_grounding(s))).strip()
+
+
+def _is_grounded(quote: str, normalized_source: str, loose_source: str | None = None) -> bool:
+    """Three passes, strictest first:
+    1. verbatim after quote/whitespace/case normalization (the original rule);
+    2. verbatim after dropping punctuation on both sides (team pages and
+       structured blocks join fragments with commas/dashes the source lacks);
+    3. every fragment of the citation of >= MIN_FRAGMENT_CHARS letters is
+       found in the source (a citation stitched across two elements).
+    A citation with no fragment long enough for pass 3 must pass 1 or 2."""
+    q = _normalize_for_grounding(quote)
+    if not q:
+        return False
+    if q in normalized_source:
+        return True
+    loose_source = loose_source if loose_source is not None else _loose(normalized_source)
+    lq = _loose(quote)
+    if lq and lq in loose_source:
+        return True
+    frags = [_loose(f) for f in _FRAGMENT_SPLIT_RE.split(quote)]
+    frags = [f for f in frags if len(f) >= MIN_FRAGMENT_CHARS]
+    if not frags:
+        return False
+    return all(f in loose_source for f in frags)
+
+
 # Same tag names as scraper.py's _tag_attributed_content — kept in sync
 # manually since scorer.py has no import dependency on scraper.py by design
 # (scoring must be testable/runnable without the scraping stack).
@@ -636,6 +670,7 @@ def _verify_evidence_grounding(verdict: dict, source_text: str, lead_metadata: d
         return verdict
 
     normalized_source = _normalize_for_grounding(source_text)
+    loose_source = _loose(source_text)
     spans = _third_party_spans(source_text, lead_metadata)
     grounded = []
     ungrounded = []
@@ -644,7 +679,7 @@ def _verify_evidence_grounding(verdict: dict, source_text: str, lead_metadata: d
         if not isinstance(q, str):
             ungrounded.append(q)
             continue
-        if _normalize_for_grounding(q) not in normalized_source:
+        if not _is_grounded(q, normalized_source, loose_source):
             ungrounded.append(q)
         elif _quote_is_third_party(q, source_text, spans):
             third_party.append(q)
@@ -685,6 +720,7 @@ def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict
         return verdict
 
     normalized_source = _normalize_for_grounding(source_text)
+    loose_source = _loose(source_text)
     spans = _third_party_spans(source_text, lead_metadata)
     kept = []
     dropped_count = 0
@@ -697,7 +733,7 @@ def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict
         if not hook_text or not isinstance(based_on, str):
             dropped_count += 1
             continue
-        if _normalize_for_grounding(based_on) not in normalized_source:
+        if not _is_grounded(based_on, normalized_source, loose_source):
             dropped_count += 1
             continue
         if _quote_is_third_party(based_on, source_text, spans):

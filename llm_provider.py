@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 
 GROQ_TIMEOUT_SECONDS = 90  # a stalled call must not block a batch forever
@@ -57,6 +58,42 @@ def load_groq_keys() -> list[str]:
         if k not in seen:
             seen.add(k); out.append(k)
     return out
+
+
+# Latest vendor rate-limit headers, per provider, captured after each call.
+# pipeline._make_cost_cb persists them (throttled) to provider_status so the
+# /ops dashboard can show "tokens remaining" even when the caller is a CLI
+# process rather than the web app.
+LAST_STATUS: dict[str, dict] = {}
+
+
+def _capture_status(provider: str, headers) -> None:
+    try:
+        h = {k.lower(): v for k, v in dict(headers).items()}
+    except Exception:
+        return
+    picked = {}
+    if provider == "anthropic":
+        for short, full in (("requests_limit", "anthropic-ratelimit-requests-limit"),
+                            ("requests_remaining", "anthropic-ratelimit-requests-remaining"),
+                            ("input_tokens_limit", "anthropic-ratelimit-input-tokens-limit"),
+                            ("input_tokens_remaining", "anthropic-ratelimit-input-tokens-remaining"),
+                            ("output_tokens_limit", "anthropic-ratelimit-output-tokens-limit"),
+                            ("output_tokens_remaining", "anthropic-ratelimit-output-tokens-remaining"),
+                            ("retry_after", "retry-after")):
+            if full in h:
+                picked[short] = h[full]
+    else:
+        for short, full in (("requests_limit", "x-ratelimit-limit-requests"),
+                            ("requests_remaining", "x-ratelimit-remaining-requests"),
+                            ("tokens_limit", "x-ratelimit-limit-tokens"),
+                            ("tokens_remaining", "x-ratelimit-remaining-tokens"),
+                            ("retry_after", "retry-after")):
+            if full in h:
+                picked[short] = h[full]
+    if picked:
+        picked["captured_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        LAST_STATUS[provider] = picked
 
 
 class RateLimited(RuntimeError):
@@ -167,7 +204,9 @@ class AnthropicProvider(LLMProvider):
         if system:
             kwargs["system"] = [{"type": "text", "text": system,
                                  "cache_control": {"type": "ephemeral"}}]
-        response = self.client.messages.create(**kwargs)
+        raw = self.client.messages.with_raw_response.create(**kwargs)
+        _capture_status("anthropic", getattr(raw, "headers", {}))
+        response = raw.parse()
         if getattr(response, "stop_reason", None) == "refusal":
             raise RuntimeError(f"anthropic refusal: {getattr(response, 'stop_details', None)}")
         if getattr(response, "stop_reason", None) == "max_tokens":
