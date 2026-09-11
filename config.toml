@@ -105,6 +105,24 @@ require_verified_email = true
 # monthly cap above.
 run_credit_cap = 1000
 
+# Apollo sequence enrolment (the real multi-touch sender). Maps a recommended
+# offer to the Apollo sequence id that carries that angle, read live from the
+# account on 2026-09-10 (all three are 3-step sequences, active):
+#   AIAUDIT B1 - Angle A (AI-built, sensitive data)  6a66cac7e37fae001436c196
+#   AIAUDIT B1 - Angle B (AI-built)                  6a66cad9e37fae0018459329
+#   AIAUDIT B1 - Angle C (general audit)             6a66caecff375500136a7483
+#   AIAUDIT v3 - give it away                        6a75b7ed92c62e001280ae52
+# send_from_email is the mailbox Apollo sends from (must be one of the fleet
+# above). Enrolment is only ever triggered explicitly (tools/enroll_apollo.py
+# or the campaign page), never as a side effect of Ship.
+[apollo.sequences]
+enabled = false
+send_from_email = "oussama@ruyatech.io"
+ai_audit_sensitive = "6a66cac7e37fae001436c196"   # ai_audit + sensitive_data_categories non-empty
+ai_audit = "6a66cad9e37fae0018459329"
+general_audit = "6a66caecff375500136a7483"
+pipeline = ""                                      # no sequence built for the automation offer yet
+
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website
 # fetch. deterministic-only by default; set use_llm = true to send the
@@ -131,8 +149,29 @@ min_confidence = 0.8
 # daily send cap and an optional warmup ramp: ramp_start (ISO date) + ramp_days
 # + ramp_start_cap, rising linearly to daily_cap.
 #   A mailbox with no ramp_* keys is steady-state at full daily_cap.
+# The real fleet, read from the Apollo account on 2026-09-10 (5 active sending
+# accounts across 3 domains). Apollo sequences send from these, not the local
+# Gmail sender. daily_cap is a conservative placeholder per box until the
+# per-account limits are confirmed in Apollo > Settings > Mailboxes; ramp_*
+# keys are unset because these boxes are already warm.
 [[sending.mailboxes]]
-name = "primary"
+name = "oussama@ruyatech.io"
+daily_cap = 30
+
+[[sending.mailboxes]]
+name = "wael@ruyaa.io"
+daily_cap = 30
+
+[[sending.mailboxes]]
+name = "oussama@ruyaa.io"
+daily_cap = 30
+
+[[sending.mailboxes]]
+name = "wael@ruya.care"
+daily_cap = 30
+
+[[sending.mailboxes]]
+name = "oussama@ruya.care"
 daily_cap = 30
 
 # Example of a second, ramping mailbox (uncomment to model it):

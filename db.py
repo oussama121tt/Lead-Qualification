@@ -624,6 +624,8 @@ def _schema_sql() -> str:
             technical_signals TEXT,
             pain_signals TEXT,
             evidence_quotes TEXT,
+            founder_profile TEXT,
+            build_evidence TEXT,
             sensitive_data_categories TEXT,
             data_sensitivity_score INTEGER,
             budget_signal TEXT,
@@ -951,6 +953,8 @@ def init_db(conn) -> None:
         _add_column(conn, "lead_technical_signals", col, coltype)
 
     for col, coltype in [
+        ("founder_profile", "TEXT"),
+        ("build_evidence", "TEXT"),
         ("sensitive_data_categories", "TEXT"),
         ("data_sensitivity_score", "INTEGER"),
         ("budget_signal", "TEXT"),
@@ -1685,15 +1689,17 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
     conn.execute(
         """
         INSERT INTO lead_scores
-            (session_id, lead_id, segment, confidence, company_stage, built_with_ai_signals,
+            (session_id, lead_id, founder_profile, build_evidence, segment, confidence, company_stage, built_with_ai_signals,
                              technical_signals, pain_signals, sensitive_data_categories, data_sensitivity_score,
                              budget_signal, budget_evidence, budget_blockers, evidence_quotes, recommended_offer,
              personalization_hooks, disqualify_reason, needs_human_review, scored_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             lead_id,
+            verdict.get("founder_profile") or "unknown",
+            verdict.get("build_evidence") or "unknown",
             verdict.get("segment"),
             verdict.get("confidence"),
             verdict.get("company_stage"),
@@ -1915,7 +1921,7 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
-               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.pain_signals, s.founder_profile, s.build_evidence, s.sensitive_data_categories, s.data_sensitivity_score,
                s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
         FROM leads l
         LEFT JOIN lead_scores s ON s.lead_id = l.id
@@ -1945,7 +1951,11 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         except Exception:
             pass
         for col, coltype in [
-            ("sensitive_data_categories", "TEXT"),
+            ("founder_profile", "TEXT"),
+            ("build_evidence", "TEXT"),
+            ("founder_profile", "TEXT"),
+        ("build_evidence", "TEXT"),
+        ("sensitive_data_categories", "TEXT"),
             ("data_sensitivity_score", "INTEGER"),
             ("budget_signal", "TEXT"),
             ("budget_evidence", "TEXT"),
@@ -1978,6 +1988,8 @@ def get_leads_with_scores(conn, session_id: int | None = None, owner_id: int | N
         rows = [dict(r) for r in conn.execute(legacy, params).fetchall()]
         # inject missing keys so callers (export/UI/budget demote) don't KeyError
         for r in rows:
+            r.setdefault("founder_profile", None)
+            r.setdefault("build_evidence", None)
             r.setdefault("sensitive_data_categories", None)
             r.setdefault("data_sensitivity_score", None)
             r.setdefault("budget_signal", None)
@@ -1996,7 +2008,7 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
         SELECT l.*, s.segment, s.confidence, s.company_stage, s.evidence_quotes,
                s.personalization_hooks, s.disqualify_reason, s.needs_human_review,
                s.recommended_offer, s.built_with_ai_signals, s.technical_signals,
-               s.pain_signals, s.sensitive_data_categories, s.data_sensitivity_score,
+               s.pain_signals, s.founder_profile, s.build_evidence, s.sensitive_data_categories, s.data_sensitivity_score,
                s.budget_signal, s.budget_evidence, s.budget_blockers, s.scored_at
         FROM leads l
         LEFT JOIN lead_scores s ON s.lead_id = l.id
@@ -2011,7 +2023,11 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
         except Exception:
             pass
         for col, coltype in [
-            ("sensitive_data_categories", "TEXT"),
+            ("founder_profile", "TEXT"),
+            ("build_evidence", "TEXT"),
+            ("founder_profile", "TEXT"),
+        ("build_evidence", "TEXT"),
+        ("sensitive_data_categories", "TEXT"),
             ("data_sensitivity_score", "INTEGER"),
             ("budget_signal", "TEXT"),
             ("budget_evidence", "TEXT"),
@@ -2031,6 +2047,8 @@ def get_lead_with_score(conn, lead_id: int) -> dict | None:
         row = conn.execute(legacy, (lead_id,)).fetchone()
         if row is not None:
             d = dict(row)
+            d.setdefault("founder_profile", None)
+            d.setdefault("build_evidence", None)
             d.setdefault("sensitive_data_categories", None)
             d.setdefault("data_sensitivity_score", None)
             d.setdefault("budget_signal", None)

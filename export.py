@@ -178,6 +178,7 @@ def scraping_csv_string(conn, session_id=None) -> str:
 SCORE_FIELDS = [
     "lead_id", "first_name", "last_name", "title", "company_name", "email", "website_url",
     "status", "error", "is_duplicate", "duplicate_reason",
+    "founder_profile", "build_evidence",
     "segment", "confidence", "needs_human_review", "company_stage",
     "recommended_offer", "disqualify_reason",
     "built_with_ai_signals", "technical_signals", "pain_signals",
@@ -215,6 +216,8 @@ def _iter_score_rows(conn, session_id=None):
             "built_with_ai_signals": _flatten(lead.get("built_with_ai_signals")),
             "technical_signals": _flatten(lead.get("technical_signals")),
             "pain_signals": _flatten(lead.get("pain_signals")),
+            "founder_profile": lead.get("founder_profile") or "",
+            "build_evidence": lead.get("build_evidence") or "",
             "sensitive_data_categories": _flatten(lead.get("sensitive_data_categories")),
             "data_sensitivity_score": lead.get("data_sensitivity_score", ""),
             "budget_signal": lead.get("budget_signal", ""),

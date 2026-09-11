@@ -57,12 +57,34 @@ class SurfaceScanCfg:
 
 
 @dataclass
+class ApolloSequencesCfg:
+    """[apollo.sequences]: offer -> Apollo sequence id for enrolment (the real
+    multi-touch sender). enabled=false keeps every enrolment path a dry run."""
+    enabled: bool
+    send_from_email: str
+    ai_audit_sensitive: str
+    ai_audit: str
+    general_audit: str
+    pipeline: str
+
+    def sequence_for(self, offer: str | None, sensitive: bool = False) -> str | None:
+        if offer == "ai_audit":
+            return (self.ai_audit_sensitive if sensitive and self.ai_audit_sensitive else self.ai_audit) or None
+        if offer == "general_audit":
+            return self.general_audit or None
+        if offer == "pipeline":
+            return self.pipeline or None
+        return None
+
+
+@dataclass
 class ApolloCfg:
     monthly_credit_cap: int
     search_page_size: int
     max_people_per_run: int
     require_verified_email: bool
     run_credit_cap: int
+    sequences: "ApolloSequencesCfg | None" = None
 
 
 @dataclass
@@ -193,6 +215,14 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
             max_people_per_run=int(raw.get("apollo", {}).get("max_people_per_run", 500)),
             require_verified_email=bool(raw.get("apollo", {}).get("require_verified_email", True)),
             run_credit_cap=int(raw.get("apollo", {}).get("run_credit_cap", 0)),
+            sequences=ApolloSequencesCfg(
+                enabled=bool(raw.get("apollo", {}).get("sequences", {}).get("enabled", False)),
+                send_from_email=str(raw.get("apollo", {}).get("sequences", {}).get("send_from_email", "")),
+                ai_audit_sensitive=str(raw.get("apollo", {}).get("sequences", {}).get("ai_audit_sensitive", "")),
+                ai_audit=str(raw.get("apollo", {}).get("sequences", {}).get("ai_audit", "")),
+                general_audit=str(raw.get("apollo", {}).get("sequences", {}).get("general_audit", "")),
+                pipeline=str(raw.get("apollo", {}).get("sequences", {}).get("pipeline", "")),
+            ),
         ),
         prefilter=PrefilterCfg(
             enabled=bool(raw.get("prefilter", {}).get("enabled", True)),

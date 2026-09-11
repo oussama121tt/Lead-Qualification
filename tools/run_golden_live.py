@@ -41,9 +41,8 @@ def main():
         confusion[key]=confusion.get(key,0)+1
         fail_keys=",".join(k for k,ok in checks.items() if not ok) or "all"
         print(f"{case['id']:<10} {case['expected_segment']:<12}/{case['expected_offer']:<10} -> {str(v.get('segment')):<12}/{str(v.get('recommended_offer')):<10} {v.get('confidence'):<4} {str(v.get('needs_human_review')):<6} {'PASS' if passed else 'FAIL('+fail_keys+')'} sens={v.get('sensitive_data_categories')}/{v.get('data_sensitivity_score')}")
-        # debug for roxie
-        if case["id"]=="roxie":
-            print("  DEBUG roxie verdict:", json.dumps(v, indent=2, ensure_ascii=False))
+        if not passed:
+            print(f"           founder={v.get('founder_profile')} build={v.get('build_evidence')} reason={str(v.get('disqualify_reason'))[:220]}")
         time.sleep(3)
     agreement = sum(results)/len(results) if results else 0
     print(f"\nAgreement: {agreement:.1%} ({sum(results)}/{len(results)})")

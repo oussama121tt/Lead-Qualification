@@ -280,6 +280,13 @@
               </ul>
             </dd>
             {% endif %}
+            {% if lead.founder_profile or lead.build_evidence %}
+            <dt>Founder / build</dt>
+            <dd>
+              founder: <strong>{{ lead.founder_profile or 'unknown' }}</strong>
+              &nbsp;&middot;&nbsp; build: <strong>{{ lead.build_evidence or 'unknown' }}</strong>
+            </dd>
+            {% endif %}
             {% if lead.sensitive_data_categories %}
             <dt>Sensitive data</dt>
             <dd>

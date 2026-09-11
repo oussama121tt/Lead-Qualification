@@ -105,7 +105,7 @@ def _load_leads(conn, session_id=None) -> list[dict]:
         SELECT l.id AS lead_id, l.session_id, l.email, l.email_sent_at,
                l.review_status,
                s.segment, s.budget_signal, s.technical_signals, s.pain_signals,
-               s.sensitive_data_categories,
+               s.sensitive_data_categories, s.founder_profile, s.build_evidence,
                t.app_builder_fingerprint, t.site_builder_fingerprint,
                t.on_builder_subdomain,
                o.sent_at AS outcome_sent_at, o.opened, o.clicked, o.replied,
@@ -125,7 +125,21 @@ def _load_leads(conn, session_id=None) -> list[dict]:
         query += " WHERE l.session_id = ?"
         params.append(session_id)
     query += " ORDER BY l.id"
-    return [dict(r) for r in conn.execute(query, params).fetchall()]
+    try:
+        return [dict(r) for r in conn.execute(query, params).fetchall()]
+    except Exception:
+        # A database that predates the founder_profile/build_evidence columns
+        # (init_db not yet run): degrade to the older shape instead of a 500.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        legacy = query.replace(", s.founder_profile, s.build_evidence", "")
+        rows = [dict(r) for r in conn.execute(legacy, params).fetchall()]
+        for r in rows:
+            r.setdefault("founder_profile", None)
+            r.setdefault("build_evidence", None)
+        return rows
 
 
 def _load_triggers(conn, session_id=None) -> dict[int, list[str]]:
@@ -155,6 +169,12 @@ def signal_families(row: dict) -> list[tuple[str, str]]:
     seg = row.get("segment")
     if seg:
         fams.append(("segment", str(seg)))
+    fp = row.get("founder_profile")
+    if fp and str(fp) != "unknown":
+        fams.append(("founder", str(fp)))
+    be = row.get("build_evidence")
+    if be and str(be) != "unknown":
+        fams.append(("build", str(be)))
     budget = row.get("budget_signal")
     if budget and str(budget) != "none":
         fams.append(("budget", str(budget)))

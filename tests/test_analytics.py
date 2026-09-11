@@ -24,7 +24,7 @@ def _sqlite_conn():
         CREATE TABLE lead_scores (
             id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER, segment TEXT,
             budget_signal TEXT, technical_signals TEXT, pain_signals TEXT,
-            sensitive_data_categories TEXT
+            sensitive_data_categories TEXT, founder_profile TEXT, build_evidence TEXT
         );
         CREATE TABLE lead_technical_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER,

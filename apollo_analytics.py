@@ -200,25 +200,50 @@ def _save_report_rows(conn, month: str, rows: list[dict], raw_messages: list[dic
 
 def _fold_into_outcomes(conn, rows: list[dict]) -> tuple[int, int]:
     """Maps fetched message rows to leads by email and rows lead_outcomes
-    (one row per lead, idempotent over the month). Returns (matched, unmatched).
+    (one row per lead, idempotent over the month). Only messages sent on or
+    after the lead's created_at are folded (see inline note). Returns
+    (matched, unmatched).
     A single executemany + commit keeps a nightly sweep cheap on Neon."""
     emails = sorted({r["email"] for r in rows if r.get("email")})
-    lead_map: dict[str, int] = {}
+    lead_map: dict[str, tuple[int, str | None]] = {}
     if emails:
         for i in range(0, len(emails), 400):
             chunk = emails[i:i + 400]
             placeholders = ",".join("?" for _ in chunk)
-            for r in conn.execute(
-                f"SELECT id, email FROM leads WHERE LOWER(email) IN ({placeholders})", chunk
-            ):
-                lead_map[(r["email"] or "").strip().lower()] = r["id"]
+            try:
+                found = conn.execute(
+                    f"SELECT id, email, created_at FROM leads WHERE LOWER(email) IN ({placeholders})", chunk
+                ).fetchall()
+            except Exception:
+                # Minimal schemas (test harnesses) may lack created_at: fold
+                # without date scoping rather than fail the whole sync.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                found = [dict(r) | {"created_at": None} for r in conn.execute(
+                    f"SELECT id, email FROM leads WHERE LOWER(email) IN ({placeholders})", chunk
+                ).fetchall()]
+            for r in found:
+                lead_map[(r["email"] or "").strip().lower()] = (r["id"], _date_str(r["created_at"]))
 
     params = []
     seen: set[int] = set()
     now = _now()
     for r in rows:
-        lid = lead_map.get(r["email"])
-        if lid is None or lid in seen:
+        hit = lead_map.get(r["email"])
+        if hit is None:
+            continue
+        lid, lead_created = hit
+        # Scope to THIS system's outreach: a message sent before the lead
+        # existed here belongs to an earlier, manual campaign (the account's
+        # history is ~95% such messages). Folding those would attribute
+        # replies to leads this engine never touched and drown the first real
+        # signal in noise. Same-day sends are kept (day granularity).
+        sent_date = _date_str(r.get("sent_at"))
+        if lead_created and sent_date and sent_date < lead_created:
+            continue
+        if lid in seen:
             continue
         seen.add(lid)
         params.append((

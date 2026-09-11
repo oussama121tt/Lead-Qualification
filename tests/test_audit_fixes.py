@@ -196,3 +196,31 @@ def test_pg_cursor_wrapper_is_iterable_like_sqlite():
     assert [r["email"] for r in cur.fetchall()] == ["a@x.com", "b@x.com"]
     assert cur.fetchmany(1)[0]["id"] == 1
     assert cur.rowcount == 2
+
+
+# --- Outcomes fold scoped to this system's outreach ------------------------
+
+def test_fold_ignores_messages_sent_before_the_lead_existed(monkeypatch):
+    """The account's Apollo history is mostly manual campaigns from before this
+    engine sourced the lead. A message sent BEFORE leads.created_at must not
+    become that lead's outcome; one sent after must."""
+    conn = _aa_conn()
+    conn.execute("INSERT INTO leads (id, session_id, email) VALUES (1, 1, 'old@co.com')")
+    conn.execute("INSERT INTO leads (id, session_id, email) VALUES (2, 1, 'new@co.com')")
+    # sqlite harness has no created_at column on leads; add one for the test.
+    conn.execute("ALTER TABLE leads ADD COLUMN created_at TEXT")
+    conn.execute("UPDATE leads SET created_at = '2026-09-07T10:00:00+00:00'")
+    conn.commit()
+    monkeypatch.setattr(aa, "ensure_report_table", lambda c: None)
+    plain = [
+        {"id": "m_old", "to_email": "old@co.com", "status": "completed",
+         "created_at": "2026-08-17T10:00:00Z", "replied": True},      # before the lead existed
+        {"id": "m_new", "to_email": "new@co.com", "status": "completed",
+         "created_at": "2026-09-08T10:00:00Z"},                       # after
+    ]
+    _get, _ = _fake_apollo(plain, {})
+    result = aa.sync_analytics_report(conn, key="k", days=60, _get=_get, stats=())
+    assert result["matched"] == 1
+    assert result["unmatched"] == 1
+    rows = {r["lead_id"]: r for r in conn.execute("SELECT * FROM lead_outcomes")}
+    assert 2 in rows and 1 not in rows

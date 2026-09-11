@@ -311,3 +311,98 @@ def record_enriched(conn, people: list, *, session_id=None) -> int:
         n += 1
     conn.commit()
     return n
+
+# ---------------------------------------------------------------------------
+# Sequence enrolment (the real multi-touch sender).
+#
+# Verified live 2026-09-10 with this account's key:
+#   POST /contacts                          -> 200 (creates a CRM contact)
+#   POST /emailer_campaigns/{id}/add_contact_ids -> accepted (422 only on bad ids)
+#   DELETE /contacts/{id}                   -> 403 (master key only; we never delete)
+#   GET /emailer_campaigns/{id}             -> 403 (master key only; ids come from config)
+# 0 credits: contacts we create carry the email we already paid for at
+# enrichment time, so Apollo does not re-enrich.
+# ---------------------------------------------------------------------------
+
+CONTACTS_PATH = "/contacts"
+CONTACTS_SEARCH_PATH = "/contacts/search"
+
+
+def find_contact_by_email(email: str) -> dict | None:
+    """Existing CRM contact for this email (so re-enrolment never duplicates)."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    data = _post(CONTACTS_SEARCH_PATH, {"q_keywords": email, "per_page": 5})
+    for c in data.get("contacts") or []:
+        if (c.get("email") or "").strip().lower() == email:
+            return c
+    return None
+
+
+def create_contact(lead: dict, *, first_line: str | None = None) -> dict:
+    """Creates (or reuses) the Apollo contact for one lead row. Returns the
+    contact dict (with "id"). `first_line` lands in the contact's
+    typed custom field when the account defines one named first_line; the
+    sequence template can then use {{first_line}} exactly like Instantly."""
+    existing = find_contact_by_email(lead.get("email"))
+    if existing:
+        return existing
+    payload = {
+        "first_name": lead.get("first_name") or "",
+        "last_name": lead.get("last_name") or "",
+        "email": (lead.get("email") or "").strip(),
+        "title": lead.get("title") or "",
+        "organization_name": lead.get("company_name") or "",
+        "website_url": lead.get("website_url") or "",
+        "linkedin_url": lead.get("linkedin_url") or "",
+    }
+    if first_line:
+        payload["typed_custom_fields"] = {"first_line": first_line[:500]}
+    data = _post(CONTACTS_PATH, payload)
+    contact = data.get("contact") or {}
+    if not contact.get("id"):
+        raise ApolloError(f"contact create returned no id: {str(data)[:200]}")
+    return contact
+
+
+def add_contacts_to_sequence(sequence_id: str, contact_ids: list[str], *,
+                             send_from_email_account_id: str,
+                             user_id: str | None = None) -> dict:
+    """Enrols contacts in an Apollo sequence. THIS STARTS EMAILS. Callers must
+    gate on [apollo.sequences].enabled and on the DNC registry first."""
+    if not contact_ids:
+        return {"contacts": []}
+    payload = {
+        "emailer_campaign_id": sequence_id,
+        "contact_ids": list(contact_ids),
+        "send_email_from_email_account_id": send_from_email_account_id,
+        "sequence_active_in_other_campaigns": False,
+        "sequence_finished_in_other_campaigns": False,
+        "sequence_no_email": False,
+        "sequence_unverified_email": False,
+    }
+    if user_id:
+        payload["user_id"] = user_id
+    return _post(f"/emailer_campaigns/{sequence_id}/add_contact_ids", payload)
+
+
+def list_email_accounts() -> list[dict]:
+    """Sending mailboxes on the account: [{id, email, active}, ...]."""
+    resp = requests.get(
+        f"{APOLLO_BASE}/email_accounts",
+        headers={"Cache-Control": "no-cache", "X-Api-Key": _api_key()},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise ApolloError(f"Apollo HTTP {resp.status_code}: {resp.text[:300]}")
+    return [{"id": a.get("id"), "email": a.get("email"), "active": a.get("active")}
+            for a in resp.json().get("email_accounts") or []]
+
+
+def email_account_id_for(email: str) -> str:
+    email = (email or "").strip().lower()
+    for a in list_email_accounts():
+        if (a.get("email") or "").lower() == email and a.get("id"):
+            return a["id"]
+    raise ApolloError(f"no active Apollo email account for {email!r}")

@@ -79,13 +79,25 @@ or [THIRD-PARTY CONTENT SECTION ...] is third-party unless its attribution names
 founder. Cite non-deterministic signals with exact evidence_quotes. Hooks are situational, never
 biographical, and each must be {"hook":"...","based_on":"exact quote"}. Use only supplied content;
 demos, product AI features, and client capabilities do not prove AI construction. Never invert a
-capability into pain. Confidence below 0.7 requires needs_human_review=true. Decide in order:
-enough evidence, AI-built non-technical team, technical team, scaling agency, too_big, wrong_field,
-otherwise unclear.
-Identify sensitive categories only when stated or clearly implied: minors, health_phi, biometric,
-payments, identity_documents, financial, legal, location, employee_data, none. Set
-sensitive_data_categories to a list of those exact keys and data_sensitivity_score from 0 to 100
-for breach impact; use [] and 0 when none.
+capability into pain. Confidence below 0.7 requires needs_human_review=true.
+Two independent facts are judged separately. founder_profile: Apollo employment history is
+first-party evidence about the founder. A career with no engineering roles is sufficient to judge
+the founder non_technical; a career of engineering roles is sufficient to judge them technical,
+even when the website says nothing; semi_technical for product, data or no-code builders; unknown
+only when history is absent. build_evidence: ai_built when a STRONG or MEDIUM AI-build signal
+exists, hand_built when a technical team or engineering hires are evidenced, otherwise unknown.
+Derive the segment from them: non_technical + ai_built is ai_solo_founder with high confidence;
+non_technical + unknown is still ai_solo_founder with confidence 0.5 to 0.7 (the founder question
+is settled, only the build method is open), never unclear; technical is technical_founder; an
+agency or studio that is scaling is small_agency_scaling. Use unclear only when founder_profile
+is unknown AND the site gives no usable evidence. Decide in order: enough evidence,
+founder_profile, build_evidence, scaling agency, too_big, wrong_field, otherwise unclear.
+Identify sensitive categories only when the product is evidenced to HANDLE that data: a patient
+portal, record storage, uploads, telehealth, payments, identity checks, employee records. Topical
+adjacency is not handling: a health blog, a fitness tracker or a clinic directory is not
+health_phi. Keys: minors, health_phi, biometric, payments, identity_documents, financial, legal,
+location, employee_data, none. Set sensitive_data_categories to a list of those exact keys and
+data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none.
 Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
 or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
 default builder subdomain, or shrinking headcount in budget_blockers. A strong blocker caps the
@@ -93,6 +105,8 @@ budget signal at weak.
 
 Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 {
+  "founder_profile": "non_technical | semi_technical | technical | unknown",
+  "build_evidence": "ai_built | hand_built | unknown",
   "segment": "ai_solo_founder | technical_founder | small_agency_scaling | too_big | wrong_field | unclear",
   "confidence": 0.0,
   "company_stage": "pre-launch | early | scaling | established",
@@ -116,6 +130,7 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 # exact regression happened: the model started returning "hooks"/"offer" and
 # every verdict parsed as empty with confidence 0).
 SCHEMA_KEYS = (
+    "founder_profile", "build_evidence",
     "segment", "confidence", "company_stage", "built_with_ai_signals",
     "technical_signals", "pain_signals", "evidence_quotes", "recommended_offer",
     "personalization_hooks", "sensitive_data_categories", "data_sensitivity_score",
@@ -306,6 +321,8 @@ def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
 
 
 VALID_OFFERS = {"ai_audit", "general_audit", "pipeline", "none"}
+VALID_FOUNDER_PROFILES = {"non_technical", "semi_technical", "technical", "unknown"}
+VALID_BUILD_EVIDENCE = {"ai_built", "hand_built", "unknown"}
 VALID_STAGES = {"pre-launch", "early", "scaling", "established"}
 VALID_SENSITIVE_DATA_CATEGORIES = {
     "minors", "health_phi", "biometric", "payments", "identity_documents",
@@ -332,6 +349,33 @@ def _validate_verdict(verdict: dict) -> dict:
         existing = verdict.get("disqualify_reason")
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
         forced_correction = True
+
+    # Two-axis verdict (founder_profile x build_evidence). Enum-validate; a
+    # missing or invalid value is "unknown", never a forced correction.
+    fp = str(verdict.get("founder_profile") or "unknown").strip().lower()
+    verdict["founder_profile"] = fp if fp in VALID_FOUNDER_PROFILES else "unknown"
+    be = str(verdict.get("build_evidence") or "unknown").strip().lower()
+    verdict["build_evidence"] = be if be in VALID_BUILD_EVIDENCE else "unknown"
+
+    # Derivation rule, enforced in code: a settled founder question must not
+    # collapse into "unclear" just because the build method is unknown.
+    derived_from = None
+    if verdict.get("segment") == "unclear" and verdict["founder_profile"] == "non_technical":
+        verdict["segment"] = "ai_solo_founder"
+        verdict["recommended_offer"] = "ai_audit"
+        derived_from = "non_technical"
+    elif verdict.get("segment") == "unclear" and verdict["founder_profile"] == "technical":
+        verdict["segment"] = "technical_founder"
+        verdict["recommended_offer"] = "general_audit"
+        derived_from = "technical"
+    if derived_from:
+        conf = float(verdict.get("confidence") or 0.0)
+        # Founder settled, build open: honest band is 0.5-0.7 -> human review.
+        verdict["confidence"] = round(min(max(conf, 0.5), 0.7), 2)
+        verdict["needs_human_review"] = True
+        note = f"segment_derived_from_founder_profile:{derived_from}"
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
 
     # "unclear" means insufficient evidence — by definition it needs a human.
     # The prompt says so; enforce it in code so it never depends on the model.
@@ -385,6 +429,8 @@ def _validate_verdict(verdict: dict) -> dict:
 def _empty_verdict(disqualify_reason: str) -> dict:
     """Empty verdict for failure cases (no content, API error, etc.)."""
     return {
+        "founder_profile": "unknown",
+        "build_evidence": "unknown",
         "segment": "unclear",
         "confidence": 0.0,
         "company_stage": None,
