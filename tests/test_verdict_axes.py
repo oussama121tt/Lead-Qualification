@@ -86,3 +86,14 @@ def test_ai_built_with_unknown_founder_is_ai_solo_founder_and_keeps_model_confid
 def test_technical_founder_beats_ai_built_when_both_present():
     v = scorer._validate_verdict(_v(founder_profile="technical", build_evidence="ai_built", confidence=0.9))
     assert v["segment"] == "technical_founder"
+
+
+def test_budget_blocker_forces_review_and_caps_signal():
+    v = scorer._validate_verdict(_v(segment="ai_solo_founder", recommended_offer="ai_audit", confidence=0.85,
+                                    needs_human_review=False, budget_signal="strong",
+                                    budget_blockers=["student founder"]))
+    assert v["needs_human_review"] is True
+    assert v["budget_signal"] == "weak"
+    clean = scorer._validate_verdict(_v(segment="ai_solo_founder", recommended_offer="ai_audit", confidence=0.85,
+                                        needs_human_review=False, budget_signal="strong", budget_blockers=[]))
+    assert clean["needs_human_review"] is False and clean["budget_signal"] == "strong"

@@ -427,6 +427,14 @@ def _validate_verdict(verdict: dict) -> dict:
         value = verdict.get(field, [])
         verdict[field] = value if isinstance(value, list) else []
 
+    # A recorded budget blocker (nonprofit funding, student founder, side
+    # project, default builder subdomain, shrinking headcount) means the
+    # commercial case is uncertain even when the segment is clear: the prompt
+    # asks for review, the golden set expects it, so enforce it in code.
+    if verdict["budget_blockers"]:
+        verdict["needs_human_review"] = True
+        verdict["budget_signal"] = "weak" if verdict["budget_signal"] in ("strong", "moderate") else verdict["budget_signal"]
+
     if forced_correction:
         try:
             current_confidence = float(verdict.get("confidence", 0.0))
