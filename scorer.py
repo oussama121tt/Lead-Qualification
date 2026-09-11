@@ -477,11 +477,25 @@ def _is_rate_limit_error(e: Exception) -> bool:
     return status in (413, 429) or "rate_limit_exceeded" in body or "rate limit" in body
 
 
+_NOT_PARSE_400_MARKERS = ("credit balance", "billing", "invalid_request_error", "authentication",
+                          "permission", "not_found_error", "overloaded", "api key")
+
+
 def _is_json_parse_error(e: Exception) -> bool:
-    """Detects a non-JSON API response (truncation, malformation)."""
+    """Detects a non-JSON API response (truncation, malformation).
+
+    A 400 only counts when the provider is complaining about the OUTPUT
+    (Groq's json_validate_failed). Billing / auth / invalid-request 400s are
+    infrastructure failures: they must propagate so the lead is marked
+    SCORE_FAILED (retryable) instead of being stored as a fake "unclear / 0.0"
+    verdict — 15 leads got exactly that when the Anthropic credit balance ran
+    out mid-run."""
     status = getattr(e, "status_code", None)
+    body = str(e).lower()
     if status == 400:
-        return True
+        if any(m in body for m in _NOT_PARSE_400_MARKERS):
+            return False
+        return ("json" in body) or ("validate" in body) or ("parse" in body)
     if isinstance(e, (json.JSONDecodeError, KeyError, TypeError, ValueError)):
         return True
     return False

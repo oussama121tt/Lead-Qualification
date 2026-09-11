@@ -137,3 +137,23 @@ def test_tolerant_grounding_accepts_punctuation_and_element_joins():
     assert not scorer._is_grounded("Karen Hastie raised a $4M seed round from Sequoia", norm)
     # a short citation cannot sneak through on fragments alone
     assert not scorer._is_grounded("CEO, founder, retail, decade", norm)
+
+
+def test_billing_400_is_not_a_verdict(monkeypatch):
+    """A provider 400 about credits/billing must propagate (lead -> SCORE_FAILED,
+    retryable), never be stored as an 'unclear / 0.0' verdict."""
+    class Billing400(Exception):
+        status_code = 400
+    err = Billing400("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+                     "'message': 'Your credit balance is too low to access the Anthropic API.'}}")
+    assert scorer._is_json_parse_error(err) is False
+    class Groq400(Exception):
+        status_code = 400
+    assert scorer._is_json_parse_error(Groq400("json_validate_failed: the model output was not valid JSON")) is True
+
+    def boom(*a, **k):
+        raise err
+    monkeypatch.setattr(scorer, "_call_llm", boom)
+    import pytest
+    with pytest.raises(Billing400):
+        scorer.score_content([{"page_type": "homepage", "content": "Some real site content here."}])
