@@ -53,6 +53,33 @@ def looks_js_heavy(html: str, text: str) -> bool:
     return scripts > 8 and len(text or "") < 200
 
 
+_MOJIBAKE_MARKERS = ("Ã", "â", "ì ", "ë¶", "í")
+
+
+def decode_html(resp) -> str:
+    """Decode a page as the site meant it. `requests` falls back to ISO-8859-1
+    when the Content-Type carries no charset, which turns UTF-8 Korean /
+    accented pages into mojibake the scorer then cannot ground quotes in
+    (seen live: a Korean site cited by the model in real Hangul, stored as
+    'ì ì '). Prefer the declared charset, else the sniffed one,
+    and repair classic latin-1-of-UTF-8 mojibake when it slipped through."""
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "charset=" not in ctype:
+        try:
+            resp.encoding = resp.apparent_encoding or "utf-8"
+        except Exception:
+            resp.encoding = "utf-8"
+    html = resp.text
+    if any(m in html for m in _MOJIBAKE_MARKERS):
+        try:
+            repaired = html.encode("latin-1").decode("utf-8")
+            if not any(m in repaired for m in _MOJIBAKE_MARKERS):
+                return repaired
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return html
+
+
 def _blockquotes_to_markdown(soup: BeautifulSoup) -> None:
     """Rewrites <blockquote> content so the extracted text keeps the markdown
     '> ' convention the testimonial tagger relies on."""
@@ -100,7 +127,7 @@ def fetch_page(url: str, timeout: float = 15.0, per_domain_delay: float = 1.0) -
         return out
 
     try:
-        html = resp.text
+        html = decode_html(resp)
         soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript", "svg"]):
             tag.decompose()
