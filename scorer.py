@@ -656,7 +656,8 @@ def _verify_evidence_grounding(verdict: dict, source_text: str, lead_metadata: d
         verdict["needs_human_review"] = True
         notes = []
         if ungrounded:
-            notes.append(f"ungrounded_evidence_quotes_removed: {len(ungrounded)} citation(s) not found in source text")
+            sample = "; ".join(str(q)[:70] for q in ungrounded[:3])
+            notes.append(f"ungrounded_evidence_quotes_removed: {len(ungrounded)} citation(s) not found in source text [{sample}]")
         if third_party:
             notes.append(f"third_party_evidence_quotes_removed: {len(third_party)} citation(s) described a testimonial/case-study subject, not the analyzed company")
         note = " | ".join(notes)
@@ -723,7 +724,7 @@ def _retry_after_failure(rows, deterministic_signals, build_user_content, error_
         verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS, cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+        verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except Exception as e2:
@@ -818,6 +819,16 @@ def score_content(
     text = rows_to_text(rows, max_chars=MAX_SITE_CONTENT_CHARS)
     web_evidence_block = _format_web_search_evidence(web_search_evidence)
     grounding_source = "\n\n---\n\n".join(p for p in (text, web_evidence_block) if p.strip())
+    # Evidence quotes may legitimately cite the Apollo metadata block (career
+    # history, headline, company facts) and the verified deterministic
+    # signals: the prompt tells the model employment history is first-party
+    # evidence about the founder. Hooks stay grounded in site + web text only
+    # (situational, never biographical), so they keep the narrower corpus.
+    evidence_corpus = "\n\n---\n\n".join(p for p in (
+        grounding_source,
+        _format_lead_metadata(lead_metadata) if lead_metadata else "",
+        json.dumps(deterministic_signals, ensure_ascii=False, indent=2) if deterministic_signals else "",
+    ) if p and p.strip())
 
     if not text.strip() and not web_evidence_block:
         return _apply_site_missing_guard(_empty_verdict("no_content_scraped"), site_content_missing)
@@ -871,7 +882,7 @@ def score_content(
         verdict = _call_llm(build_user_content(text), cost_cb=cost_cb)
         verdict = _apply_confidence_guard(verdict)
         verdict = _validate_verdict(verdict)
-        verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+        verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
@@ -891,7 +902,7 @@ def score_content(
                 verdict = _call_llm(build_user_content(shorter_text), cost_cb=cost_cb)
                 verdict = _apply_confidence_guard(verdict)
                 verdict = _validate_verdict(verdict)
-                verdict = _verify_evidence_grounding(verdict, grounding_source, lead_metadata)
+                verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
                 verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
                 return _apply_site_missing_guard(verdict, site_content_missing)
             except Exception as e2:

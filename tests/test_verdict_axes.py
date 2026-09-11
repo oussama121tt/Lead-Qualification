@@ -97,3 +97,28 @@ def test_budget_blocker_forces_review_and_caps_signal():
     clean = scorer._validate_verdict(_v(segment="ai_solo_founder", recommended_offer="ai_audit", confidence=0.85,
                                         needs_human_review=False, budget_signal="strong", budget_blockers=[]))
     assert clean["needs_human_review"] is False and clean["budget_signal"] == "strong"
+
+
+def test_evidence_quote_from_employment_history_is_grounded(monkeypatch):
+    """The prompt tells the model career history is first-party evidence; a
+    citation of it must not be discarded as ungrounded (it was: 30 of the
+    first 40 live Sonnet verdicts lost quotes this way and were all forced to
+    review)."""
+    verdict = {
+        "segment": "ai_solo_founder", "confidence": 0.85, "recommended_offer": "ai_audit",
+        "founder_profile": "non_technical", "build_evidence": "ai_built",
+        "evidence_quotes": ["Registered Nurse @ Mercy Hospital (2012 to 2021)"],
+        "personalization_hooks": [{"hook": "Saw your nursing background",
+                                   "based_on": "Registered Nurse @ Mercy Hospital (2012 to 2021)"}],
+        "needs_human_review": False, "sensitive_data_categories": [],
+    }
+    monkeypatch.setattr(scorer, "_call_llm", lambda *a, **k: dict(verdict))
+    rows = [{"page_type": "homepage", "content": "Solvi helps clinics manage patient intake. Built with Lovable."}]
+    meta = {"first_name": "Jane", "company_name": "Solvi",
+            "apollo_person": {"employment_history": [
+                {"title": "Registered Nurse", "organization": "Mercy Hospital", "start": "2012", "end": "2021"}]}}
+    v = scorer.score_content(rows, lead_metadata=meta, deterministic_signals={"app_builder_fingerprint": "lovable"})
+    assert v["evidence_quotes"] == ["Registered Nurse @ Mercy Hospital (2012 to 2021)"]
+    assert "ungrounded_evidence_quotes_removed" not in (v.get("disqualify_reason") or "")
+    # Hooks stay situational: a biographical hook grounded only in metadata is still dropped.
+    assert v["personalization_hooks"] == []
