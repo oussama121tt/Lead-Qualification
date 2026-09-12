@@ -150,7 +150,7 @@ min_headcount = 0
 #   "off"        = never
 # off | high_only (targets at >= min_confidence) | targets (every target-segment lead,
 # full web + LinkedIn evidence; the "prove every persona" mode) | default (review/low-conf rule)
-mode = "high_only"
+mode = "targets"
 min_confidence = 0.8
 
 [sending]
