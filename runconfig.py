@@ -70,6 +70,12 @@ class ApolloSequencesCfg:
     ai_audit: str
     general_audit: str
     pipeline: str
+    # Apollo contact custom field holding the personalised opening line
+    # (raw field id, no 'contact.' prefix). Empty disables personalisation.
+    personal_line_field_id: str = ""
+    # Share of approved leads that get the personalised line; the rest run
+    # the same sequence with no line (the control arm).
+    personalised_share: float = 0.5
 
     def sequence_for(self, offer: str | None, sensitive: bool = False) -> str | None:
         if offer == "ai_audit":
@@ -228,6 +234,8 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
                 ai_audit=str(raw.get("apollo", {}).get("sequences", {}).get("ai_audit", "")),
                 general_audit=str(raw.get("apollo", {}).get("sequences", {}).get("general_audit", "")),
                 pipeline=str(raw.get("apollo", {}).get("sequences", {}).get("pipeline", "")),
+                personal_line_field_id=str(raw.get("apollo", {}).get("sequences", {}).get("personal_line_field_id", "")),
+                personalised_share=float(raw.get("apollo", {}).get("sequences", {}).get("personalised_share", 0.5)),
             ),
         ),
         prefilter=PrefilterCfg(

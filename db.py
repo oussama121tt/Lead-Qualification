@@ -1003,6 +1003,13 @@ def init_db(conn) -> None:
     # personalization hooks in emailer.build_prompt (overrides render in the
     # prompt, never stored in the hooks list).
     _add_column(conn, "leads", "hook_override", "TEXT")
+    # The one personalised sentence that opens the Apollo sequence, plus
+    # the citation it rests on and the generator status ("ok" / "empty" /
+    # "rejected:..."). Only an "ok" line is ever sent.
+    _add_column(conn, "leads", "personal_line", "TEXT")
+    _add_column(conn, "leads", "personal_line_based_on", "TEXT")
+    _add_column(conn, "leads", "personal_line_status", "TEXT")
+    _add_column(conn, "leads", "campaign_arm", "TEXT")
 
     # Phase 4 — Analytics: source channel on sessions. NULL means cold_email
     # (the legacy default) — the analytics screens COALESCE() it, so no trigger

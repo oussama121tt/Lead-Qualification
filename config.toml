@@ -125,6 +125,12 @@ ai_audit_sensitive = "6a66cac7e37fae001436c196"   # ai_audit + sensitive_data_ca
 ai_audit = "6a66cad9e37fae0018459329"
 general_audit = "6a66caecff375500136a7483"
 pipeline = ""                                      # no sequence built for the automation offer yet
+# Apollo contact custom field "Personal Line" (verified live 2026-09-12).
+# The sequence template already references it; we only fill it per contact.
+personal_line_field_id = "6a47de3d386294002003b1a6"
+# A/B: this share of approved leads gets the generated line, the rest run the
+# identical sequence with no line. 1.0 = personalise everyone, 0.0 = control only.
+personalised_share = 0.5
 
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website

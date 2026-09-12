@@ -328,6 +328,21 @@ CONTACTS_PATH = "/contacts"
 CONTACTS_SEARCH_PATH = "/contacts/search"
 
 
+def _put(path: str, payload: dict, timeout: float = 45.0) -> dict:
+    resp = requests.put(
+        f"{APOLLO_BASE}{path}",
+        headers={"Content-Type": "application/json", "Cache-Control": "no-cache",
+                 "X-Api-Key": _api_key()},
+        json=payload, timeout=timeout,
+    )
+    if resp.status_code != 200:
+        raise ApolloError(f"Apollo HTTP {resp.status_code}: {resp.text[:300]}")
+    try:
+        return resp.json()
+    except ValueError as e:
+        raise ApolloError(f"Apollo returned non-JSON: {e}")
+
+
 def find_contact_by_email(email: str) -> dict | None:
     """Existing CRM contact for this email (so re-enrolment never duplicates)."""
     email = (email or "").strip().lower()
@@ -340,7 +355,8 @@ def find_contact_by_email(email: str) -> dict | None:
     return None
 
 
-def create_contact(lead: dict, *, first_line: str | None = None) -> dict:
+def create_contact(lead: dict, *, first_line: str | None = None,
+                   custom_field_id: str | None = None) -> dict:
     """Creates (or reuses) the Apollo contact for one lead row. Returns the
     contact dict (with "id"). `first_line` lands in the contact's
     typed custom field when the account defines one named first_line; the
@@ -357,13 +373,23 @@ def create_contact(lead: dict, *, first_line: str | None = None) -> dict:
         "website_url": lead.get("website_url") or "",
         "linkedin_url": lead.get("linkedin_url") or "",
     }
-    if first_line:
-        payload["typed_custom_fields"] = {"first_line": first_line[:500]}
+    if first_line and custom_field_id:
+        # Apollo keys typed_custom_fields by the RAW field id (verified live:
+        # "contact.<id>" is rejected, "<id>" sticks). The sequence template
+        # references the same field by its label ("Personal Line").
+        payload["typed_custom_fields"] = {custom_field_id: first_line[:500]}
     data = _post(CONTACTS_PATH, payload)
     contact = data.get("contact") or {}
     if not contact.get("id"):
         raise ApolloError(f"contact create returned no id: {str(data)[:200]}")
     return contact
+
+
+def update_contact_custom_field(contact_id: str, custom_field_id: str, value: str) -> dict:
+    """Sets one typed custom field on an existing contact (used when the
+    contact already existed, so create_contact reused it)."""
+    return _put(f"{CONTACTS_PATH}/{contact_id}",
+                {"typed_custom_fields": {custom_field_id: (value or "")[:500]}})
 
 
 def add_contacts_to_sequence(sequence_id: str, contact_ids: list[str], *,

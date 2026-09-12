@@ -77,6 +77,8 @@ def main() -> int:
     g.add_argument("--session", type=int, help="analysis session id")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, touch nothing on Apollo")
     ap.add_argument("--limit", type=int, default=0, help="enrol at most N leads this run")
+    ap.add_argument("--all-personalised", action="store_true",
+                    help="give every lead its Personal Line (no control arm)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -100,6 +102,18 @@ def main() -> int:
         ok, skipped = _eligible(conn, session_id)
         if args.limit:
             ok = ok[: args.limit]
+        # A/B arms, assigned deterministically by lead id so a re-run keeps the
+        # same split, and balanced WITHIN each offer so the arms are comparable.
+        share = 1.0 if args.all_personalised else float(seqcfg.personalised_share or 0)
+        by_offer: dict[str, list[dict]] = {}
+        for l in ok:
+            by_offer.setdefault(l.get("recommended_offer") or "none", []).append(l)
+        for offer, group in by_offer.items():
+            group.sort(key=lambda x: x["id"])
+            for i, l in enumerate(group):
+                usable = l.get("personal_line_status") == "ok" and (l.get("personal_line") or "").strip()
+                l["campaign_arm"] = "personalised" if (usable and (i % 100) < round(share * 100)) else "control"
+
         plan: dict[str, list[dict]] = {}
         no_sequence: list[dict] = []
         for l in ok:
@@ -111,7 +125,9 @@ def main() -> int:
         for sid, ls in plan.items():
             print(f"  sequence {sid}: {len(ls)} lead(s)")
             for l in ls:
-                print(f"    - {l['id']:>5} {l.get('email'):<40} {l.get('company_name') or '':<32} offer={l.get('recommended_offer')}")
+                arm = l.get("campaign_arm", "control")
+                line = (l.get("personal_line") or "") if arm == "personalised" else ""
+                print(f"    - {l['id']:>5} [{arm:<12}] {l.get('email'):<36} {(l.get('company_name') or '')[:26]:<26} {line[:70]}")
         for l in no_sequence:
             print(f"    ! {l['id']:>5} {l.get('email'):<40} offer={l.get('recommended_offer')} -> no sequence configured")
         by_reason: dict[str, int] = {}
@@ -124,24 +140,40 @@ def main() -> int:
             return 0
 
         account_id = apollo_client.email_account_id_for(seqcfg.send_from_email)
+        field_id = (seqcfg.personal_line_field_id or "").strip()
         enrolled: list[dict] = []
         for sid, ls in plan.items():
             contact_ids = []
             for l in ls:
-                first_line = exportmod._first_line_from(l) if hasattr(exportmod, "_first_line_from") else None
-                c = apollo_client.create_contact(l, first_line=first_line)
-                contact_ids.append(c["id"])
-                l["_contact_id"] = c["id"]
+                # The Personal Line is only ever the stored, guard-passed one.
+                # Control-arm leads and leads without a usable line get no
+                # field value, so the sequence sends its generic opener.
+                line = l.get("personal_line") if (l.get("campaign_arm") == "personalised"
+                                                  and l.get("personal_line_status") == "ok") else None
+                c = apollo_client.create_contact(l, first_line=line, custom_field_id=field_id if line else None)
+                cid = c["id"]
+                if line and field_id and not (c.get("typed_custom_fields") or {}).get(field_id):
+                    # Contact already existed: create_contact reused it, so set
+                    # the field explicitly rather than trusting the create call.
+                    try:
+                        apollo_client.update_contact_custom_field(cid, field_id, line)
+                    except Exception as exc:
+                        print(f"    ! could not set Personal Line on {l.get('email')}: {exc}")
+                contact_ids.append(cid)
+                l["_contact_id"] = cid
             apollo_client.add_contacts_to_sequence(sid, contact_ids, send_email_from_email_account_id=account_id)
             enrolled.extend(ls)
-            print(f"  enrolled {len(ls)} in {sid}")
+            n_pers = sum(1 for l in ls if l.get("campaign_arm") == "personalised")
+            print(f"  enrolled {len(ls)} in {sid} ({n_pers} personalised, {len(ls)-n_pers} control)")
 
         # Same guarantees as Ship: never contact twice, remember what went out.
         dncmod.add_many_from_leads(conn, [{"email": l["email"], "domain_normalized": l.get("domain_normalized")}
                                           for l in enrolled], reason="apollo_sequence_enrolled")
         dbmod.record_export(conn, [l["id"] for l in enrolled], session_id=session_id)
         for l in enrolled:
-            conn.execute("UPDATE leads SET email_status = 'enrolled_apollo', email_provider = 'apollo' WHERE id = ?", (l["id"],))
+            conn.execute("UPDATE leads SET email_status = 'enrolled_apollo', email_provider = 'apollo', "
+                         "campaign_arm = ?, email_sent_at = ? WHERE id = ?",
+                         (l.get("campaign_arm", "control"), dbmod._now(), l["id"]))
         conn.commit()
         print(f"[enroll] done: {len(enrolled)} lead(s) enrolled from {seqcfg.send_from_email}")
         return 0
