@@ -25,6 +25,7 @@ import db as dbmod
 import dnc as dncmod
 import prefilter as prefiltermod
 import recipes as recipesmod
+from profile import load_profile
 from runconfig import load_config
 
 
@@ -75,10 +76,13 @@ def run_recipe(conn, *, recipe_id: int | None = None, filters: dict | None = Non
             pipelinemod._make_cost_cb(conn, None, None, "prefilter")
             if cfg.prefilter.use_llm else None
         )
+        # Headcount band is per-business: it comes from the profile [icp],
+        # not from the operational config (only enabled/use_llm stay there).
+        icp = load_profile().icp
         pf = prefiltermod.prefilter_people(
             people,
-            max_headcount=cfg.prefilter.max_headcount,
-            min_headcount=cfg.prefilter.min_headcount,
+            max_headcount=icp.max_headcount,
+            min_headcount=icp.min_headcount,
             use_llm=cfg.prefilter.use_llm,
             cost_cb=cost_cb,
         )

@@ -1,32 +1,5 @@
 {
- "_comment": "Work order 'bulk sourcing' recipe set. Base filters are merged into every recipe by tools/run_bulk_sourcing.py; only q_keywords varies. Narrow verticals run first (cheap, near-zero competitors), broad sweeps after (volume, aggressive prefilter). Founded-year 2020-2026 chosen after a free plan pass: 2023-2026 gave ~300 enrichable, 2020-2026 ~530 (fits the 1,000-credit run cap), none ~1,300 (exceeds it).",
- "base": {
-  "person_titles": [
-   "founder",
-   "co-founder",
-   "ceo",
-   "owner"
-  ],
-  "organization_num_employees_ranges": [
-   "1,10",
-   "11,20"
-  ],
-  "organization_founded_year_range": {
-   "min": 2020,
-   "max": 2026
-  },
-  "person_locations": [
-   "United States",
-   "United Kingdom",
-   "Canada",
-   "Australia",
-   "Ireland",
-   "New Zealand"
-  ],
-  "contact_email_status": [
-   "verified"
-  ]
- },
+  "_comment": "Work order 'bulk sourcing' recipe set. The search base filters (titles, headcount slices, founded years, countries) live in profiles/<name>.toml [icp] and are merged into every recipe by tools/run_bulk_sourcing.py; only q_keywords varies here. Narrow verticals run first (cheap, near-zero competitors), broad sweeps after (volume, aggressive prefilter). Founded-year 2020-2026 chosen after a free plan pass: 2023-2026 gave ~300 enrichable, 2020-2026 ~530 (fits the 1,000-credit run cap), none ~1,300 (exceeds it).",
  "narrow": [
   "health app",
   "patient app",

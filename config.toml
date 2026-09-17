@@ -135,12 +135,11 @@ personalised_share = 0.5
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website
 # fetch. deterministic-only by default; set use_llm = true to send the
-# leftover "unclear" leads to a cheap Groq pass. min_headcount/max_headcount
-# bound the target persona (0 = no bound).
+# leftover "unclear" leads to a cheap Groq pass. The headcount band and the
+# reject/keep marker lists are per-business: they live in
+# profiles/<name>.toml [icp], not here.
 enabled = true
 use_llm = false
-max_headcount = 20
-min_headcount = 0
 
 [escalation]
 # When the web/LinkedIn evidence lane runs after scoring pass 1.

@@ -35,6 +35,7 @@ import dnc as dncmod
 import prefilter as prefiltermod
 import recipes as recipesmod
 import sourcing
+from profile import load_profile
 from runconfig import load_config
 
 RECIPES_PATH = HERE.parent / "golden" / "bulk_recipes.json"
@@ -44,6 +45,25 @@ REJECTS_PATH = HERE.parent / "exports" / "bulk_prefilter_rejects.jsonl"
 
 def _load_recipes(path=None) -> dict:
     return json.loads(Path(path or RECIPES_PATH).read_text(encoding="utf-8"))
+
+
+def _base_filters(spec: dict) -> dict:
+    """Apollo search base filters from the profile [icp] (per-business:
+    titles, headcount slices, founded years, countries). The keyword lists
+    (narrow/broad) stay in bulk_recipes.json; an alternate --recipes file
+    may still override single base keys via its own "base" object."""
+    icp = load_profile().icp
+    return {
+        "person_titles": list(icp.person_titles),
+        "organization_num_employees_ranges": list(icp.employee_ranges),
+        "organization_founded_year_range": {
+            "min": icp.founded_year_min, "max": icp.founded_year_max},
+        "person_locations": list(icp.countries),
+        # Deliverability tactic (verified live: halves wasted credits), not
+        # business targeting — stays here, not in the profile.
+        "contact_email_status": ["verified"],
+        **spec.get("base", {}),
+    }
 
 
 def _state() -> dict:
@@ -73,7 +93,7 @@ def cmd_plan(args):
     table and writes prefilter rejects (with reasons) for the evaluation file."""
     cfg = load_config()
     spec = _load_recipes(getattr(args, "recipes", None))
-    base = spec["base"]
+    base = _base_filters(spec)
     # The plan pass is Apollo-only; the DB is used just for the DNC sets and
     # the credit display. If the DB is unreachable, proceed without them and
     # say so — a free yield table now beats a blocked run.
@@ -96,8 +116,9 @@ def cmd_plan(args):
                 people = apollo_client.search_people_all(filters, max_people=max_people, per_page=cfg.apollo.search_page_size)
             except Exception as e:
                 rows.append((kind, kw, "ERR", 0, 0, str(e)[:60])); continue
-            pf = prefiltermod.prefilter_people(people, max_headcount=cfg.prefilter.max_headcount,
-                                               min_headcount=cfg.prefilter.min_headcount, use_llm=False)
+            icp = load_profile().icp
+            pf = prefiltermod.prefilter_people(people, max_headcount=icp.max_headcount,
+                                               min_headcount=icp.min_headcount, use_llm=False)
             kept = [p for p in pf["keep"]
                     if not dncmod.check_lead(None, (p.get("organization") or {}).get("primary_domain"), dnc_emails, dnc_domains)]
             for p, why in pf["reject"]:
@@ -126,7 +147,7 @@ def cmd_enrich(args):
     at the run credit cap."""
     cfg = load_config()
     spec = _load_recipes()
-    base = spec["base"]
+    base = _base_filters(spec)
     state = _state()
     state["started_at"] = state["started_at"] or time.strftime("%Y-%m-%dT%H:%M:%S")
     conn = dbmod.get_connection()

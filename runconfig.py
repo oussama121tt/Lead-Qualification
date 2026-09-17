@@ -107,8 +107,6 @@ class EscalationCfg:
 class PrefilterCfg:
     enabled: bool
     use_llm: bool
-    max_headcount: int
-    min_headcount: int
 
 
 @dataclass
@@ -241,8 +239,6 @@ def load_config(fast: bool | None = None, path: Path | None = None) -> Config:
         prefilter=PrefilterCfg(
             enabled=bool(raw.get("prefilter", {}).get("enabled", True)),
             use_llm=bool(raw.get("prefilter", {}).get("use_llm", False)),
-            max_headcount=int(raw.get("prefilter", {}).get("max_headcount", 50)),
-            min_headcount=int(raw.get("prefilter", {}).get("min_headcount", 0)),
         ),
         escalation=EscalationCfg(
             mode=str(raw.get("escalation", {}).get("mode", "ambiguous")),

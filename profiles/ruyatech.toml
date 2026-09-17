@@ -139,30 +139,32 @@ employee_ranges = ["1,10", "11,20"]
 # studio is a target (golden case george = small_agency_scaling). Only
 # unambiguous service providers are rejected; ambiguous names fall through
 # to 'unclear'/'keep'.
+# Single-quoted TOML strings are literal: write regex escapes with a single
+# backslash (\s, \b). Double-quoted strings would need them doubled.
 reject_company_markers = [
   'agency',
   'agencies',
   'consult(?:ing|ancy|ants?)?',
   'labs?',
   'solutions',
-  'software\\s+house',
-  'digital\\s+agency',
-  'dev\\s?shop',
-  'web\\s+design',
-  'it\\s+services',
-  'systems?\\b',
-  'systems\\s+integrat',
+  'software\s+house',
+  'digital\s+agency',
+  'dev\s?shop',
+  'web\s+design',
+  'it\s+services',
+  'systems?\b',
+  'systems\s+integrat',
   'outsourc',
-  'technolog(?:y|ies)\\s+partner',
+  'technolog(?:y|ies)\s+partner',
   'interactive',
-  'creative\\s+agency',
+  'creative\s+agency',
   'staffing',
-  'recruit(?:ing|ment)\\s+agency',
-  'we\\s+build',
-  'development\\s+(?:company|partner|services)',
-  'mvp\\s+(?:development|studio|agency)',
-  'app\\s+development',
-  'software\\s+development',
+  'recruit(?:ing|ment)\s+agency',
+  'we\s+build',
+  'development\s+(?:company|partner|services)',
+  'mvp\s+(?:development|studio|agency)',
+  'app\s+development',
+  'software\s+development',
 ]
 
 # "X Software" / "X Technologies" with no product word is the classic
@@ -175,17 +177,17 @@ dev_shop_pattern = "^[\\w&.'\\- ]{1,40}\\s+(software|technologies|technology|tec
 # eric). Only the fractional / consulting / "we build for you" variants
 # below are competitors — do not "fix" this by adding bare CTO/engineer.
 reject_title_markers = [
-  'agency\\s+owner',
+  'agency\s+owner',
   'freelance',
   'freelancer',
   'consultant',
   'contractor',
-  'fractional\\s+(?:cto|cpo|coo|cmo|cfo)',
+  'fractional\s+(?:cto|cpo|coo|cmo|cfo)',
   'advisor',
   'mentor',
   'coach',
-  'managing\\s+director\\s+at\\s+.*\\bagency\\b',
-  'we\\s+build\\s+(?:your|apps|mvps|software|products)',
+  'managing\s+director\s+at\s+.*\bagency\b',
+  'we\s+build\s+(?:your|apps|mvps|software|products)',
 ]
 
 non_decision_title_markers = [
@@ -194,14 +196,14 @@ non_decision_title_markers = [
   'assistant',
   'recruiter',
   'talent',
-  'hr\\b',
-  'human\\s+resources',
-  'sales\\s+(?:rep|representative|development)',
-  'sdr\\b',
-  'bdr\\b',
-  'account\\s+executive',
+  'hr\b',
+  'human\s+resources',
+  'sales\s+(?:rep|representative|development)',
+  'sdr\b',
+  'bdr\b',
+  'account\s+executive',
   'support',
-  'customer\\s+success',
+  'customer\s+success',
   'bookkeeper',
   'accountant',
   'receptionist',
@@ -212,9 +214,9 @@ founder_title_markers = [
   'co-?founder',
   'ceo',
   'owner',
-  'managing\\s+partner',
+  'managing\s+partner',
   'president',
-  'chief\\s+executive',
+  'chief\s+executive',
 ]
 
 llm_prefilter_system = "You are a fast pre-filter for a B2B lead list. Given only a person's title, company name, headcount and founded year (no website), decide if they are plausibly a NON-TECHNICAL or technical FOUNDER of a small software product company (our target), or clearly NOT (agency, consultancy, dev shop, fractional CTO, enterprise employee, recruiter, unrelated sector). Respond ONLY as JSON: {\"decision\": \"keep\"|\"reject\", \"reason\": \"...\"}. When genuinely unsure, keep — a wrong reject loses a good lead."
