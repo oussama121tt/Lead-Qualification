@@ -10,6 +10,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# One profile per process: resolve --profile BEFORE importing scorer and
+# constants, whose module-level snapshots (SYSTEM_PROMPT, segment sets)
+# follow the active profile at import time.
+if "--profile" in sys.argv:
+    try:
+        os.environ["LEAD_PROFILE"] = sys.argv[sys.argv.index("--profile") + 1]
+    except IndexError:
+        pass
+
 import profile as profilemod
 import scorer
 
@@ -59,12 +68,13 @@ def _checks(case, verdict):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-agreement", type=float, default=0.8)
-    parser.add_argument("--profile", default="ruyatech")
+    parser.add_argument("--profile", default=None)
     parser.add_argument("--cases", type=Path, default=None)
     parser.add_argument("--fixtures", type=Path, default=None)
     args = parser.parse_args()
-    _activate_profile(args.profile)
-    golden_dir = _golden_dir(args.profile)
+    profile_name = args.profile or os.getenv("LEAD_PROFILE", "ruyatech")
+    _activate_profile(profile_name)
+    golden_dir = _golden_dir(profile_name)
     cases = _load_cases(args.cases or golden_dir / "cases.jsonl")
     fixtures_dir = args.fixtures or golden_dir / "fixtures"
     results = []
@@ -72,7 +82,7 @@ def main():
     confidence_correct = []
     confidence_incorrect = []
 
-    print(f"profile: {args.profile}")
+    print(f"profile: {profile_name}")
     print("id         result  segment                    offer             checks")
     print("-" * 78)
     for case in cases:

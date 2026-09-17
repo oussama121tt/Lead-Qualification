@@ -3,20 +3,30 @@ import argparse, json, os, sys, time
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Same one-profile-per-process rule as run_golden.py: resolve --profile
+# before importing scorer, whose SYSTEM_PROMPT snapshot follows it.
+if "--profile" in sys.argv:
+    try:
+        os.environ["LEAD_PROFILE"] = sys.argv[sys.argv.index("--profile") + 1]
+    except IndexError:
+        pass
+
 import profile as profilemod
 import scorer
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--profile", default="ruyatech")
+    ap.add_argument("--profile", default=None)
     args = ap.parse_args()
-    os.environ["LEAD_PROFILE"] = args.profile
+    profile_name = args.profile or os.getenv("LEAD_PROFILE", "ruyatech")
+    os.environ["LEAD_PROFILE"] = profile_name
     profilemod.clear_cache()
-    golden_dir = ROOT / "profiles" / args.profile / "golden"
+    golden_dir = ROOT / "profiles" / profile_name / "golden"
     cases = [json.loads(l) for l in open(golden_dir / "cases.jsonl", encoding="utf-8") if l.strip()]
     results=[]
     confusion={}
-    print(f"profile: {args.profile}")
+    print(f"profile: {profile_name}")
     print("id         expected                 got                      conf  review  result")
     print("-"*90)
     for case in cases:

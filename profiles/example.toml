@@ -1,0 +1,239 @@
+# Example profile — a deliberately different business from RuyaTech, written
+# without touching any .py file. Beacon Compliance sells SOC 2 readiness to
+# B2B SaaS scale-ups (not audits to non-technical founders), with its own
+# segments, offers, ICP, voice and sequences.
+#
+# STRUCTURE: same keys as ruyatech.toml (see its header + profiles/README).
+# Reserved machine names: the "unclear" segment and the "none" offer must
+# exist; the founder_profile x build_evidence axis vocabulary is engine
+# vocabulary, reinterpreted for this business in [scoring].axes_prose.
+
+[identity]
+company = "Beacon Compliance"
+sender_name = ""
+sender_title = "Founder"
+one_liner = "a compliance consultancy that gets B2B SaaS companies enterprise-ready"
+personal_line_blurb = "a compliance consultancy that prepares SaaS companies for enterprise security reviews"
+sequence_blurb = "a compliance consultancy that prepares SaaS companies for enterprise security reviews"
+proof_points = [
+  "fixed-fee readiness sprint scoped before\nwork starts",
+  "20+ SaaS companies through enterprise security review",
+  "auditor-ready evidence pack owned by\nthe client from day one",
+  "first enterprise deal unblocked in\nunder 8 weeks",
+]
+
+[offers.readiness_sprint]
+name = "SOC 2 Readiness Sprint"
+label = "Readiness Sprint"
+short_who = "a B2B SaaS scale-up whose enterprise deals are blocked on security review"
+who = "B2B SaaS scale-up whose enterprise deals are blocked on security review"
+detail = "controls implemented, evidence gathered, auditor handoff — typically in 6 weeks"
+case_study = "took a 30-person SaaS from failed vendor review to signed Fortune-500 contract in 7 weeks"
+email_blurb = """- readiness_sprint → "SOC 2 Readiness Sprint" service: for a B2B SaaS scale-up whose
+  enterprise deals are blocked on security review. Controls implemented, evidence gathered,
+  auditor handoff — typically in 6 weeks. Concrete example to reuse if relevant: took a
+  30-person SaaS from failed vendor review to signed Fortune-500 contract in 7 weeks."""
+
+[offers.gap_review]
+name = "Security Gap Review"
+label = "Gap Review"
+short_who = "an early founder who needs to know what enterprise buyers will ask"
+who = "an early founder who needs to know what enterprise buyers will ask"
+detail = "one-week review of posture, roadmap of controls in buy-order"
+case_study = ""
+email_blurb = """- gap_review → "Security Gap Review" service: for an early founder who needs to know what
+  enterprise buyers will ask. One-week review of posture, roadmap of controls in buy-order."""
+
+[segments.deal_blocked_scaleup]
+description = "B2B SaaS scale-up losing enterprise deals over security review"
+offer = "readiness_sprint"
+is_target = true
+label = "Blocked scale-up"
+escalate_on_hiring = true
+
+[segments.diy_early]
+description = "early founder doing security themselves before the first big deal"
+offer = "gap_review"
+is_target = true
+label = "DIY early founder"
+
+[segments.enterprise]
+description = "company with an in-house compliance team already"
+offer = "none"
+is_target = false
+label = "Enterprise"
+
+[segments.wrong_field]
+description = "lead clearly outside B2B SaaS"
+offer = "none"
+is_target = false
+label = "Wrong field"
+
+[segments.unclear]
+description = "insufficient evidence to segment"
+offer = "none"
+is_target = false
+label = "Unclear"
+
+[criteria.deal_blocked]
+label = "TARGET: Blocked on review"
+ui_desc = "B2B SaaS losing enterprise deals over security questionnaires."
+prompt_desc = "PRIMARY TARGET: identify B2B SaaS companies whose enterprise deals are blocked on security review — corresponds to the deal_blocked_scaleup segment."
+
+[criteria.diy_early]
+label = "TARGET: Early, DIY security"
+ui_desc = "Early founder handling security themselves before the first big deal."
+prompt_desc = "SECONDARY TARGET: identify early founders handling security themselves — corresponds to the diy_early segment."
+
+[criteria.in_house]
+label = "Has compliance team"
+ui_desc = "Company with an in-house compliance or security team already."
+prompt_desc = "Identify companies with an in-house compliance team (enterprise segment, not a target)."
+
+[criteria.wrong_field]
+label = "Not our target"
+ui_desc = "Outside B2B SaaS or otherwise not a buyer of readiness work."
+prompt_desc = "Identify leads that are clearly not our target (enterprise, wrong_field)."
+
+[icp]
+max_headcount = 200
+min_headcount = 5
+countries = ["United States", "United Kingdom", "Canada", "Germany", "Netherlands"]
+founded_year_min = 2015
+founded_year_max = 2026
+person_titles = ["founder", "co-founder", "ceo", "cto", "ciso", "owner"]
+employee_ranges = ["11,50", "51,200"]
+
+# Hiring marketplaces and services firms are the noise in this search space,
+# not dev shops. 'studio' stays out for the same reason as the ruyatech
+# profile: a product studio can still be a buyer.
+reject_company_markers = [
+  'staffing',
+  'recruit(?:ing|ment)\s+agency',
+  'marketing\s+agency',
+  'design\s+studio',
+  'freelance\s+collective',
+  'job\s+board',
+  'talent\s+marketplace',
+  'outsourc',
+  'we\s+hire',
+]
+
+dev_shop_pattern = "^[\\w&.'\\- ]{1,40}\\s+(staffing|recruiting|talent|marketing|consulting)\\s*(inc|llc|ltd|limited|pvt|pty|gmbh|co)?\\.?$"
+
+# A CISO/CTO employee is a buyer here, never a competitor — only fractional
+# and advisory titles are rejected. Plain security-engineer titles are kept:
+# the person running a DIY security function IS the diy_early buyer.
+reject_title_markers = [
+  'freelance',
+  'freelancer',
+  'fractional\s+(?:ciso|cto|cso|cfo|coo)',
+  'advisor',
+  'mentor',
+  'coach',
+  'consultant\s+at\s+.*\bagency\b',
+]
+
+non_decision_title_markers = [
+  'intern',
+  'student',
+  'assistant',
+  'recruiter',
+  'talent',
+  'hr\b',
+  'human\s+resources',
+  'sales\s+(?:rep|representative|development)',
+  'sdr\b',
+  'bdr\b',
+  'account\s+executive',
+  'support',
+  'customer\s+success',
+  'bookkeeper',
+  'accountant',
+  'receptionist',
+]
+
+founder_title_markers = [
+  'founder',
+  'co-?founder',
+  'ceo',
+  'cto',
+  'ciso',
+  'owner',
+  'managing\s+partner',
+  'president',
+  'chief\s+executive',
+]
+
+llm_prefilter_system = "You are a fast pre-filter for a B2B lead list. Given only a person's title, company name, headcount and founded year (no website), decide if they are plausibly a FOUNDER or security leader of a B2B SaaS company between 5 and 200 people (our target), or clearly NOT (staffing firm, hiring marketplace, intern, recruiter, unrelated sector). Respond ONLY as JSON: {\"decision\": \"keep\"|\"reject\", \"reason\": \"...\"}. When genuinely unsure, keep — a wrong reject loses a good lead."
+
+[voice]
+examples = [
+  "You ask every prospect for SOC 2 before the second call, which means your roadmap now answers to someone else's questionnaire.",
+  "Meridian books field teams across three states, so a lost laptop is a breach notification, not an IT ticket.",
+  "Three enterprise pilots all stalled at the vendor review stage within a month of each other, and you're answering each questionnaire from scratch.",
+  "You hired your first security engineer while closing the Series A, which usually means controls get built between fundraising calls.",
+]
+subject_examples = [
+  "stuck at vendor review",
+  "the questionnaire pile",
+  "before the second call",
+]
+question_examples = [
+  "is the vendor review blocking one flagship deal or every enterprise conversation right now?",
+  "are you answering security questionnaires ad hoc or is there one owner for all of them?",
+]
+
+[scoring]
+unclear_note = "Unclear means insufficient evidence, not enterprise or wrong_field."
+axes_prose = """Two independent facts are judged separately. founder_profile: Apollo employment history is first-party evidence about the buyer. A career with no engineering or security roles is sufficient to judge the buyer non_technical; a career of engineering or security leadership is sufficient to judge them technical, even when the website says nothing; semi_technical for product, data or operations backgrounds; unknown only when history is absent. build_evidence: ai_built when the product was built fast with AI tools and no security process is evidenced, hand_built when an engineering team with release process or security hires is evidenced, otherwise unknown. Derive the segment from them: technical with hand_built is deal_blocked_scaleup; technical with unknown build is still deal_blocked_scaleup with confidence 0.5 to 0.7 (the buyer question is settled, only the posture is open), never unclear; ai_built with any buyer is diy_early; non_technical is diy_early. Use unclear only when BOTH founder_profile and build_evidence are unknown. Decide in order: enough evidence, founder_profile, build_evidence, enterprise scale, wrong_field, otherwise unclear."""
+extra_rules = [
+  "A pricing page alone never proves deal_blocked_scaleup.",
+]
+career_hint = "security and engineering leadership point to deal_blocked_scaleup, non-technical founders with a fast-built product point to diy_early"
+
+[[derivation.rules]]
+when_founder = "technical"
+when_build = "hand_built"
+set_segment = "deal_blocked_scaleup"
+set_offer = "readiness_sprint"
+confidence = "clamp_0_5_0_7"
+needs_review = true
+
+[[derivation.rules]]
+when_founder = "technical"
+when_build = "any"
+set_segment = "deal_blocked_scaleup"
+set_offer = "readiness_sprint"
+confidence = "clamp_0_5_0_7"
+needs_review = true
+
+[[derivation.rules]]
+when_founder = "any"
+when_build = "ai_built"
+set_segment = "diy_early"
+set_offer = "gap_review"
+confidence = "keep"
+needs_review = false
+
+[[derivation.rules]]
+when_founder = "non_technical"
+when_build = "any"
+set_segment = "diy_early"
+set_offer = "gap_review"
+confidence = "clamp_0_5_0_7"
+needs_review = true
+
+[sequences]
+enabled = false
+send_from_email = "founder@beaconcompliance.example"
+personal_line_field_id = "example-field-id"
+personalised_share = 0.5
+
+[sequences.offers.readiness_sprint]
+id = "example-seq-readiness"
+sensitive_id = "example-seq-readiness-sensitive"
+
+[sequences.offers.gap_review]
+id = "example-seq-gap"
+sensitive_id = ""

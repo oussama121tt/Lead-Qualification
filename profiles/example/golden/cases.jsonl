@@ -1,0 +1,4 @@
+{"id": "beacon1", "expected_segment": "deal_blocked_scaleup", "expected_offer": "readiness_sprint", "min_confidence": 0.6, "expected_needs_human_review": true, "notes": "Technical founder, hand-built, unclear model verdict derives to scale-up", "fixture": "beacon1.json"}
+{"id": "beacon2", "expected_segment": "diy_early", "expected_offer": "gap_review", "min_confidence": 0.6, "expected_needs_human_review": true, "notes": "Non-technical founder, build unknown, derives clamped to 0.7", "fixture": "beacon2.json"}
+{"id": "beacon3", "expected_segment": "deal_blocked_scaleup", "expected_offer": "readiness_sprint", "min_confidence": 0.6, "expected_needs_human_review": false, "notes": "Confident blocked scale-up passes through", "fixture": "beacon3.json"}
+{"id": "beacon4", "expected_segment": "enterprise", "expected_offer": "none", "min_confidence": 0.6, "expected_needs_human_review": false, "notes": "In-house compliance team stays out of target", "fixture": "beacon4.json"}
