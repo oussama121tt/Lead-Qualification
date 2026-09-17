@@ -6,7 +6,7 @@ Employment history settles the founder question on its own; the code must not
 discard that certainty because the build method is unknown.
 """
 import scorer
-from runconfig import load_config
+from profile import load_profile
 
 
 def _v(**over):
@@ -64,12 +64,11 @@ def test_model_given_segment_is_never_overridden_when_not_unclear():
 
 
 def test_apollo_sequences_config_maps_offers():
-    cfg = load_config()
-    seq = cfg.apollo.sequences
-    assert seq is not None and seq.enabled is False          # enrolment is opt-in
-    assert seq.sequence_for("ai_audit") == seq.ai_audit
-    assert seq.sequence_for("ai_audit", sensitive=True) == seq.ai_audit_sensitive
-    assert seq.sequence_for("general_audit") == seq.general_audit
+    seq = load_profile("ruyatech").sequences
+    assert seq.enabled is False                               # enrolment is opt-in
+    assert seq.sequence_for("ai_audit") == seq.offers["ai_audit"].id
+    assert seq.sequence_for("ai_audit", sensitive=True) == seq.offers["ai_audit"].sensitive_id
+    assert seq.sequence_for("general_audit") == seq.offers["general_audit"].id
     assert seq.sequence_for("pipeline") is None               # not built yet -> never sent
     assert seq.sequence_for("none") is None
 

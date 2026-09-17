@@ -3,7 +3,7 @@
 This is the real multi-touch sender: Apollo runs the 3-step sequence from the
 account's own mailboxes (Instantly is not needed). Safety rails, in order:
 
-  1. [apollo.sequences].enabled must be true, otherwise everything is a dry run.
+  1. The profile [sequences].enabled must be true, otherwise everything is a dry run.
   2. Only leads with review_status = APPROVED, not duplicates, not on the
      do_not_contact registry, with an email and a recommended offer.
   3. Every lead already exported/enrolled once (export_history) is skipped.
@@ -33,7 +33,7 @@ import campaigns as campaignsmod
 import db as dbmod
 import dnc as dncmod
 import export as exportmod
-from runconfig import load_config
+from profile import load_profile
 
 
 def _eligible(conn, session_id: int) -> tuple[list[dict], list[tuple[dict, str]]]:
@@ -58,7 +58,7 @@ def _eligible(conn, session_id: int) -> tuple[list[dict], list[tuple[dict, str]]
     return ok, skipped
 
 
-def _sequence_for(cfg, lead: dict) -> str | None:
+def _sequence_for(seqs, lead: dict) -> str | None:
     offer = lead.get("recommended_offer")
     cats = lead.get("sensitive_data_categories") or []
     if isinstance(cats, str):
@@ -67,7 +67,7 @@ def _sequence_for(cfg, lead: dict) -> str | None:
         except (json.JSONDecodeError, TypeError):
             cats = [cats] if cats else []
     sensitive = bool([c for c in cats if c and c != "none"])
-    return cfg.apollo.sequences.sequence_for(offer, sensitive=sensitive)
+    return seqs.sequence_for(offer, sensitive=sensitive)
 
 
 def main() -> int:
@@ -81,11 +81,10 @@ def main() -> int:
                     help="give every lead its Personal Line (no control arm)")
     args = ap.parse_args()
 
-    cfg = load_config()
-    seqcfg = cfg.apollo.sequences
+    seqcfg = load_profile().sequences
     live = bool(seqcfg and seqcfg.enabled) and not args.dry_run
     if not live and not args.dry_run:
-        print("[enroll] [apollo.sequences].enabled is false -> forcing dry run.")
+        print("[enroll] profile [sequences].enabled is false -> forcing dry run.")
     dry = not live
 
     conn = dbmod.get_connection()
@@ -117,7 +116,7 @@ def main() -> int:
         plan: dict[str, list[dict]] = {}
         no_sequence: list[dict] = []
         for l in ok:
-            sid = _sequence_for(cfg, l)
+            sid = _sequence_for(seqcfg, l)
             (plan.setdefault(sid, []) if sid else no_sequence).append(l)
 
         print(f"[enroll] session {session_id}: {len(ok)} eligible, {len(skipped)} skipped, "
@@ -136,7 +135,7 @@ def main() -> int:
         if by_reason:
             print("  skipped:", ", ".join(f"{k}={v}" for k, v in sorted(by_reason.items())))
         if dry:
-            print("[enroll] DRY RUN — nothing sent. Set [apollo.sequences].enabled = true and rerun without --dry-run.")
+            print("[enroll] DRY RUN — nothing sent. Set profile [sequences].enabled = true and rerun without --dry-run.")
             return 0
 
         account_id = apollo_client.email_account_id_for(seqcfg.send_from_email)

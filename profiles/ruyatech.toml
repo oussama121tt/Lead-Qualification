@@ -265,19 +265,29 @@ wrong_field, or unclear. Map those segments to ai_audit, general_audit, pipeline
 and normally none."""
 
 [sequences]
+# Apollo sequence enrolment (the real multi-touch sender). enabled = false
+# keeps every enrolment path a dry run. personalised_share is the A/B split:
+# this share of approved leads gets the generated Personal Line, the rest run
+# the same sequence with no line. 1.0 = personalise everyone, 0.0 = control.
+# Ids read live from the account on 2026-09-10 (3-step sequences, active).
 enabled = false
 send_from_email = "oussama@ruyatech.io"
 personal_line_field_id = "6a47de3d386294002003b1a6"
 personalised_share = 0.5
 
+# AIAUDIT B1 - Angle B (AI-built); sensitive variant is Angle A (AI-built,
+# sensitive data, used when sensitive_data_categories is non-empty).
 [sequences.offers.ai_audit]
 id = "6a66cad9e37fae0018459329"
 sensitive_id = "6a66cac7e37fae001436c196"
 
+# AIAUDIT B1 - Angle C (general audit).
 [sequences.offers.general_audit]
 id = "6a66caecff375500136a7483"
 sensitive_id = ""
 
+# No sequence built for the automation offer yet: empty id means leads with
+# this offer are reported, never sent.
 [sequences.offers.pipeline]
 id = ""
 sensitive_id = ""

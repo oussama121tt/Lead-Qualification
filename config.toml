@@ -108,29 +108,16 @@ require_verified_email = true
 # monthly cap above.
 run_credit_cap = 1000
 
-# Apollo sequence enrolment (the real multi-touch sender). Maps a recommended
-# offer to the Apollo sequence id that carries that angle, read live from the
-# account on 2026-09-10 (all three are 3-step sequences, active):
-#   AIAUDIT B1 - Angle A (AI-built, sensitive data)  6a66cac7e37fae001436c196
-#   AIAUDIT B1 - Angle B (AI-built)                  6a66cad9e37fae0018459329
-#   AIAUDIT B1 - Angle C (general audit)             6a66caecff375500136a7483
-#   AIAUDIT v3 - give it away                        6a75b7ed92c62e001280ae52
-# send_from_email is the mailbox Apollo sends from (must be one of the fleet
-# above). Enrolment is only ever triggered explicitly (tools/enroll_apollo.py
-# or the campaign page), never as a side effect of Ship.
-[apollo.sequences]
-enabled = false
-send_from_email = "oussama@ruyatech.io"
-ai_audit_sensitive = "6a66cac7e37fae001436c196"   # ai_audit + sensitive_data_categories non-empty
-ai_audit = "6a66cad9e37fae0018459329"
-general_audit = "6a66caecff375500136a7483"
-pipeline = ""                                      # no sequence built for the automation offer yet
-# Apollo contact custom field "Personal Line" (verified live 2026-09-12).
-# The sequence template already references it; we only fill it per contact.
-personal_line_field_id = "6a47de3d386294002003b1a6"
-# A/B: this share of approved leads gets the generated line, the rest run the
-# identical sequence with no line. 1.0 = personalise everyone, 0.0 = control only.
-personalised_share = 0.5
+# Apollo sequence enrolment (the real multi-touch sender) is per-business:
+# offer -> sequence ids, sender mailbox, Personal Line field and A/B share
+# live in profiles/<name>.toml [sequences], not here. Enrolment is only ever
+# triggered explicitly (tools/enroll_apollo.py or the campaign page), never
+# as a side effect of Ship.
+#
+# Angles read live from the account on 2026-09-10 (3-step, active):
+# AIAUDIT B1 Angle A (AI-built, sensitive data), Angle B (AI-built),
+# Angle C (general audit); Personal Line custom field verified 2026-09-12.
+# The live ids are in profiles/<name>.toml [sequences].
 
 [prefilter]
 # Stage-0 runs on free Apollo search fields BEFORE any enrichment or website

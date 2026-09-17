@@ -396,7 +396,7 @@ def add_contacts_to_sequence(sequence_id: str, contact_ids: list[str], *,
                              send_from_email_account_id: str,
                              user_id: str | None = None) -> dict:
     """Enrols contacts in an Apollo sequence. THIS STARTS EMAILS. Callers must
-    gate on [apollo.sequences].enabled and on the DNC registry first."""
+    gate on the profile [sequences].enabled and on the DNC registry first."""
     if not contact_ids:
         return {"contacts": []}
     payload = {
