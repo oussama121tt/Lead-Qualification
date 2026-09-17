@@ -28,26 +28,23 @@ import time
 
 import scorer
 from llm_provider import get_llm_provider
-from personal_line import _BANNED, EXAMPLES, MAX_WORDS, _evidence_block
+from personal_line import _BANNED, MAX_WORDS, _evidence_block
+from profile import load_profile
 
-# Real subjects from the campaign that earned replies (no sequence, Mar-May 2026).
-SUBJECT_EXAMPLES = [
-    "between nothing and something",
-    "full circle from winner to judge",
-    "$420 and rising",
-    "about building Wella",
-    "VP at Parexel to Navidence founder",
-    "analyzing 1.1B views across Fashion Week",
-]
 
-# Real questions that were answered by the founder.
-QUESTION_EXAMPLES = [
-    "is the multimodal video analysis processing live across all three platforms or still scaling up?",
-    "is the behavior tracking model in testing yet or still in development?",
-]
-
-SYSTEM = """You prepare one cold-email sequence for RuyaTech, a technical agency that audits and \
-rescues software products that were built fast. The sequence copy is already written; you supply \
+# Voice (examples, subjects, questions) and sender blurb come from the
+# profile; the four-field contract below is the sending machine. Known
+# remainder: "code audit" still names the offer in field 2 — generalized
+# when a second profile needs different wording.
+def build_system(p=None) -> str:
+    p = p or load_profile()
+    examples = "\n".join(f"- {e}" for e in p.voice.examples)
+    subjects = "\n".join(f"- {s}" for s in p.voice.subject_examples)
+    questions = "\n".join(f"- {q}" for q in p.voice.question_examples)
+    company = p.identity.company
+    blurb = p.identity.sequence_blurb
+    return f"""You prepare one cold-email sequence for {company}, {blurb}. \
+The sequence copy is already written; you supply \
 four values merged per contact.
 
 Opening lines that have actually been sent by this team - match this voice:
@@ -100,17 +97,13 @@ FIELDS = ("subject_line", "personal_line", "opening_question", "second_observati
 
 
 def generate(lead: dict, verdict: dict, site_text: str, web_text: str = "",
-             *, cost_cb=None, provider=None) -> dict:
+             *, cost_cb=None, provider=None, profile=None) -> dict:
     """Returns the four values plus a per-field status dict.
 
     status values: "ok", "empty" (evidence too thin), "rejected:<why>"."""
     provider = provider or get_llm_provider("email")
     prompt = _evidence_block(lead, verdict, site_text, web_text)
-    system = SYSTEM.format(
-        examples="\n".join(f"- {e}" for e in EXAMPLES),
-        subjects="\n".join(f"- {s}" for s in SUBJECT_EXAMPLES),
-        questions="\n".join(f"- {q}" for q in QUESTION_EXAMPLES),
-    )
+    system = build_system(profile)
     t0 = time.monotonic()
     data, meta = provider.generate_json(prompt, system=system, max_tokens=1800)
     if cost_cb is not None:

@@ -9,49 +9,42 @@ import json
 import os
 
 from llm_provider import get_llm_provider
+from profile import load_profile
 
-# The sender identity is campaign configuration, not code: set SENDER_NAME
-# (and optionally SENDER_COMPANY) in .env. Falls back to a neutral company
-# signature — never a hardcoded person.
-def _sender_signature() -> str:
-    name = os.getenv("SENDER_NAME", "").strip()
-    company = os.getenv("SENDER_COMPANY", "RuyaTech").strip()
+# The sender identity is profile data with an env override: set SENDER_NAME
+# (and optionally SENDER_COMPANY) in .env to override the profile. Falls back
+# to the profile company signature — never a hardcoded person.
+def _sender_signature(p=None) -> str:
+    company = os.getenv("SENDER_COMPANY", "").strip() or (p.identity.company if p else "")
+    name = os.getenv("SENDER_NAME", "").strip() or (p.identity.sender_name if p else "")
     return f"{name} — {company}" if name else company
 
-EMAIL_PROMPT_TEMPLATE = """You write a short, personalized outreach email for RuyaTech,
-a technical agency that builds, rescues, and scales SaaS products for founders.
+# Email prompt skeleton: fixed sending structure. Every business word comes
+# from the profile (company, one_liner, offer blurbs, proof points,
+# signature); lead values are filled by build_prompt in the second pass
+# (hence doubled braces here, quadrupled for the literal JSON line).
+def _template_for(p) -> str:
+    company = p.identity.company
+    offers = "\n\n".join(o.email_blurb for o in p.offers.values() if o.email_blurb)
+    proofs = ", ".join(p.identity.proof_points)
+    return f"""You write a short, personalized outreach email for {company},
+{p.identity.one_liner}.
 
-Company: {company_name}
-Contact first name (leave "Greetings," without a name if empty): {contact_first_name}
-Detected segment: {segment}
-Recommended offer: {recommended_offer}
-Personalization hooks already identified by the scoring: {personalization_hooks}
-Evidence/quotes taken from the site: {evidence_quotes}
-Excerpt from the homepage content: {homepage_content}
+Company: {{company_name}}
+Contact first name (leave "Greetings," without a name if empty): {{contact_first_name}}
+Detected segment: {{segment}}
+Recommended offer: {{recommended_offer}}
+Personalization hooks already identified by the scoring: {{personalization_hooks}}
+Evidence/quotes taken from the site: {{evidence_quotes}}
+Excerpt from the homepage content: {{homepage_content}}
 
-Context of the RuyaTech offers (pick the one matching recommended_offer, stay faithful to the
+Context of the {company} offers (pick the one matching recommended_offer, stay faithful to the
 exact positioning below — do not generalize, do not reinvent what we offer):
 
-- ai_audit → "Product Rescue & Scale-Up" service: for non-technical founders whose product was
-  built with AI (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) and starts breaking under
-  real users. Full code audit, stabilization, refactoring, and getting it back on track —
-  typically in 4 to 8 weeks. Concrete example to reuse if relevant: we took over an AI-generated
-  SaaS that was collapsing, relaunched it in 2 weeks, 600 paying members 6 months later
-  (Bake Genie case study).
+{offers}
 
-- general_audit → same "Product Rescue & Scale-Up" service, for a technical team:
-  security and architecture audit, concrete recommendations, fix prioritization.
-
-- pipeline → "AI Agents & Automation" service: custom AI agents and automations plugged into
-  existing systems (lead triage, document processing, workflows), not "AI gadgets".
-  Concrete example to reuse if relevant: lead triage pipeline delivered to an overwhelmed B2B
-  firm — 5h/week of business dev instead of several hours a day, 30K$+ in new contracts in
-  30 days.
-
-General RuyaTech proof points, to use sparingly (one if needed, never all at once) to add
-credibility without making the email sound like a sales brochure: fixed price announced before
-coding (no hourly billing), 10+ delivered projects, 100% of the code belongs to the client
-from day one, reply within 4 business hours.
+General {company} proof points, to use sparingly (one if needed, never all at once) to add
+credibility without making the email sound like a sales brochure: {proofs}.
 
 Strict instructions:
 - Short subject line specific to this company (not generic, no visible template) — never empty,
@@ -61,10 +54,10 @@ Strict instructions:
      available in the context, otherwise "Greetings,").
   2. Personalized opener (1-2 sentences): the concrete situational detail spotted on their site.
   3. Offer presentation (1-2 sentences): the link between that detail and the recommended
-     RuyaTech service, with at most one concrete proof point (case study/figure) if it adds real
+     {company} service, with at most one concrete proof point (case study/figure) if it adds real
      credibility.
   4. Call-to-action (1 sentence): one single clear action (e.g. propose a quick call).
-  5. Sign-off + signature (e.g. "Best regards," then a line break, then "{sender_signature}").
+  5. Sign-off + signature (e.g. "Best regards," then a line break, then "{{sender_signature}}").
   6. After the signature, on its own final line, a short polite opt-out sentence (e.g.
      "If you'd rather not hear from me again, just reply 'no thanks'."). This line is
      MANDATORY in every email — compliance requirement, never skip it.
@@ -79,11 +72,11 @@ Strict instructions:
   content provided may be in French (scraped from the site): translate and adapt them into
   English in the email, never paste them verbatim in their original language. The final email
   must not contain any word, phrase, or quote in a language other than English.
-- Use the RuyaTech proof points (case studies, figures) only if they add real credibility to the
+- Use the {company} proof points (case studies, figures) only if they add real credibility to the
   message — never as filler, never more than one per email.
 - One single clear call-to-action, toward the recommended offer.
 - Do not invent any fact that is not in the context provided above.
-- Respond only with this JSON, nothing else: {{"subject": "...", "body": "..."}}
+- Respond only with this JSON, nothing else: {{{{"subject": "...", "body": "..."}}}}
   The "subject" field must never be empty. The "body" field must contain the line breaks
   ("\\n\\n" between each block) that structure the email as described above.
 """
@@ -115,12 +108,13 @@ def _as_text(value) -> str:
     return str(value)[:MAX_HOOK_CHARS]
 
 
-def build_prompt(lead: dict, homepage_content: str) -> str:
+def build_prompt(lead: dict, homepage_content: str, profile=None) -> str:
     # Phase 2: a reviewer-set hook_override (keyboard review queue) takes
     # precedence over the AI-found hooks — it's the operator's call, and if
     # present it is the ONLY hooks source for this lead.
+    p = profile or load_profile()
     hooks = lead.get("hook_override") or lead.get("personalization_hooks")
-    return EMAIL_PROMPT_TEMPLATE.format(
+    return _template_for(p).format(
         company_name=lead["company_name"] or "this company",
         contact_first_name=lead.get("first_name") or "",
         segment=lead.get("segment") or "unknown",
@@ -128,7 +122,7 @@ def build_prompt(lead: dict, homepage_content: str) -> str:
         personalization_hooks=_as_text(hooks),
         evidence_quotes=_as_text(lead.get("evidence_quotes")),
         homepage_content=(homepage_content or "")[:MAX_HOMEPAGE_CHARS],
-        sender_signature=_sender_signature(),
+        sender_signature=_sender_signature(p),
     )
 
 

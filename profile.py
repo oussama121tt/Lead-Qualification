@@ -33,6 +33,8 @@ class Identity:
     sender_name: str = ""
     sender_title: str = ""
     one_liner: str = ""
+    personal_line_blurb: str = ""
+    sequence_blurb: str = ""
     proof_points: list[str] = field(default_factory=list)
 
 
@@ -43,6 +45,7 @@ class Offer:
     who: str = ""
     detail: str = ""
     case_study: str = ""
+    email_blurb: str = ""
 
 
 @dataclass
@@ -128,6 +131,7 @@ class Profile:
     sequences: Sequences
     derivation_rules: list[DerivationRule] = field(default_factory=list)
     scoring_criteria: dict[str, str] = field(default_factory=dict)
+    scoring_offers_block: str = ""
     # Compiled Stage-0 regexes, built from the marker lists at load time.
     agency_company_re: re.Pattern | None = None
     dev_shop_re: re.Pattern | None = None
@@ -191,12 +195,15 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
         sender_name=str(ident.get("sender_name", "")),
         sender_title=str(ident.get("sender_title", "")),
         one_liner=str(ident.get("one_liner", "")),
+        personal_line_blurb=str(ident.get("personal_line_blurb", "")),
+        sequence_blurb=str(ident.get("sequence_blurb", "")),
         proof_points=[str(p) for p in ident.get("proof_points", [])],
     )
 
     offers = {
         key: Offer(key=key, name=str(v.get("name", "")), who=str(v.get("who", "")),
-                   detail=str(v.get("detail", "")), case_study=str(v.get("case_study", "")))
+                   detail=str(v.get("detail", "")), case_study=str(v.get("case_study", "")),
+                   email_blurb=str(v.get("email_blurb", "")))
         for key, v in raw.get("offers", {}).items()
     }
 
@@ -270,6 +277,7 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
         sequences=sequences,
         derivation_rules=rules,
         scoring_criteria={str(k): str(v) for k, v in raw.get("scoring_criteria", {}).items()},
+        scoring_offers_block=str(raw.get("scoring", {}).get("offers_block", "")),
         agency_company_re=_compile(icp.reject_company_markers),
         dev_shop_re=re.compile(icp.dev_shop_pattern, re.I) if icp.dev_shop_pattern else None,
         agency_title_re=_compile(icp.reject_title_markers),

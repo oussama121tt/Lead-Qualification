@@ -26,25 +26,20 @@ import re
 
 import scorer
 from llm_provider import get_llm_provider
+from profile import load_profile
 
-# Real lines from the AIAUDIT campaigns (Apollo, Aug-Sep 2026). These are the
-# style contract; do not replace them with invented examples.
-EXAMPLES = [
-    "Swipe-native shopping means checkout has to be instant and correct every time, and you're building that on your own.",
-    "Maggie helps mums find activities near them, which means the app knows where children will be and when. That's a heavier data load than most free apps carry.",
-    "A year on the App Store means a year of medication records and dependants' details accumulating, shared across people who aren't in the same household.",
-    "HoopDee calculates when milk expires. Most apps fail by annoying someone; yours fails by feeding a baby something it shouldn't.",
-    "Weave coordinates care for people already in hardship, which makes it about the last place anyone would want a data problem.",
-    "Aviva reads families' school emails to build their calendars. Inbox access is about the heaviest permission an app can hold, and you're holding it for parents.",
-    "Ove is built for girls going through puberty, so the data belongs to minors and UK rules treat that more strictly than almost anything else.",
-    "Doozi's whole promise is that every pin is verified and nothing is paid placement. Trust claims like that live or die on what the software actually enforces.",
-    "You've just joined Honeymoon as an Earned Media Director while running Tblscape's subscriptions and payments. That's a lot of plates.",
-    "SYNC pulls wearable data alongside cycle tracking, so it's holding a continuous stream of something quite personal rather than an occasional log.",
-    "You're running a full real-estate practice and building Paced at the same time, which usually means the app gets your evenings and the plumbing underneath gets whatever's left.",
-]
 
-SYSTEM_PROMPT = """You write ONE personalised opening line for a cold email from RuyaTech, a technical \
-agency that audits and rescues software products. The rest of the email is already written; you \
+# Voice (examples) and sender blurb come from the profile; the house rules
+# below are the sending machine. Known remainder: "code audit" / "an audit"
+# still name the offer in these rules — generalized when a second profile
+# needs different wording.
+def build_system(p=None) -> str:
+    p = p or load_profile()
+    examples = "\n".join(f"- {e}" for e in p.voice.examples)
+    company = p.identity.company
+    blurb = p.identity.personal_line_blurb
+    return f"""You write ONE personalised opening line for a cold email from {company}, {blurb}. \
+The rest of the email is already written; you \
 supply only the line that follows the greeting.
 
 House style, learned from lines that have actually been sent:
@@ -62,7 +57,7 @@ failure would actually cost. The implication must follow from the fact, not be a
 "I saw", "Love what you're doing", "impressive", "exciting", or any exclamation mark.
 - NEVER invent a fact. If the evidence does not support a specific observation, say so by \
 returning an empty line rather than writing something generic.
-- Do not greet, do not sign off, do not mention RuyaTech or an audit.
+- Do not greet, do not sign off, do not mention {company} or an audit.
 
 Respond ONLY with JSON: {{"line": "...", "based_on": "exact verbatim quote from the evidence that \
 the observation rests on"}}. Return {{"line": "", "based_on": ""}} when the evidence is too thin."""
@@ -114,7 +109,7 @@ def _evidence_block(lead: dict, verdict: dict, site_text: str, web_text: str = "
 
 
 def generate(lead: dict, verdict: dict, site_text: str, web_text: str = "",
-             *, cost_cb=None, provider=None) -> dict:
+             *, cost_cb=None, provider=None, profile=None) -> dict:
     """Returns {"line", "based_on", "status"}.
 
     status: "ok" (grounded, usable), "empty" (model declined: evidence too
@@ -123,7 +118,7 @@ def generate(lead: dict, verdict: dict, site_text: str, web_text: str = "",
     import time as _time
     provider = provider or get_llm_provider("email")
     prompt = _evidence_block(lead, verdict, site_text, web_text)
-    system = SYSTEM_PROMPT.format(examples="\n".join(f"- {e}" for e in EXAMPLES))
+    system = build_system(profile)
     t0 = _time.monotonic()
     data, meta = provider.generate_json(prompt, system=system, max_tokens=900)
     if cost_cb is not None:

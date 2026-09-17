@@ -41,6 +41,7 @@ load_dotenv()
 
 from constants import CONFIDENCE_THRESHOLD, VALID_SEGMENTS
 from llm_provider import get_llm_provider
+from profile import load_profile
 
 MODEL = os.getenv("GROQ_SCORING_MODEL", "openai/gpt-oss-120b")
 MAX_CONTENT_CHARS = 16000  # legacy — still used by the retry paths (site content only)
@@ -61,13 +62,14 @@ GROQ_TIMEOUT_SECONDS = 90
 INVALID_VERDICT_CONFIDENCE_CAP = 0.3
 
 
-SYSTEM_PROMPT = """You are a senior B2B lead analyst for RuyaTech. Use only supplied Apollo metadata,
+# Scorer system prompt. {company} and {offers_block} are profile data (filled
+# by get_system_prompt via plain .replace, so the JSON schema's literal
+# braces below need no escaping); the segment enumeration inside
+# offers_block is still a verbatim profile block until Task 5 derives it
+# from [segments].
+_SYSTEM_PROMPT_TEMPLATE = """You are a senior B2B lead analyst for {company}. Use only supplied Apollo metadata,
 official site content, web evidence, and verified deterministic signals.
-OFFERS: ai_audit is for an AI-built product owned by a non-technical founder; general_audit is
-for a technical team needing architecture or security review; pipeline is for a scaling agency.
-Choose exactly one segment: ai_solo_founder, technical_founder, small_agency_scaling, too_big,
-wrong_field, or unclear. Map those segments to ai_audit, general_audit, pipeline, none, none,
-and normally none. Unclear means insufficient evidence, not wrong_field or too_big.
+{offers_block} Unclear means insufficient evidence, not wrong_field or too_big.
 STRONG signals are app_builder_fingerprint, explicit AI authorship, or a verified single-commit
 GitHub repository combined with an app builder. site_builder_fingerprint (Framer/Webflow/Wix/
 Squarespace/Carrd) is metadata only and never changes the segment. on_builder_subdomain=true is
@@ -125,6 +127,18 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
   "disqualify_reason": null,
   "needs_human_review": false
 }"""
+
+
+def get_system_prompt(p=None) -> str:
+    """Assemble the scorer system prompt from the profile (cached load)."""
+    p = p or load_profile()
+    return _SYSTEM_PROMPT_TEMPLATE.replace("{company}", p.identity.company).replace(
+        "{offers_block}", p.scoring_offers_block)
+
+
+# Default-profile snapshot; existing callers and tests keep working.
+# _call_llm resolves the prompt per active profile instead.
+SYSTEM_PROMPT = get_system_prompt()
 
 # Every key the parser reads. A test asserts each one is named in the prompt,
 # so a future "prompt diet" can never silently drop the schema again (this
@@ -510,7 +524,7 @@ def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS,
     t0 = _time.monotonic()
     data, meta = provider.generate_json(
         user_content,
-        system=SYSTEM_PROMPT,
+        system=get_system_prompt(),
         temperature=0.2,
         max_tokens=max_output_tokens,
     )

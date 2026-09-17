@@ -13,6 +13,8 @@
 #                      load time (see profile.py) — no regex syntax needed to
 #                      edit them, except dev_shop_pattern which stays a pattern.
 #   [voice]            real lines that earned replies; generators imitate these.
+#   [scoring]          verbatim scorer prompt block enumerating offers/segments
+#                      (Task 5 derives the segment list from [segments]).
 #   [sequences]        Apollo sequence wiring for this offer set.
 #   [[derivation.rules]] founder_profile x build_evidence -> segment/offer rules
 #                      applied when the model returns segment "unclear".
@@ -23,13 +25,23 @@
 
 [identity]
 company = "RuyaTech"
-sender_name = "Oussama Ibrahim"
+# The mail signature is env-first (SENDER_NAME / SENDER_COMPANY), profile
+# second. sender_name stays empty so the default signature is exactly the
+# historical one ("RuyaTech"); a non-empty sender_name signs as
+# "<sender_name> — <company>".
+sender_name = ""
 sender_title = "Founder"
-one_liner = "a technical agency that builds, rescues and scales SaaS products"
+# Three historical wordings of what RuyaTech is, preserved verbatim — one per
+# prompt that uses them. A new profile may unify them into one_liner.
+one_liner = "a technical agency that builds, rescues, and scales SaaS products for founders"
+personal_line_blurb = "a technical agency that audits and rescues software products"
+sequence_blurb = "a technical agency that audits and rescues software products that were built fast"
+# Line breaks inside items are preserved verbatim into the email prompt
+# (historical wrapping); a new profile can write plain single-line items.
 proof_points = [
-  "fixed price announced before coding (no hourly billing)",
+  "fixed price announced before\ncoding (no hourly billing)",
   "10+ delivered projects",
-  "100% of the code belongs to the client from day one",
+  "100% of the code belongs to the client\nfrom day one",
   "reply within 4 business hours",
 ]
 
@@ -38,18 +50,33 @@ name = "Product Rescue & Scale-Up"
 who = "non-technical founder whose product was built with AI (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) and starts breaking under real users"
 detail = "full code audit, stabilization, refactoring, and getting it back on track — typically in 4 to 8 weeks"
 case_study = "we took over an AI-generated SaaS that was collapsing, relaunched it in 2 weeks, 600 paying members 6 months later (Bake Genie case study)"
+# Rendered email bullet, preserved verbatim. who/detail/case_study above are
+# the canonical definition; email_blurb is its mail rendering.
+email_blurb = """- ai_audit → "Product Rescue & Scale-Up" service: for non-technical founders whose product was
+  built with AI (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) and starts breaking under
+  real users. Full code audit, stabilization, refactoring, and getting it back on track —
+  typically in 4 to 8 weeks. Concrete example to reuse if relevant: we took over an AI-generated
+  SaaS that was collapsing, relaunched it in 2 weeks, 600 paying members 6 months later
+  (Bake Genie case study)."""
 
 [offers.general_audit]
 name = "Product Rescue & Scale-Up"
 who = "a technical team"
 detail = "security and architecture audit, concrete recommendations, fix prioritization"
 case_study = ""
+email_blurb = """- general_audit → same "Product Rescue & Scale-Up" service, for a technical team:
+  security and architecture audit, concrete recommendations, fix prioritization."""
 
 [offers.pipeline]
 name = "AI Agents & Automation"
 who = "a scaling agency"
 detail = "custom AI agents and automations plugged into existing systems (lead triage, document processing, workflows), not \"AI gadgets\""
 case_study = "lead triage pipeline delivered to an overwhelmed B2B firm — 5h/week of business dev instead of several hours a day, 30K$+ in new contracts in 30 days"
+email_blurb = """- pipeline → "AI Agents & Automation" service: custom AI agents and automations plugged into
+  existing systems (lead triage, document processing, workflows), not "AI gadgets".
+  Concrete example to reuse if relevant: lead triage pipeline delivered to an overwhelmed B2B
+  firm — 5h/week of business dev instead of several hours a day, 30K$+ in new contracts in
+  30 days."""
 
 [segments.ai_solo_founder]
 description = "AI-built product owned by a non-technical founder"
@@ -224,6 +251,16 @@ question_examples = [
   "is the multimodal video analysis processing live across all three platforms or still scaling up?",
   "is the behavior tracking model in testing yet or still in development?",
 ]
+
+[scoring]
+# Verbatim scorer prompt block enumerating offers and segments (line breaks
+# preserved). Task 5 derives the segment enumeration from [segments]; until
+# then this block is the byte-identical source for the scorer system prompt.
+offers_block = """OFFERS: ai_audit is for an AI-built product owned by a non-technical founder; general_audit is
+for a technical team needing architecture or security review; pipeline is for a scaling agency.
+Choose exactly one segment: ai_solo_founder, technical_founder, small_agency_scaling, too_big,
+wrong_field, or unclear. Map those segments to ai_audit, general_audit, pipeline, none, none,
+and normally none."""
 
 [sequences]
 enabled = false
