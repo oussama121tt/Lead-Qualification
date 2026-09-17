@@ -201,6 +201,29 @@ extra_rules = [
 ]
 career_hint = "security and engineering leadership point to deal_blocked_scaleup, non-technical founders with a fast-built product point to diy_early"
 
+# Beacon sells to B2B SaaS, so the SaaS lifecycle stages carry over as-is.
+[stages]
+values = ["pre-launch", "early", "scaling", "established"]
+prompt_description = "pre-launch | early | scaling | established"
+
+# SOC 2 evidence ontology: what a vendor review asks for (customer data,
+# credentials, workforce records) instead of end-user PII. Same "none"
+# sentinel and 0-100 breach-impact score mechanics as ruyatech.
+[sensitive]
+categories = ["customer_data", "employee_data", "credentials", "financial",
+              "legal", "none"]
+empty_sentinel = "none"
+score_max = 100
+prompt_description = "Identify sensitive categories only when the product is evidenced to HANDLE that data: customer records, stored files, login credentials, workforce records, payments, signed contracts. Topical adjacency is not handling: a security blog, a compliance checklist or a vendor directory is not customer_data. Keys: customer_data, employee_data, credentials, financial, legal, none. Set sensitive_data_categories to a list of those exact keys and data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none."
+
+# Same four-step signal scale (reusable), but the evidence ontology is
+# readiness work (open enterprise deals, failed reviews, security hires),
+# not founder SaaS tells.
+[budget]
+signals = ["strong", "moderate", "weak", "none"]
+empty_sentinel = "none"
+prompt_description = "Set budget_signal to strong, moderate, weak, or none. Record open enterprise deals, security budget owners, prior audit spend, or compliance-driven hiring in budget_evidence. Record no open deals, founder-only security effort, pre-revenue stage, or shrinking headcount in budget_blockers. Budget is informational: it never changes the segment, the confidence or needs_human_review."
+
 [[derivation.rules]]
 when_founder = "technical"
 when_build = "hand_built"

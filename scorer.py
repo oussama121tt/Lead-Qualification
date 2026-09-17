@@ -63,9 +63,10 @@ INVALID_VERDICT_CONFIDENCE_CAP = 0.3
 
 # Scorer system prompt. The {slots} are profile data (filled by
 # get_system_prompt via plain .replace, so the JSON schema's literal braces
-# below need no escaping): company and offer/segment sentences are derived
-# from [identity]/[offers]/[segments], the evidence-rule prose blocks are
-# verbatim [scoring] data. Everything else is engine mechanics.
+# below need no escaping): company and offer/segment/stage/budget sentences
+# are derived from the profile tables, the evidence-rule prose blocks are
+# verbatim [scoring]/[sensitive]/[budget] data. Everything else is engine
+# mechanics.
 _SYSTEM_PROMPT_TEMPLATE = """You are a senior B2B lead analyst for {company}. Use only supplied Apollo metadata,
 official site content, web evidence, and verified deterministic signals.
 {offers_sentence}
@@ -83,16 +84,8 @@ biographical, and each must be {"hook":"...","based_on":"exact quote"}. Use only
 demos, product AI features, and client capabilities do not prove AI construction. Never invert a
 capability into pain. Confidence below 0.7 requires needs_human_review=true.
 {axes_prose}
-Identify sensitive categories only when the product is evidenced to HANDLE that data: a patient
-portal, record storage, uploads, telehealth, payments, identity checks, employee records. Topical
-adjacency is not handling: a health blog, a fitness tracker or a clinic directory is not
-health_phi. Keys: minors, health_phi, biometric, payments, identity_documents, financial, legal,
-location, employee_data, none. Set sensitive_data_categories to a list of those exact keys and
-data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none.
-Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits,
-or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project,
-default builder subdomain, or shrinking headcount in budget_blockers. Budget is informational:
-it never changes the segment, the confidence or needs_human_review.
+{sensitive_prompt}
+{budget_prompt}
 
 Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 {
@@ -100,7 +93,7 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
   "build_evidence": "ai_built | hand_built | unknown",
   "segment": "{segment_enum}",
   "confidence": 0.0,
-  "company_stage": "pre-launch | early | scaling | established",
+  "company_stage": "{stage_prompt}",
   "built_with_ai_signals": [],
   "technical_signals": [],
   "pain_signals": [],
@@ -109,7 +102,7 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
   "personalization_hooks": [{"hook": "...", "based_on": "exact verbatim quote from the content"}],
   "sensitive_data_categories": [],
   "data_sensitivity_score": 0,
-  "budget_signal": "strong | moderate | weak | none",
+  "budget_signal": "{budget_enum}",
   "budget_evidence": [],
   "budget_blockers": [],
   "disqualify_reason": null,
@@ -131,6 +124,10 @@ def get_system_prompt(p=None) -> str:
         ("{axes_prose}", p.scoring_axes_prose),
         ("{segment_enum}", p.segment_enum()),
         ("{offer_enum}", p.offer_enum()),
+        ("{stage_prompt}", p.stages.prompt_description),
+        ("{sensitive_prompt}", p.sensitive.prompt_description),
+        ("{budget_prompt}", p.budget.prompt_description),
+        ("{budget_enum}", " | ".join(p.budget.signals)),
     ):
         out = out.replace(token, value)
     return out
@@ -340,15 +337,10 @@ def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
 
 
 # Axis vocabularies are engine-level (the two-axis verdict model); the
-# segment/offer taxonomies are profile data (see profiles/<name>.toml).
+# segment/offer/stage/sensitive/budget taxonomies are profile data
+# (see profiles/<name>.toml).
 VALID_FOUNDER_PROFILES = {"non_technical", "semi_technical", "technical", "unknown"}
 VALID_BUILD_EVIDENCE = {"ai_built", "hand_built", "unknown"}
-VALID_STAGES = {"pre-launch", "early", "scaling", "established"}
-VALID_SENSITIVE_DATA_CATEGORIES = {
-    "minors", "health_phi", "biometric", "payments", "identity_documents",
-    "financial", "legal", "location", "employee_data", "none",
-}
-VALID_BUDGET_SIGNALS = {"strong", "moderate", "weak", "none"}
 
 
 def _validate_verdict(verdict: dict, profile=None) -> dict:
@@ -360,9 +352,10 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
     "unclear" could keep its original confidence at 0.9, which is
     contradictory).
 
-    Segment/offer validity and the unclear-derivation rules come from the
-    profile ([segments], [offers], [[derivation.rules]]); "unclear"/"none"
-    are the reserved catch-alls. Only the axis vocabularies stay literal.
+    Segment/offer/stage/sensitive/budget validity and the unclear-derivation
+    rules come from the profile ([segments], [offers], [stages],
+    [sensitive], [budget], [[derivation.rules]]). Only the axis
+    vocabularies stay literal.
     """
     p = profile or load_profile()
     forced_correction = False
@@ -424,7 +417,7 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
         verdict["recommended_offer"] = "none"
         forced_correction = True
 
-    if verdict.get("company_stage") not in VALID_STAGES:
+    if verdict.get("company_stage") not in p.stages.values:
         verdict["company_stage"] = None
 
     categories = verdict.get("sensitive_data_categories", [])
@@ -435,20 +428,22 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
             categories = [categories]
     if not isinstance(categories, list):
         categories = []
+    empty_sensitive = p.sensitive.empty_sentinel
     verdict["sensitive_data_categories"] = [
         category for category in categories
-        if isinstance(category, str) and category in VALID_SENSITIVE_DATA_CATEGORIES
+        if isinstance(category, str) and category in p.sensitive.categories
     ]
-    if "none" in verdict["sensitive_data_categories"] and len(verdict["sensitive_data_categories"]) > 1:
-        verdict["sensitive_data_categories"].remove("none")
+    if empty_sensitive in verdict["sensitive_data_categories"] and len(verdict["sensitive_data_categories"]) > 1:
+        verdict["sensitive_data_categories"].remove(empty_sensitive)
     try:
         sensitivity_score = int(float(verdict.get("data_sensitivity_score", 0)))
     except (TypeError, ValueError):
         sensitivity_score = 0
-    verdict["data_sensitivity_score"] = max(0, min(100, sensitivity_score))
+    verdict["data_sensitivity_score"] = max(0, min(p.sensitive.score_max, sensitivity_score))
 
-    budget_signal = verdict.get("budget_signal", "none")
-    verdict["budget_signal"] = budget_signal if budget_signal in VALID_BUDGET_SIGNALS else "none"
+    empty_budget = p.budget.empty_sentinel
+    budget_signal = verdict.get("budget_signal", empty_budget)
+    verdict["budget_signal"] = budget_signal if budget_signal in p.budget.signals else empty_budget
     for field in ("budget_evidence", "budget_blockers"):
         value = verdict.get(field, [])
         verdict[field] = value if isinstance(value, list) else []
@@ -471,8 +466,9 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
     return verdict
 
 
-def _empty_verdict(disqualify_reason: str) -> dict:
+def _empty_verdict(disqualify_reason: str, profile=None) -> dict:
     """Empty verdict for failure cases (no content, API error, etc.)."""
+    p = profile or load_profile()
     return {
         "founder_profile": "unknown",
         "build_evidence": "unknown",
@@ -484,7 +480,7 @@ def _empty_verdict(disqualify_reason: str) -> dict:
         "pain_signals": [],
         "sensitive_data_categories": [],
         "data_sensitivity_score": 0,
-        "budget_signal": "none",
+        "budget_signal": p.budget.empty_sentinel,
         "budget_evidence": [],
         "budget_blockers": [],
         "evidence_quotes": [],

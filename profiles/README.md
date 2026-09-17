@@ -4,7 +4,8 @@ To run the engine for a new offer:
 
 1. Copy `ruyatech.toml` to `<name>.toml` in this directory.
 2. Edit the copy: `[identity]`, `[offers.*]`, `[segments.*]`, `[criteria.*]`,
-   `[icp]`, `[voice]`, `[scoring]`, `[[derivation.rules]]`, `[sequences]`,
+   `[icp]`, `[voice]`, `[voice.hooks]`, `[scoring]`, `[stages]`,
+   `[sensitive]`, `[budget]`, `[[derivation.rules]]`, `[sequences]`,
    `[sequences.offers.*]`. Keep snake_case keys and the same table
    structure — see the header comment in `ruyatech.toml` for what each
    section means.
@@ -25,3 +26,20 @@ engine-level; `[[derivation.rules]]` maps axis pairs to (segment, offer)
 when the model returns `"unclear"`, and `[scoring]` prose (`axes_prose`,
 `extra_rules`, `career_hint`, `unclear_note`) tells the model the same
 rules in natural language. Keep the rules and the prose in sync.
+
+## Limites connues (pour un futur profil très différent, ex. cabinet de recrutement)
+
+- Les enums `[stages]` / `[sensitive]` / `[budget]` sont redéfinissables sans
+  toucher au Python (valeurs, sentinelle vide, plafond de score), MAIS la
+  prose du prompt qui les explique (`prompt_description` de chaque table)
+  doit être réécrite entièrement pour un domaine différent — ce n'est pas
+  un simple remplacement de liste. Exemple : les catégories `minors` /
+  `health_phi` et leurs exemples (patient portal, telehealth) supposent un
+  SaaS B2C ; un recruteur parlerait `candidate_pii` / `right_to_work` sous
+  cadre GDPR, avec des exemples à réécrire de zéro.
+- La démotion budget (`app.py` : signal vide + blockers = revue manuelle)
+  suppose qu'un budget faible est un signal d'alerte à vérifier. Selon le
+  métier ça peut s'inverser (un client en hiring-freeze est hors-cible, pas
+  à revoir). Ce comportement reste câblé en dur intentionnellement : seule
+  la sentinelle vide vient du profil. Pas de solution générique évidente
+  sans cas d'usage réel — ne pas généraliser par spéculation.

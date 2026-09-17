@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import db as dbmod
+from profile import load_profile
 
 
 def main() -> int:
@@ -38,8 +39,9 @@ def main() -> int:
     out = []
     for r in rows:
         sens = r.get("sensitive_data_categories")
+        empty_sensitive = load_profile().sensitive.empty_sentinel
         try:
-            sens = [c for c in (json.loads(sens) if isinstance(sens, str) else (sens or [])) if c and c != "none"]
+            sens = [c for c in (json.loads(sens) if isinstance(sens, str) else (sens or [])) if c and c != empty_sensitive]
         except (json.JSONDecodeError, TypeError):
             sens = []
         out.append({

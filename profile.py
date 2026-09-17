@@ -141,6 +141,27 @@ class Sequences:
 
 
 @dataclass
+class Stages:
+    values: list[str] = field(default_factory=list)
+    prompt_description: str = ""
+
+
+@dataclass
+class Sensitive:
+    categories: list[str] = field(default_factory=list)
+    empty_sentinel: str = "none"
+    score_max: int = 100
+    prompt_description: str = ""
+
+
+@dataclass
+class Budget:
+    signals: list[str] = field(default_factory=list)
+    empty_sentinel: str = "none"
+    prompt_description: str = ""
+
+
+@dataclass
 class DerivationRule:
     when_founder: str = "any"
     when_build: str = "any"
@@ -161,6 +182,9 @@ class Profile:
     sequences: Sequences
     derivation_rules: list[DerivationRule] = field(default_factory=list)
     criteria: dict[str, CriteriaItem] = field(default_factory=dict)
+    stages: Stages = field(default_factory=Stages)
+    sensitive: Sensitive = field(default_factory=Sensitive)
+    budget: Budget = field(default_factory=Budget)
     scoring_axes_prose: str = ""
     scoring_extra_rules: list[str] = field(default_factory=list)
     scoring_career_hint: str = ""
@@ -355,6 +379,25 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
         for r in raw.get("derivation", {}).get("rules", [])
     ]
 
+    stages_raw = raw.get("stages", {})
+    stages = Stages(
+        values=[str(v) for v in stages_raw.get("values", [])],
+        prompt_description=str(stages_raw.get("prompt_description", "")),
+    )
+    sensitive_raw = raw.get("sensitive", {})
+    sensitive = Sensitive(
+        categories=[str(c) for c in sensitive_raw.get("categories", [])],
+        empty_sentinel=str(sensitive_raw.get("empty_sentinel", "none")),
+        score_max=int(sensitive_raw.get("score_max", 100)),
+        prompt_description=str(sensitive_raw.get("prompt_description", "")),
+    )
+    budget_raw = raw.get("budget", {})
+    budget = Budget(
+        signals=[str(s) for s in budget_raw.get("signals", [])],
+        empty_sentinel=str(budget_raw.get("empty_sentinel", "none")),
+        prompt_description=str(budget_raw.get("prompt_description", "")),
+    )
+
     profile = Profile(
         name=resolved,
         identity=identity,
@@ -365,6 +408,9 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
         sequences=sequences,
         derivation_rules=rules,
         criteria=criteria,
+        stages=stages,
+        sensitive=sensitive,
+        budget=budget,
         scoring_axes_prose=str(raw.get("scoring", {}).get("axes_prose", "")),
         scoring_extra_rules=[str(r) for r in raw.get("scoring", {}).get("extra_rules", [])],
         scoring_career_hint=str(raw.get("scoring", {}).get("career_hint", "")),

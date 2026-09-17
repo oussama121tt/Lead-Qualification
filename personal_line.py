@@ -78,9 +78,10 @@ def _evidence_block(lead: dict, verdict: dict, site_text: str, web_text: str = "
     sens = verdict.get("sensitive_data_categories") or []
     if isinstance(sens, str):
         sens = scorer.json.loads(sens) if sens.strip().startswith("[") else [sens]
+    empty_sensitive = load_profile().sensitive.empty_sentinel
     facts = [f"segment: {verdict.get('segment')}", f"offer: {verdict.get('recommended_offer')}"]
-    if [s for s in sens if s and s != "none"]:
-        facts.append("sensitive data handled: " + ", ".join(s for s in sens if s and s != "none"))
+    if [s for s in sens if s and s != empty_sensitive]:
+        facts.append("sensitive data handled: " + ", ".join(s for s in sens if s and s != empty_sensitive))
     for key in ("built_with_ai_signals", "technical_signals", "pain_signals", "evidence_quotes"):
         vals = verdict.get(key) or []
         if isinstance(vals, str):

@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+from profile import load_profile
+
 CHANNELS = ("cold_email", "upwork", "discord", "inbound")
 
 # Minimum number of SENT leads a signal must have before we report a lift vs
@@ -176,10 +178,10 @@ def signal_families(row: dict) -> list[tuple[str, str]]:
     if be and str(be) != "unknown":
         fams.append(("build", str(be)))
     budget = row.get("budget_signal")
-    if budget and str(budget) != "none":
+    if budget and str(budget) != load_profile().budget.empty_sentinel:
         fams.append(("budget", str(budget)))
     for v in _json_list(row.get("sensitive_data_categories")):
-        if v != "none":
+        if v != load_profile().sensitive.empty_sentinel:
             fams.append(("sensitive_data", v))
     for v in _json_list(row.get("pain_signals")):
         fams.append(("pain", v))

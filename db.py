@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from constants import NOT_YET_SCORED_STATUSES
+from profile import load_profile
 
 import psycopg2
 import psycopg2.extras
@@ -1715,7 +1716,7 @@ def save_lead_score(conn, lead_id: int, verdict: dict) -> None:
             as_json(verdict.get("pain_signals", [])),
             as_json(verdict.get("sensitive_data_categories", [])),
             verdict.get("data_sensitivity_score", 0),
-            verdict.get("budget_signal", "none"),
+            verdict.get("budget_signal", load_profile().budget.empty_sentinel),
             as_json(verdict.get("budget_evidence", [])),
             as_json(verdict.get("budget_blockers", [])),
             as_json(verdict.get("evidence_quotes", [])),

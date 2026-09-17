@@ -66,7 +66,8 @@ def _sequence_for(seqs, lead: dict) -> str | None:
             cats = json.loads(cats)
         except (json.JSONDecodeError, TypeError):
             cats = [cats] if cats else []
-    sensitive = bool([c for c in cats if c and c != "none"])
+    empty_sensitive = load_profile().sensitive.empty_sentinel
+    sensitive = bool([c for c in cats if c and c != empty_sensitive])
     return seqs.sequence_for(offer, sensitive=sensitive)
 
 

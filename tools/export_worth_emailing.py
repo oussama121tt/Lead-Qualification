@@ -113,7 +113,8 @@ def main() -> int:
                 hook_lines.append(f"{h.get('hook')}  <- \"{(h.get('based_on') or '')[:160]}\"")
             else:
                 hook_lines.append(str(h))
-        sens = [c for c in (_j(r.get("sensitive_data_categories"), []) or []) if c and c != "none"]
+        empty_sensitive = load_profile().sensitive.empty_sentinel
+        sens = [c for c in (_j(r.get("sensitive_data_categories"), []) or []) if c and c != empty_sensitive]
         signals = []
         for k in ("app_builder_fingerprint", "site_builder_fingerprint", "generator_fingerprint"):
             if r.get(k):

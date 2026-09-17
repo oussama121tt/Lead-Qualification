@@ -13,14 +13,18 @@
 #                      load time (see profile.py) — no regex syntax needed to
 #                      edit them, except dev_shop_pattern which stays a pattern.
 #   [voice]            real lines that earned replies; generators imitate these.
+#   [voice.hooks]      offer-specific hook sentences (one per generator) and
+#                      the offer noun the line must never name.
 #   [criteria.<key>]   review-queue picker entries: UI label/text plus the
 #                      scorer prompt description for the same key.
 #   [scoring]          scorer prompt atoms (short offer clauses) and verbatim
 #                      prose blocks that name segments in natural language.
+#   [stages]           company-lifecycle vocabulary (prompt enum + validation).
+#   [sensitive]        sensitive-data categories, empty sentinel, score cap.
+#   [budget]           budget signals, empty sentinel, evidence ontology.
 #   [sequences]        Apollo sequence wiring for this offer set.
 #   [[derivation.rules]] founder_profile x build_evidence -> segment/offer rules
 #                      applied when the model returns segment "unclear".
-#   [scoring_criteria] labels for the review-queue criteria picker.
 #
 # RULE: to change what we sell or to whom, edit this file only. No .py file
 # holds business text for this profile.
@@ -318,6 +322,31 @@ extra_rules = [
   "Cursor alone never proves ai_solo_founder.",
 ]
 career_hint = "engineering/CTO roles point to technical_founder, non-technical roles with an AI-built product point to ai_solo_founder"
+
+# Company lifecycle vocabulary, moved verbatim from scorer.py (prompt enum +
+# VALID_STAGES). A value outside the list validates to None, as before.
+[stages]
+values = ["pre-launch", "early", "scaling", "established"]
+prompt_description = "pre-launch | early | scaling | established"
+
+# Sensitive-data vocabulary, moved verbatim from scorer.py (prompt prose +
+# VALID_SENSITIVE_DATA_CATEGORIES). Unknown categories are stripped, the
+# empty sentinel is dropped when mixed with real ones, the score is clamped
+# to score_max — exactly as before.
+[sensitive]
+categories = ["minors", "health_phi", "biometric", "payments", "identity_documents",
+              "financial", "legal", "location", "employee_data", "none"]
+empty_sentinel = "none"
+score_max = 100
+prompt_description = "Identify sensitive categories only when the product is evidenced to HANDLE that data: a patient portal, record storage, uploads, telehealth, payments, identity checks, employee records. Topical adjacency is not handling: a health blog, a fitness tracker or a clinic directory is not health_phi. Keys: minors, health_phi, biometric, payments, identity_documents, financial, legal, location, employee_data, none. Set sensitive_data_categories to a list of those exact keys and data_sensitivity_score from 0 to 100 for breach impact; use [] and 0 when none."
+
+# Budget vocabulary, moved verbatim from scorer.py (prompt prose +
+# VALID_BUDGET_SIGNALS). An unknown signal falls back to the empty sentinel,
+# as before. Budget stays informational: recorded, never routing.
+[budget]
+signals = ["strong", "moderate", "weak", "none"]
+empty_sentinel = "none"
+prompt_description = "Set budget_signal to strong, moderate, weak, or none. Record paid pricing, hiring, funding, exits, or enterprise logos in budget_evidence. Record nonprofit funding, student founder, side project, default builder subdomain, or shrinking headcount in budget_blockers. Budget is informational: it never changes the segment, the confidence or needs_human_review."
 
 [sequences]
 # Apollo sequence enrolment (the real multi-touch sender). enabled = false

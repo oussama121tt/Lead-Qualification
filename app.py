@@ -1097,7 +1097,10 @@ def _categorize_leads(scores_data: list, reorder_queue: bool = True) -> dict:
         else:
             to_review.append(lead)
 
-        if lead in approved and lead.get("budget_signal") == "none" and lead.get("budget_blockers"):
+        # Budget demote stays intentionally literal in shape (empty signal +
+        # blockers = human review); only the sentinel word comes from the
+        # profile. See "Limites connues" in profiles/README.md.
+        if lead in approved and lead.get("budget_signal") == load_profile().budget.empty_sentinel and lead.get("budget_blockers"):
             approved.remove(lead)
             reason = lead.get("disqualify_reason") or ""
             lead["disqualify_reason"] = f"{reason} | budget blocker" if reason else "budget blocker"
