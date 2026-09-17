@@ -27,8 +27,9 @@ import db as dbmod
 import personal_line as plmod
 import pipeline as pipelinemod
 import scorer
+from profile import load_profile
 
-TARGET = ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+TARGET = tuple(sorted(load_profile().target_segments))
 
 
 def main() -> int:
@@ -41,8 +42,9 @@ def main() -> int:
     ap.add_argument("--redo", action="store_true", help="regenerate even where a line is stored")
     args = ap.parse_args()
 
-    where = ["l.is_duplicate = 0", "s.segment IN ('ai_solo_founder','technical_founder','small_agency_scaling')"]
-    params: list = []
+    where = ["l.is_duplicate = 0",
+             f"s.segment IN ({','.join('?' * len(TARGET))})"]
+    params: list = list(TARGET)
     if args.approved:
         where.append("l.review_status = 'APPROVED'")
     elif args.strong:

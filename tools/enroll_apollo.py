@@ -7,8 +7,8 @@ account's own mailboxes (Instantly is not needed). Safety rails, in order:
   2. Only leads with review_status = APPROVED, not duplicates, not on the
      do_not_contact registry, with an email and a recommended offer.
   3. Every lead already exported/enrolled once (export_history) is skipped.
-  4. Offer -> sequence via config: ai_audit (+ sensitive variant), general_audit,
-     pipeline. Leads whose offer has no sequence are reported, never sent.
+  4. Offer -> sequence via the profile [sequences] (with the sensitive
+     variant when set). Leads whose offer has no sequence are reported, never sent.
   5. --dry-run prints the exact plan and touches nothing on Apollo.
 
 After enrolment each lead is recorded in do_not_contact + export_history and

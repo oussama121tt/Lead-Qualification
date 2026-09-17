@@ -1,12 +1,11 @@
 """Export the founders worth emailing, with every detail behind the verdict.
 
 One row per non-duplicate lead whose latest verdict is a target segment
-(ai_solo_founder / technical_founder / small_agency_scaling) with a valid
-Sonnet verdict. Buckets:
+(see the profile [segments]) with a valid Sonnet verdict. Buckets:
 
   A  strong fit          confidence >= 0.8                       -> approve
-  B1 founder fits        non_technical founder, build unknown    -> 10-second check
-  B2 other target        technical / agency / flagged reason     -> read the reason
+  B1 founder fits        founder settled, build unknown          -> 10-second check
+  B2 other target        rest of the targets / flagged reason    -> read the reason
 
 Columns carry the evidence the model used (career history, deterministic
 signals, quotes, hooks with the exact citation, budget, sensitive data) so a
@@ -29,8 +28,9 @@ for k, v in _env.items():
     os.environ.setdefault(k, v)
 
 import db as dbmod  # noqa: E402
+from profile import load_profile  # noqa: E402
 
-TARGET = ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+TARGET = tuple(sorted(load_profile().target_segments))
 
 
 def _j(v, default):
@@ -48,11 +48,25 @@ def _lines(items) -> str:
     return "\n".join(str(i) for i in items if i not in (None, ""))
 
 
+def _sequence_variant(offer: str, sensitive: bool) -> str:
+    if sensitive:
+        entry = load_profile().sequences.offers.get(offer)
+        if entry is not None and entry.sensitive_id:
+            return f"{offer}_sensitive"
+    return offer
+
+
 def bucket(r) -> str:
     c = float(r.get("confidence") or 0)
     if c >= 0.8:
         return "A strong"
-    if r["segment"] == "ai_solo_founder" and r.get("founder_profile") == "non_technical" and r.get("build_evidence") == "unknown":
+    # B1 is the profile-agnostic "founder fits, build unknown" slice: the
+    # founder question is settled but the build method is open, so a quick
+    # check beats reading the whole reason. (Under ruyatech this also
+    # catches settled-technical-founder slices the old segment-named rule
+    # left in B2; both buckets are human review either way.)
+    if (r["segment"] in TARGET and r.get("founder_profile") not in (None, "", "unknown")
+            and r.get("build_evidence") == "unknown"):
         return "B1 founder fits, build unknown"
     return "B2 other target, review"
 
@@ -125,7 +139,9 @@ def main() -> int:
             "segment": r["segment"],
             "confidence": r.get("confidence"),
             "recommended_offer": r.get("recommended_offer") or "",
-            "sequence_variant": ("ai_audit_sensitive" if (r.get("recommended_offer") == "ai_audit" and sens) else (r.get("recommended_offer") or "")),
+            # Sensitive variant (<offer>_sensitive) when the profile defines
+            # a sensitive sequence for the offer and sensitive data is set.
+            "sequence_variant": _sequence_variant(r.get("recommended_offer") or "", sens),
             "founder_profile": r.get("founder_profile") or "unknown",
             "build_evidence": r.get("build_evidence") or "unknown",
             "company_stage": r.get("company_stage") or "",
