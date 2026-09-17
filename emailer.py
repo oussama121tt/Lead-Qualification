@@ -2,7 +2,7 @@
 
 Each email is generated individually by the LLM (through the provider
 abstraction in llm_provider.py), personalized to the detected need of the
-company and the recommended RuyaTech offer. This is a NEW step downstream
+company and the recommended profile offer. This is a NEW step downstream
 of the scoring — scorer.py is never touched here.
 """
 import json

@@ -13,8 +13,10 @@
 #                      load time (see profile.py) — no regex syntax needed to
 #                      edit them, except dev_shop_pattern which stays a pattern.
 #   [voice]            real lines that earned replies; generators imitate these.
-#   [scoring]          verbatim scorer prompt block enumerating offers/segments
-#                      (Task 5 derives the segment list from [segments]).
+#   [criteria.<key>]   review-queue picker entries: UI label/text plus the
+#                      scorer prompt description for the same key.
+#   [scoring]          scorer prompt atoms (short offer clauses) and verbatim
+#                      prose blocks that name segments in natural language.
 #   [sequences]        Apollo sequence wiring for this offer set.
 #   [[derivation.rules]] founder_profile x build_evidence -> segment/offer rules
 #                      applied when the model returns segment "unclear".
@@ -47,6 +49,9 @@ proof_points = [
 
 [offers.ai_audit]
 name = "Product Rescue & Scale-Up"
+label = "AI Audit"
+# Terse clause rendered into the scorer OFFERS sentence ("<key> is for ...").
+short_who = "an AI-built product owned by a non-technical founder"
 who = "non-technical founder whose product was built with AI (vibe-coding — Cursor, Replit, ChatGPT, Lovable, Bolt) and starts breaking under real users"
 detail = "full code audit, stabilization, refactoring, and getting it back on track — typically in 4 to 8 weeks"
 case_study = "we took over an AI-generated SaaS that was collapsing, relaunched it in 2 weeks, 600 paying members 6 months later (Bake Genie case study)"
@@ -61,6 +66,8 @@ email_blurb = """- ai_audit → "Product Rescue & Scale-Up" service: for non-tec
 
 [offers.general_audit]
 name = "Product Rescue & Scale-Up"
+label = "Technical Audit"
+short_who = "a technical team needing architecture or security review"
 who = "a technical team"
 detail = "security and architecture audit, concrete recommendations, fix prioritization"
 case_study = ""
@@ -69,6 +76,8 @@ email_blurb = """- general_audit → same "Product Rescue & Scale-Up" service, f
 
 [offers.pipeline]
 name = "AI Agents & Automation"
+label = "Pipeline Support"
+short_who = "a scaling agency"
 who = "a scaling agency"
 detail = "custom AI agents and automations plugged into existing systems (lead triage, document processing, workflows), not \"AI gadgets\""
 case_study = "lead triage pipeline delivered to an overwhelmed B2B firm — 5h/week of business dev instead of several hours a day, 30K$+ in new contracts in 30 days"
@@ -83,48 +92,76 @@ description = "AI-built product owned by a non-technical founder"
 offer = "ai_audit"
 is_target = true
 label = "Solo AI founder"
-criteria_label = "TARGET: Non-tech vibe coder"
-criteria_desc = "Non-technical founder building with AI (Cursor, Bolt, Lovable, Replit, vibe coding)."
 
 [segments.technical_founder]
 description = "technical team needing architecture or security review"
 offer = "general_audit"
 is_target = true
 label = "Technical founder"
-criteria_label = "TARGET: Tech person using AI"
-criteria_desc = "Technical team using AI as a development tool."
 
 [segments.small_agency_scaling]
 description = "agency or studio that is scaling"
 offer = "pipeline"
 is_target = true
 label = "Small scaling agency"
-criteria_label = "TARGET: Scaling agency"
-criteria_desc = "Agency / services studio that is scaling."
+# Confident leads in this segment with a technical-hiring signal get the
+# expensive web-evidence escalation (the high-value case that pass 1 alone
+# never verified). Only this segment sets the flag.
+escalate_on_hiring = true
 
 [segments.too_big]
 description = "company too large for the offer"
 offer = "none"
 is_target = false
 label = "Too big"
-criteria_label = "Not target: too big"
-criteria_desc = "Established company too large for the offer."
 
 [segments.wrong_field]
 description = "lead clearly outside the target field"
 offer = "none"
 is_target = false
 label = "Wrong field"
-criteria_label = "Not target: wrong field"
-criteria_desc = "Lead clearly outside the target field."
 
+# Every profile must define an "unclear" segment: it is the reserved
+# catch-all for insufficient evidence (like the "none" offer), and the
+# derivation rules below can only fire from it.
 [segments.unclear]
 description = "insufficient evidence to segment"
 offer = "none"
 is_target = false
 label = "Unclear"
-criteria_label = "Unclear"
-criteria_desc = "Insufficient evidence to segment."
+
+# Review-queue picker entries, in display order. Segment keys reuse the
+# segment above; the other keys are cross-cutting lenses. label/ui_desc are
+# shown in the UI; prompt_desc goes into the scorer prompt for the same key.
+[criteria.ai_solo_founder]
+label = "TARGET: Non-tech vibe coder"
+ui_desc = "Non-technical founder building with AI (Cursor, Bolt, Lovable, Replit, vibe coding)."
+prompt_desc = "PRIMARY TARGET: identify non-technical founders who build with AI (vibe coding, Cursor, Bolt, Lovable, Replit) — corresponds to the ai_solo_founder segment."
+
+[criteria.technical_founder]
+label = "TARGET: Tech person using AI"
+ui_desc = "Technical team using AI as a development tool."
+prompt_desc = "SECONDARY TARGET: identify technical teams that use AI as a development tool — corresponds to the technical_founder segment."
+
+[criteria.solo_or_small]
+label = "Solo / Micro-team"
+ui_desc = "Single founder or a team of 1-5 people."
+prompt_desc = "Identify solo founders or micro-teams (1-5 people)."
+
+[criteria.agency_or_studio]
+label = "Agency / Studio"
+ui_desc = "Service provider, web agency, creation studio."
+prompt_desc = "Identify agencies / services studios that are scaling — corresponds to the small_agency_scaling segment."
+
+[criteria.no_ai]
+label = "Established without AI signals"
+ui_desc = "Established company with no indication of building via AI."
+prompt_desc = "Identify established companies with no AI-construction signal."
+
+[criteria.wrong_field]
+label = "Not our target"
+ui_desc = "Unrelated sector, agency, or organization without AI dev usage."
+prompt_desc = "Identify leads that are clearly not our target (too_big, wrong_field)."
 
 [icp]
 max_headcount = 20
@@ -255,14 +292,20 @@ question_examples = [
 ]
 
 [scoring]
-# Verbatim scorer prompt block enumerating offers and segments (line breaks
-# preserved). Task 5 derives the segment enumeration from [segments]; until
-# then this block is the byte-identical source for the scorer system prompt.
-offers_block = """OFFERS: ai_audit is for an AI-built product owned by a non-technical founder; general_audit is
-for a technical team needing architecture or security review; pipeline is for a scaling agency.
-Choose exactly one segment: ai_solo_founder, technical_founder, small_agency_scaling, too_big,
-wrong_field, or unclear. Map those segments to ai_audit, general_audit, pipeline, none, none,
-and normally none."""
+# Scorer prompt material. The OFFERS / segment-choice / segment-offer-map
+# sentences are DERIVED from [offers].short_who and [segments] (keys, order,
+# offer links); the prose blocks below are verbatim because they name
+# segments inside natural-language evidence rules no template can render.
+unclear_note = "Unclear means insufficient evidence, not wrong_field or too_big."
+# Two-axis evidence semantics (founder_profile x build_evidence) and how the
+# segment follows from them. Mirrors [[derivation.rules]] for the model; the
+# rules mirror it back for the code guard. Keep the two in sync.
+axes_prose = """Two independent facts are judged separately. founder_profile: Apollo employment history is first-party evidence about the founder. A career with no engineering roles is sufficient to judge the founder non_technical; a career of engineering roles is sufficient to judge them technical, even when the website says nothing; semi_technical for product, data or no-code builders; unknown only when history is absent. build_evidence: ai_built when a STRONG or MEDIUM AI-build signal exists, hand_built when a technical team or engineering hires are evidenced, otherwise unknown. Derive the segment from them: ai_built with a non_technical, semi_technical or unknown founder is ai_solo_founder, and its confidence follows the strength of the build signal (STRONG signals justify 0.8 or more); non_technical + unknown build is still ai_solo_founder with confidence 0.5 to 0.7 (the founder question is settled, only the build method is open), never unclear; technical is technical_founder; an agency or studio that is scaling is small_agency_scaling. Use unclear only when BOTH founder_profile and build_evidence are unknown. Decide in order: enough evidence, founder_profile, build_evidence, scaling agency, too_big, wrong_field, otherwise unclear."""
+# Standalone evidence-standard sentences, inserted after the signal hierarchy.
+extra_rules = [
+  "Cursor alone never proves ai_solo_founder.",
+]
+career_hint = "engineering/CTO roles point to technical_founder, non-technical roles with an AI-built product point to ai_solo_founder"
 
 [sequences]
 # Apollo sequence enrolment (the real multi-touch sender). enabled = false
@@ -296,6 +339,12 @@ sensitive_id = ""
 # "unclear". Each rule names the founder_profile / build_evidence it fires
 # on ("any" matches everything). confidence is "keep" (model number stands)
 # or "clamp_0_5_0_7" (founder settled, build open: honest band + review).
+# Derivation rules, applied in order when the model returns segment
+# "unclear" (the reserved catch-all). when_founder/when_build of "any" match
+# everything. confidence "keep" lets the model number stand (below 0.7 it is
+# reviewed anyway); "clamp_0_5_0_7" is the honest band for founder-settled,
+# build-open verdicts and always needs review. needs_review forces review
+# even for a confident "keep" outcome.
 [[derivation.rules]]
 when_founder = "technical"
 when_build = "any"
@@ -310,7 +359,7 @@ when_build = "ai_built"
 set_segment = "ai_solo_founder"
 set_offer = "ai_audit"
 confidence = "keep"
-needs_review = true
+needs_review = false
 
 [[derivation.rules]]
 when_founder = "non_technical"
@@ -319,9 +368,3 @@ set_segment = "ai_solo_founder"
 set_offer = "ai_audit"
 confidence = "clamp_0_5_0_7"
 needs_review = true
-
-[scoring_criteria]
-solo_or_small = "Identify solo founders or micro-teams (1-5 people)."
-agency_or_studio = "Identify agencies / services studios that are scaling — corresponds to the small_agency_scaling segment."
-no_ai = "Identify established companies with no AI-construction signal."
-wrong_field = "Identify leads that are clearly not our target (too_big, wrong_field)."

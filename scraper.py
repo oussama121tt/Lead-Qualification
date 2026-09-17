@@ -808,9 +808,10 @@ def extract_technical_signals(
     #
     # LinkedIn links declared BY THE COMPANY ITSELF (footer, about/team
     # page) are the most reliable disambiguation source we have: a
-    # name-based search for "RuyaTech" can return an unrelated homonymous
-    # company (e.g. a different "Ruyatech AI" in another country) — a link
-    # the company put on its own site cannot be confused with a homonym.
+    # name-based search for the company name can return an unrelated
+    # homonymous company (e.g. a different "Acme AI" in another country) —
+    # a link the company put on its own site cannot be confused with a
+    # homonym.
     # linkedin_company_url keeps only the FIRST match (one company page is
     # enough); linkedin_person_urls keeps ALL /in/ links found (a team/about
     # page can legitimately link several team members).
@@ -1272,7 +1273,7 @@ SEARCH_QUERY_TEMPLATES: dict[str, str] = {
     "github":           '"{company}" site:github.com',
     "interviews":       '"{founder}" OR "{company}" interview (vibe coding OR built with AI OR built with Cursor OR built with v0)',
     # Founder's OWN profiles: only skip when no founder name is known;
-    # used to tell technical_founder vs ai_solo_founder directly.
+    # used to tell the founder segments apart directly.
     "person_linkedin":  '"{founder}" site:linkedin.com/in',
     "person_github":    '"{founder}" site:github.com',
 }
@@ -1450,12 +1451,12 @@ def search_additional_evidence(
     scraper.extract_technical_signals(...)["linkedin_company_url"] — a
     LinkedIn company URL the site itself links to (footer, about page).
     When present, the "linkedin" company source is scraped DIRECTLY from
-    this URL instead of a name-based search: a search for "RuyaTech" can
-    return a same-named but unrelated company (confirmed case: a UAE
-    defense-AI "Ruyatech AI" outranked the real, smaller "RuyaTech" in
-    search results). A link the company put on its own site cannot be
-    confused with a homonym, so it is strictly more reliable and skips
-    that query entirely (saves one SGAI call too).
+    this URL instead of a name-based search: a name-based search can
+    return a same-named but unrelated company (confirmed case: an "Acme AI"
+    outranked the real, smaller "Acme" in search results). A link the
+    company put on its own site cannot be confused with a homonym, so it
+    is strictly more reliable and skips that query entirely (saves one
+    SGAI call too).
 
     known_linkedin_person_url: optional, typically
     technical_signals["linkedin_person_urls"][0] passed by the CALLER only

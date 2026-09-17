@@ -9,7 +9,7 @@ JSON verdict (segment, confidence, signals, hooks, disqualification).
 Four input flows:
 1. lead_metadata — name, title, company, email (from the Apollo CSV). The
    contact's title (e.g. "CTO" vs "Founder") is a direct signal for
-   distinguishing technical_founder / ai_solo_founder, and must never be
+   distinguishing the founder segments, and must never be
    absent from the prompt (cf. original spec FR-3: "Input: lead metadata +
    parsed site text").
 2. Scraped text (site content, first-party) — analyzed by the LLM for
@@ -25,11 +25,10 @@ Four input flows:
    the DB (lead_search_evidence) and reloaded on a rescore, so this evidence
    is not lost between scoring runs.
 
-Segments (aligned with the original spec, FR-3):
-  ai_solo_founder | technical_founder | small_agency_scaling | too_big |
-  wrong_field | unclear
-Offers:
-  ai_audit | general_audit | pipeline | none
+Segments and offers: see profiles/<name>.toml ([segments], [offers]).
+The "unclear" segment and the "none" offer are the reserved catch-all
+unknowns; the founder_profile x build_evidence axis vocabulary below is
+engine-level and stays here.
 """
 
 import json
@@ -39,7 +38,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from constants import CONFIDENCE_THRESHOLD, VALID_SEGMENTS
+from constants import CONFIDENCE_THRESHOLD
 from llm_provider import get_llm_provider
 from profile import load_profile
 
@@ -62,39 +61,28 @@ GROQ_TIMEOUT_SECONDS = 90
 INVALID_VERDICT_CONFIDENCE_CAP = 0.3
 
 
-# Scorer system prompt. {company} and {offers_block} are profile data (filled
-# by get_system_prompt via plain .replace, so the JSON schema's literal
-# braces below need no escaping); the segment enumeration inside
-# offers_block is still a verbatim profile block until Task 5 derives it
-# from [segments].
+# Scorer system prompt. The {slots} are profile data (filled by
+# get_system_prompt via plain .replace, so the JSON schema's literal braces
+# below need no escaping): company and offer/segment sentences are derived
+# from [identity]/[offers]/[segments], the evidence-rule prose blocks are
+# verbatim [scoring] data. Everything else is engine mechanics.
 _SYSTEM_PROMPT_TEMPLATE = """You are a senior B2B lead analyst for {company}. Use only supplied Apollo metadata,
 official site content, web evidence, and verified deterministic signals.
-{offers_block} Unclear means insufficient evidence, not wrong_field or too_big.
+{offers_sentence}
+{choice_sentence} {offer_map_sentence} {unclear_note}
 STRONG signals are app_builder_fingerprint, explicit AI authorship, or a verified single-commit
 GitHub repository combined with an app builder. site_builder_fingerprint (Framer/Webflow/Wix/
 Squarespace/Carrd) is metadata only and never changes the segment. on_builder_subdomain=true is
 near-proof of AI-build and early stage. MEDIUM signals are explicit vibe-language or high AI-style
 density. Treat isolated evidence cautiously. Site and web evidence have equal weight; person_*
-evidence describes the founder. Cursor alone never proves ai_solo_founder.
+evidence describes the founder. {extra_rules}
 Describe the analyzed company, never clients or testimonials. Content marked [ATTRIBUTED QUOTE ...]
 or [THIRD-PARTY CONTENT SECTION ...] is third-party unless its attribution names the analyzed
 founder. Cite non-deterministic signals with exact evidence_quotes. Hooks are situational, never
 biographical, and each must be {"hook":"...","based_on":"exact quote"}. Use only supplied content;
 demos, product AI features, and client capabilities do not prove AI construction. Never invert a
 capability into pain. Confidence below 0.7 requires needs_human_review=true.
-Two independent facts are judged separately. founder_profile: Apollo employment history is
-first-party evidence about the founder. A career with no engineering roles is sufficient to judge
-the founder non_technical; a career of engineering roles is sufficient to judge them technical,
-even when the website says nothing; semi_technical for product, data or no-code builders; unknown
-only when history is absent. build_evidence: ai_built when a STRONG or MEDIUM AI-build signal
-exists, hand_built when a technical team or engineering hires are evidenced, otherwise unknown.
-Derive the segment from them: ai_built with a non_technical, semi_technical or unknown founder is
-ai_solo_founder, and its confidence follows the strength of the build signal (STRONG signals
-justify 0.8 or more); non_technical + unknown build is still ai_solo_founder with confidence 0.5
-to 0.7 (the founder question is settled, only the build method is open), never unclear;
-technical is technical_founder; an agency or studio that is scaling is small_agency_scaling. Use
-unclear only when BOTH founder_profile and build_evidence are unknown. Decide in order: enough evidence,
-founder_profile, build_evidence, scaling agency, too_big, wrong_field, otherwise unclear.
+{axes_prose}
 Identify sensitive categories only when the product is evidenced to HANDLE that data: a patient
 portal, record storage, uploads, telehealth, payments, identity checks, employee records. Topical
 adjacency is not handling: a health blog, a fitness tracker or a clinic directory is not
@@ -110,14 +98,14 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 {
   "founder_profile": "non_technical | semi_technical | technical | unknown",
   "build_evidence": "ai_built | hand_built | unknown",
-  "segment": "ai_solo_founder | technical_founder | small_agency_scaling | too_big | wrong_field | unclear",
+  "segment": "{segment_enum}",
   "confidence": 0.0,
   "company_stage": "pre-launch | early | scaling | established",
   "built_with_ai_signals": [],
   "technical_signals": [],
   "pain_signals": [],
   "evidence_quotes": [],
-  "recommended_offer": "ai_audit | general_audit | pipeline | none",
+  "recommended_offer": "{offer_enum}",
   "personalization_hooks": [{"hook": "...", "based_on": "exact verbatim quote from the content"}],
   "sensitive_data_categories": [],
   "data_sensitivity_score": 0,
@@ -132,8 +120,20 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 def get_system_prompt(p=None) -> str:
     """Assemble the scorer system prompt from the profile (cached load)."""
     p = p or load_profile()
-    return _SYSTEM_PROMPT_TEMPLATE.replace("{company}", p.identity.company).replace(
-        "{offers_block}", p.scoring_offers_block)
+    out = _SYSTEM_PROMPT_TEMPLATE
+    for token, value in (
+        ("{company}", p.identity.company),
+        ("{offers_sentence}", p.offers_sentence()),
+        ("{choice_sentence}", p.choice_sentence()),
+        ("{offer_map_sentence}", p.offer_map_sentence()),
+        ("{unclear_note}", p.scoring_unclear_note),
+        ("{extra_rules}", " ".join(p.scoring_extra_rules)),
+        ("{axes_prose}", p.scoring_axes_prose),
+        ("{segment_enum}", p.segment_enum()),
+        ("{offer_enum}", p.offer_enum()),
+    ):
+        out = out.replace(token, value)
+    return out
 
 
 # Default-profile snapshot; existing callers and tests keep working.
@@ -214,7 +214,7 @@ def _format_lead_metadata(lead_metadata: dict | None) -> str:
     Formats the lead's Apollo metadata (name, title, company, email) into a
     text block for the prompt. Absent from the original FR-3 schema if we do
     not add it — notably the contact's title is a direct signal for
-    distinguishing technical_founder from ai_solo_founder.
+    distinguishing the founder segments.
     """
     if not lead_metadata:
         return ""
@@ -240,9 +240,13 @@ def _format_lead_metadata(lead_metadata: dict | None) -> str:
             lines.append(f"- Location: {loc}")
         history = person.get("employment_history") or []
         if history:
+            # How to read a career history is profile data ([scoring]
+            # career_hint); the fallback is segment-agnostic wording.
+            hint = (load_profile().scoring_career_hint
+                    or "engineering/CTO roles point to a technical founder, "
+                    "non-technical roles with an AI-built product point to a solo AI founder")
             lines.append("- Career history (most recent first; this is the founder's OWN background: "
-                         "engineering/CTO roles point to technical_founder, non-technical roles "
-                         "with an AI-built product point to ai_solo_founder):")
+                         f"{hint}):")
             for e in history[:8]:
                 end = e.get("end") or ("now" if e.get("current") else "?")
                 lines.append(f"    * {e.get('title') or '?'} @ {e.get('organization') or '?'} ({e.get('start') or '?'} to {end})")
@@ -335,7 +339,8 @@ def rows_to_text(rows: list, max_chars: int = MAX_CONTENT_CHARS) -> str:
     return _strip_images(full_text[:max_chars])
 
 
-VALID_OFFERS = {"ai_audit", "general_audit", "pipeline", "none"}
+# Axis vocabularies are engine-level (the two-axis verdict model); the
+# segment/offer taxonomies are profile data (see profiles/<name>.toml).
 VALID_FOUNDER_PROFILES = {"non_technical", "semi_technical", "technical", "unknown"}
 VALID_BUILD_EVIDENCE = {"ai_built", "hand_built", "unknown"}
 VALID_STAGES = {"pre-launch", "early", "scaling", "established"}
@@ -346,7 +351,7 @@ VALID_SENSITIVE_DATA_CATEGORIES = {
 VALID_BUDGET_SIGNALS = {"strong", "moderate", "weak", "none"}
 
 
-def _validate_verdict(verdict: dict) -> dict:
+def _validate_verdict(verdict: dict, profile=None) -> dict:
     """Validates and fixes the enum fields of the LLM verdict.
 
     Important: when segment or recommended_offer is out of schema, we also
@@ -354,10 +359,15 @@ def _validate_verdict(verdict: dict) -> dict:
     shown as "confident" (bug fixed: before, an invalid segment forced to
     "unclear" could keep its original confidence at 0.9, which is
     contradictory).
+
+    Segment/offer validity and the unclear-derivation rules come from the
+    profile ([segments], [offers], [[derivation.rules]]); "unclear"/"none"
+    are the reserved catch-alls. Only the axis vocabularies stay literal.
     """
+    p = profile or load_profile()
     forced_correction = False
 
-    if verdict.get("segment") not in VALID_SEGMENTS:
+    if verdict.get("segment") not in p.valid_segments:
         verdict["segment"] = "unclear"
         verdict["needs_human_review"] = True
         note = "invalid_segment_fixed_to_unclear"
@@ -372,25 +382,25 @@ def _validate_verdict(verdict: dict) -> dict:
     be = str(verdict.get("build_evidence") or "unknown").strip().lower()
     verdict["build_evidence"] = be if be in VALID_BUILD_EVIDENCE else "unknown"
 
-    # Derivation rule, enforced in code: a settled founder question must not
-    # collapse into "unclear" just because the build method is unknown.
+    # Derivation, enforced from profile data: a settled founder/build question
+    # must not collapse into "unclear" just because one axis is unknown.
+    # Rules apply in profile order; the first match wins.
     derived_from = None
     cap_band = False
-    if verdict.get("segment") == "unclear" and verdict["founder_profile"] == "technical":
-        verdict["segment"] = "technical_founder"
-        verdict["recommended_offer"] = "general_audit"
-        derived_from, cap_band = "technical", True
-    elif verdict.get("segment") == "unclear" and verdict["build_evidence"] == "ai_built":
-        # Build settled by a STRONG/MEDIUM signal, founder not technical: that
-        # IS the ai_solo_founder profile. Confidence follows the build signal,
-        # so the model's own number stands (below 0.7 it is reviewed anyway).
-        verdict["segment"] = "ai_solo_founder"
-        verdict["recommended_offer"] = "ai_audit"
-        derived_from = "ai_built"
-    elif verdict.get("segment") == "unclear" and verdict["founder_profile"] == "non_technical":
-        verdict["segment"] = "ai_solo_founder"
-        verdict["recommended_offer"] = "ai_audit"
-        derived_from, cap_band = "non_technical", True
+    force_review = False
+    if verdict.get("segment") == "unclear":
+        for rule in p.derivation_rules:
+            founder_ok = rule.when_founder == "any" or verdict["founder_profile"] == rule.when_founder
+            build_ok = rule.when_build == "any" or verdict["build_evidence"] == rule.when_build
+            if not (founder_ok and build_ok):
+                continue
+            verdict["segment"] = rule.set_segment
+            verdict["recommended_offer"] = rule.set_offer
+            # Trace which axis settled it: the non-"any" condition.
+            derived_from = (rule.when_founder if rule.when_founder != "any" else rule.when_build)
+            cap_band = (rule.confidence == "clamp_0_5_0_7")
+            force_review = bool(rule.needs_review)
+            break
     if derived_from:
         conf = float(verdict.get("confidence") or 0.0)
         if cap_band:
@@ -398,6 +408,8 @@ def _validate_verdict(verdict: dict) -> dict:
             verdict["confidence"] = round(min(max(conf, 0.5), 0.7), 2)
             verdict["needs_human_review"] = True
         elif conf < CONFIDENCE_THRESHOLD:
+            verdict["needs_human_review"] = True
+        if force_review:
             verdict["needs_human_review"] = True
         note = f"segment_derived_from_founder_profile:{derived_from}"
         existing = verdict.get("disqualify_reason")
@@ -408,7 +420,7 @@ def _validate_verdict(verdict: dict) -> dict:
     if verdict.get("segment") == "unclear":
         verdict["needs_human_review"] = True
 
-    if verdict.get("recommended_offer") not in VALID_OFFERS:
+    if verdict.get("recommended_offer") not in {*p.offer_ids, "none"}:
         verdict["recommended_offer"] = "none"
         forced_correction = True
 
@@ -615,10 +627,10 @@ def _third_party_spans(source_text: str, lead_metadata: dict | None) -> list[tup
 
     - [ATTRIBUTED QUOTE ...] blockquotes: the attribution is the trailing
       name/title/company line(s) that scraper.py pulls into the tag after the
-      quoted lines (e.g. "— Oussama, Founder, RuyaTech"). The lead's own
+      quoted lines (e.g. "— Jane, Founder, Acme"). The lead's own
       name/company must appear in that ATTRIBUTION, not merely inside the
       quoted text: client testimonials frequently mention the founder's
-      first name in the quote body ("Oussama launched it in two weeks")
+      first name in the quote body ("Jane launched it in two weeks")
       while being attributed to someone else — those stay excluded.
 
     - [THIRD-PARTY CONTENT SECTION ...] heading sections: attribution
@@ -626,9 +638,9 @@ def _third_party_spans(source_text: str, lead_metadata: dict | None) -> list[tup
       section opened by "## Testimonials"/"## Success stories"/"## Our work"
       is third-party by structure; a founder name or company mention
       LATER in the section (quote bodies, closing boilerplate like
-      "founded by Oussama") must NOT rescue it. Only a section that
+      "founded by Jane") must NOT rescue it. Only a section that
       names/discloses the lead up front (heading + first line,
-      e.g. "## What we've built by RuyaTech") is treated as the lead's own.
+      e.g. "## What we've built at Acme") is treated as the lead's own.
 
     This is a code-level filter: it does not depend on the LLM having
     correctly judged the block, so it still catches a hallucinated
@@ -916,14 +928,7 @@ def score_content(
         if has_criteria:
             criteria_block = "Scoring criteria selected by the user (give more weight to these criteria):\n"
             if scoring_criteria:
-                criteria_desc = {
-                    "ai_solo_founder": "PRIMARY TARGET: identify non-technical founders who build with AI (vibe coding, Cursor, Bolt, Lovable, Replit) — corresponds to the ai_solo_founder segment.",
-                    "technical_founder": "SECONDARY TARGET: identify technical teams that use AI as a development tool — corresponds to the technical_founder segment.",
-                    "solo_or_small": "Identify solo founders or micro-teams (1-5 people).",
-                    "agency_or_studio": "Identify agencies / services studios that are scaling — corresponds to the small_agency_scaling segment.",
-                    "no_ai": "Identify established companies with no AI-construction signal.",
-                    "wrong_field": "Identify leads that are clearly not our target (too_big, wrong_field).",
-                }
+                criteria_desc = load_profile().scorer_criteria_desc()
                 for c in scoring_criteria:
                     desc = criteria_desc.get(c, c)
                     criteria_block += f"\n- {c}: {desc}"

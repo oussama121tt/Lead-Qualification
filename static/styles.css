@@ -466,13 +466,11 @@ button,
   font-size: 0.95rem;
 }
 
-/* Segment tag colors */
-.tag-ai_solo_founder { color: var(--cyan); }
-.tag-technical_founder { color: var(--cyan); }
-.tag-small_agency_scaling { color: var(--purple); }
-.tag-too_big { color: var(--text-muted); }
-.tag-wrong_field { color: var(--text-muted); }
+/* Segment tag colors, by bucket (segment names are per-profile) */
+.tag-target { color: var(--cyan); }
+.tag-out { color: var(--text-muted); }
 .tag-unclear { color: var(--warning); }
+.tag-none { color: var(--text-muted); }
 
 .badge-segment {
   display: inline-block;

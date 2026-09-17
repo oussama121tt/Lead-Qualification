@@ -16,6 +16,7 @@ import linkedin_lane
 import scraper
 import scorer
 from db import _now as _db_now
+from profile import load_profile
 from runconfig import load_config
 
 from constants import CONFIDENCE_THRESHOLD
@@ -119,8 +120,8 @@ def _build_lead_metadata(lead: dict) -> dict:
         "apollo_email_status": lead.get("apollo_email_status"),
     }
     # Apollo enrichment (when the lead came from the API): the founder's
-    # career and the org facts are direct evidence for technical_founder vs
-    # ai_solo_founder and for budget_signal.
+    # career and the org facts are direct evidence for the founder segments
+    # and for budget_signal.
     for key in ("apollo_person", "apollo_org"):
         raw = lead.get(key)
         if raw:
@@ -413,13 +414,16 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
         # --- Web search escalation (conditional, FR-3) ---
         # The web search (company sources + founder person_*) runs when
         # pass 1 was ambiguous (confidence < 0.7 => needs_human_review),
-        # OR for confident small_agency_scaling leads (segment by the LLM,
-        # hiring_technical by the deterministic careers signal) — the
-        # high-value confident case that was previously never verified.
-        # Clear-cut leads (too_big, wrong_field, confident non-agency
-        # verdicts) never pay the SGAI credit cost — "quality, not
-        # quantity": credits are saved on leads that would be rejected
-        # anyway.
+        # OR for confident leads in a segment flagged escalate_on_hiring
+        # in the profile (segment by the LLM, hiring_technical by the
+        # deterministic careers signal) — the high-value confident case
+        # that was previously never verified.
+        # Clear-cut out-of-target verdicts never pay the SGAI credit cost —
+        # "quality, not quantity": credits are saved on leads that would be
+        # rejected anyway.
+        _prof = load_profile()
+        _targets = _prof.target_segments
+        _segments = _prof.segments
         web_evidence = {}
         esc = load_config().escalation
         if esc.mode == "off":
@@ -428,7 +432,7 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             # Bulk-sourcing rule: spend SGAI credits only on leads that already
             # look good — the lane confirms winners, it does not rescue losers.
             should_escalate_web = (
-                verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                verdict.get("segment") in _targets
                 and float(verdict.get("confidence") or 0.0) >= esc.min_confidence
             )
         elif esc.mode == "targets":
@@ -437,14 +441,15 @@ def _process_lead(lead, session_id, scoring_criteria, scoring_criteria_custom, t
             # lane is enabled, the founder's own LinkedIn posts. Rejects and
             # unclear leads never spend credits.
             should_escalate_web = (
-                verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                verdict.get("segment") in _targets
             )
         else:
+            _seg = _segments.get(verdict.get("segment"))
             should_escalate_web = (
                 verdict.get("needs_human_review")
                 or verdict.get("confidence", 0.0) < CONFIDENCE_THRESHOLD
                 or (
-                    verdict.get("segment") == "small_agency_scaling"
+                    bool(_seg and _seg.escalate_on_hiring)
                     and bool(deterministic_signals and deterministic_signals.get("hiring_technical"))
                     and verdict.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD
                 )
@@ -638,11 +643,12 @@ def run_rescore_pipeline(conn, throttle_seconds: float = 1.0, session_id: int | 
             # second-class pass (it is how a broken batch gets repaired).
             esc = load_config().escalation
             if not web_evidence and esc.mode != "off":
+                _targets = load_profile().target_segments
                 if esc.mode == "high_only":
-                    qualifies = (verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                    qualifies = (verdict.get("segment") in _targets
                                  and float(verdict.get("confidence") or 0.0) >= esc.min_confidence)
                 elif esc.mode == "targets":
-                    qualifies = verdict.get("segment") in ("ai_solo_founder", "technical_founder", "small_agency_scaling")
+                    qualifies = verdict.get("segment") in _targets
                 else:
                     qualifies = bool(verdict.get("needs_human_review")) or float(verdict.get("confidence") or 0.0) < CONFIDENCE_THRESHOLD
                 if qualifies:

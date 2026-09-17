@@ -36,6 +36,7 @@ import analytics as analyticsmod
 import ops as opsmod
 import apollo_analytics as apollo_analyticsmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
+from profile import load_profile
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
 
 logger = logging.getLogger("app")
@@ -60,20 +61,24 @@ app.config["SECRET_KEY"] = _secret
 
 @app.template_filter("map_offer")
 def _map_offer(offer: str | None) -> str:
-    mapping = {"ai_audit": "AI Audit", "general_audit": "Technical Audit", "pipeline": "Pipeline Support"}
+    mapping = load_profile().offer_labels()
     return mapping.get(offer) if offer in mapping else "—"
 
 @app.template_filter("map_segment")
 def _map_segment(segment: str | None) -> str:
-    mapping = {
-        "ai_solo_founder": "Solo AI founder",
-        "technical_founder": "Technical founder",
-        "small_agency_scaling": "Small scaling agency",
-        "too_big": "Too big",
-        "wrong_field": "Wrong field",
-        "unclear": "Unclear",
-    }
+    mapping = load_profile().segment_labels()
     return mapping.get(segment) if segment and segment in mapping else (segment or "Not evaluated")
+
+@app.template_filter("segment_bucket")
+def _segment_bucket(segment: str | None) -> str:
+    """Bucket class for segment tags (target / out / unclear / none)."""
+    if not segment:
+        return "none"
+    if segment in TARGET_SEGMENTS:
+        return "target"
+    if segment in OUT_OF_TARGET_SEGMENTS:
+        return "out"
+    return "unclear"
 
 @app.template_filter("map_status_label")
 def _map_status_label(status: str | None) -> str:
@@ -625,14 +630,7 @@ def import_review(session_id: int):
         duplicates = [l for l in leads if l.get("is_duplicate")]
         custom_criteria = dbmod.get_scoring_criteria_custom(conn, session_id)
 
-    criteria_options = [
-        {"key": "ai_solo_founder", "label": "TARGET: Non-tech vibe coder", "desc": "Non-technical founder building with AI (Cursor, Bolt, Lovable, Replit, vibe coding)."},
-        {"key": "technical_founder", "label": "TARGET: Tech person using AI", "desc": "Technical team using AI as a development tool."},
-        {"key": "solo_or_small", "label": "Solo / Micro-team", "desc": "Single founder or a team of 1-5 people."},
-        {"key": "agency_or_studio", "label": "Agency / Studio", "desc": "Service provider, web agency, creation studio."},
-        {"key": "no_ai", "label": "Established without AI signals", "desc": "Established company with no indication of building via AI."},
-        {"key": "wrong_field", "label": "Not our target", "desc": "Unrelated sector, agency, or organization without AI dev usage."},
-    ]
+    criteria_options = load_profile().criteria_options()
 
     return render_template(
         "import_review.html",

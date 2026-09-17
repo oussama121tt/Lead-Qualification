@@ -52,8 +52,23 @@ def test_campaign_fields_system_byte_identical():
         "campaign_fields_system.txt")
 
 
-def test_scorer_system_byte_identical():
+def _squash(s: str) -> str:
+    return " ".join(s.split())
+
+
+def test_scorer_system_derived_from_profile():
+    """Task 5: the scorer prompt is derived from [offers]/[segments], so its
+    layout changed (single-line sentences instead of hand wraps). The words
+    must be unchanged: whitespace-normalized equality with the frozen text,
+    plus the profile's own ids present in the choice/schema lines."""
     profilemod.clear_cache()
-    assert scorer.get_system_prompt(profilemod.load_profile("ruyatech")) == _read(
-        "scorer_system.txt")
-    assert scorer.SYSTEM_PROMPT == _read("scorer_system.txt")
+    p = profilemod.load_profile("ruyatech")
+    prompt = scorer.get_system_prompt(p)
+    assert _squash(prompt) == _squash(_read("scorer_system.txt"))
+    assert f'"segment": "{p.segment_enum()}"' in prompt
+    assert f'"recommended_offer": "{p.offer_enum()}"' in prompt
+    for seg in p.segment_ids:
+        assert seg in prompt
+    for offer in p.offer_ids:
+        assert offer in prompt
+    assert scorer.SYSTEM_PROMPT == prompt

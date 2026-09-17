@@ -10,9 +10,13 @@ The result is cached per process (same model as runconfig.load_config):
 the profile is not meant to change mid-run. Tests can call clear_cache().
 
 Naming convention (TOML keys): snake_case everywhere; [offers.<id>],
-[segments.<id>], [sequences.offers.<id>]; [[derivation.rules]] rows with
-when_founder / when_build / set_segment / set_offer / confidence /
-needs_review. See profiles/README.md.
+[segments.<id>], [criteria.<key>], [sequences.offers.<id>];
+[[derivation.rules]] rows with when_founder / when_build / set_segment /
+set_offer / confidence / needs_review. See profiles/README.md.
+
+Reserved machine names (never business): the "unclear" segment and the
+"none" offer are the catch-all unknowns every profile must define; the
+founder_profile x build_evidence axis vocabulary stays in the engine.
 """
 from __future__ import annotations
 
@@ -42,6 +46,8 @@ class Identity:
 class Offer:
     key: str
     name: str = ""
+    label: str = ""
+    short_who: str = ""
     who: str = ""
     detail: str = ""
     case_study: str = ""
@@ -55,8 +61,15 @@ class Segment:
     offer: str = "none"
     is_target: bool = False
     label: str = ""
-    criteria_label: str = ""
-    criteria_desc: str = ""
+    escalate_on_hiring: bool = False
+
+
+@dataclass
+class CriteriaItem:
+    key: str
+    label: str = ""
+    ui_desc: str = ""
+    prompt_desc: str = ""
 
 
 @dataclass
@@ -130,8 +143,11 @@ class Profile:
     voice: Voice
     sequences: Sequences
     derivation_rules: list[DerivationRule] = field(default_factory=list)
-    scoring_criteria: dict[str, str] = field(default_factory=dict)
-    scoring_offers_block: str = ""
+    criteria: dict[str, CriteriaItem] = field(default_factory=dict)
+    scoring_axes_prose: str = ""
+    scoring_extra_rules: list[str] = field(default_factory=list)
+    scoring_career_hint: str = ""
+    scoring_unclear_note: str = ""
     # Compiled Stage-0 regexes, built from the marker lists at load time.
     agency_company_re: re.Pattern | None = None
     dev_shop_re: re.Pattern | None = None
@@ -151,6 +167,47 @@ class Profile:
     def out_of_target_segments(self) -> set[str]:
         return {k for k, s in self.segments.items()
                 if not s.is_target and k not in ("unclear",)}
+
+    @property
+    def offer_ids(self) -> list[str]:
+        return list(self.offers)
+
+    @property
+    def segment_ids(self) -> list[str]:
+        return list(self.segments)
+
+    def offers_sentence(self) -> str:
+        """Scorer OFFERS sentence, derived from the offer atoms."""
+        clauses = [f"{o.key} is for {o.short_who}" for o in self.offers.values()]
+        return "OFFERS: " + "; ".join(clauses) + "."
+
+    def choice_sentence(self) -> str:
+        keys = self.segment_ids
+        return "Choose exactly one segment: " + ", ".join(keys[:-1]) + ", or " + keys[-1] + "."
+
+    def offer_map_sentence(self) -> str:
+        offers = [s.offer for s in self.segments.values()]
+        return "Map those segments to " + ", ".join(offers[:-1]) + ", and normally " + offers[-1] + "."
+
+    def segment_enum(self) -> str:
+        return " | ".join(self.segment_ids)
+
+    def offer_enum(self) -> str:
+        return " | ".join([*self.offer_ids, "none"])
+
+    def criteria_options(self) -> list[dict]:
+        """Review-queue picker entries, in profile order."""
+        return [{"key": c.key, "label": c.label, "desc": c.ui_desc}
+                for c in self.criteria.values()]
+
+    def scorer_criteria_desc(self) -> dict[str, str]:
+        return {c.key: c.prompt_desc for c in self.criteria.values()}
+
+    def segment_labels(self) -> dict[str, str]:
+        return {s.key: (s.label or s.key) for s in self.segments.values()}
+
+    def offer_labels(self) -> dict[str, str]:
+        return {o.key: (o.label or o.key) for o in self.offers.values()}
 
 
 def _profile_name(explicit: str | None) -> str:
@@ -201,7 +258,8 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
     )
 
     offers = {
-        key: Offer(key=key, name=str(v.get("name", "")), who=str(v.get("who", "")),
+        key: Offer(key=key, name=str(v.get("name", "")), label=str(v.get("label", "")),
+                   short_who=str(v.get("short_who", "")), who=str(v.get("who", "")),
                    detail=str(v.get("detail", "")), case_study=str(v.get("case_study", "")),
                    email_blurb=str(v.get("email_blurb", "")))
         for key, v in raw.get("offers", {}).items()
@@ -212,9 +270,15 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
                      offer=str(v.get("offer", "none")),
                      is_target=bool(v.get("is_target", False)),
                      label=str(v.get("label", key)),
-                     criteria_label=str(v.get("criteria_label", "")),
-                     criteria_desc=str(v.get("criteria_desc", "")))
+                     escalate_on_hiring=bool(v.get("escalate_on_hiring", False)))
         for key, v in raw.get("segments", {}).items()
+    }
+
+    criteria = {
+        key: CriteriaItem(key=key, label=str(v.get("label", "")),
+                          ui_desc=str(v.get("ui_desc", "")),
+                          prompt_desc=str(v.get("prompt_desc", "")))
+        for key, v in raw.get("criteria", {}).items()
     }
 
     icp_raw = raw.get("icp", {})
@@ -276,8 +340,11 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
         voice=voice,
         sequences=sequences,
         derivation_rules=rules,
-        scoring_criteria={str(k): str(v) for k, v in raw.get("scoring_criteria", {}).items()},
-        scoring_offers_block=str(raw.get("scoring", {}).get("offers_block", "")),
+        criteria=criteria,
+        scoring_axes_prose=str(raw.get("scoring", {}).get("axes_prose", "")),
+        scoring_extra_rules=[str(r) for r in raw.get("scoring", {}).get("extra_rules", [])],
+        scoring_career_hint=str(raw.get("scoring", {}).get("career_hint", "")),
+        scoring_unclear_note=str(raw.get("scoring", {}).get("unclear_note", "")),
         agency_company_re=_compile(icp.reject_company_markers),
         dev_shop_re=re.compile(icp.dev_shop_pattern, re.I) if icp.dev_shop_pattern else None,
         agency_title_re=_compile(icp.reject_title_markers),

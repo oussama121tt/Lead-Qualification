@@ -1,16 +1,19 @@
 """
-Taxonomy constants — single source of truth for segments, statuses and the
-confidence threshold. Imported by app.py, db.py and scorer.py; never
-redefined locally.
+Taxonomy constants — resolved from the active profile, not redefined locally.
+
+VALID_SEGMENTS / TARGET_SEGMENTS / OUT_OF_TARGET_SEGMENTS snapshot the
+profile at import (one profile per running instance, same model as
+scorer.SYSTEM_PROMPT). NOT_YET_SCORED_STATUSES and CONFIDENCE_THRESHOLD
+are machine concepts and stay literal here.
 """
 
-VALID_SEGMENTS = {
-    "ai_solo_founder", "technical_founder", "small_agency_scaling",
-    "too_big", "wrong_field", "unclear",
-}
+from profile import load_profile
 
-TARGET_SEGMENTS = {"ai_solo_founder", "technical_founder", "small_agency_scaling"}
-OUT_OF_TARGET_SEGMENTS = {"too_big", "wrong_field"}
+_profile = load_profile()
+
+VALID_SEGMENTS = _profile.valid_segments
+TARGET_SEGMENTS = _profile.target_segments
+OUT_OF_TARGET_SEGMENTS = _profile.out_of_target_segments
 
 NOT_YET_SCORED_STATUSES = (
     "NEW", "PARSED", "FETCH_PARTIAL", "FETCH_FAILED",
