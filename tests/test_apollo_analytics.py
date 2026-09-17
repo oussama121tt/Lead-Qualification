@@ -11,6 +11,18 @@ import pytest
 
 import apollo_analytics as aa
 
+def _days_ago(n: int) -> str:
+    """Fixture timestamp n days before now.
+
+    Never hardcode a date in these fixtures: sync_analytics_report filters by a
+    rolling `days` window, so a literal date silently drops out of the window
+    as real time passes and the test starts failing for a reason that has
+    nothing to do with the code.
+    """
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 
 class _CapturingConn:
     def __init__(self):
@@ -81,7 +93,7 @@ def test_parse_outreach_email_maps_flags_and_sentiment():
         "id": "m1",
         "to_email": "alice@co.com",
         "status": "opened",
-        "sent_at": "2026-09-01T10:00:00Z",
+        "sent_at": _days_ago(2),
         "opens": 2,
         "clicks": 1,
         "replied": True,
@@ -165,10 +177,10 @@ def test_sync_sweeps_pages_saves_report_and_folds_outcomes(monkeypatch):
     pages = iter([
         {"emailer_messages": [
             {"id": "m1", "to_email": "alice@co.com", "status": "opened",
-             "sent_at": "2026-09-05T10:00:00Z", "opens": 1, "clicks": 1, "replied": True,
+             "sent_at": _days_ago(2), "opens": 1, "clicks": 1, "replied": True,
              "reply_class": "willing_to_meet", "emailer_campaign_id": "c1"},
             {"id": "m2", "to_email": "nobody@nowhere.com", "status": "delivered",
-             "sent_at": "2026-09-05T11:00:00Z"},
+             "sent_at": _days_ago(2)},
             {"id": "m3", "to_email": "old@co.com", "status": "delivered",
              "sent_at": "2020-01-01T10:00:00Z"},  # older than the window -> skipped
             {"id": "m4", "status": "drafted"},     # not sent -> skipped
@@ -202,7 +214,7 @@ def test_sync_sweeps_pages_saves_report_and_folds_outcomes(monkeypatch):
     # Re-running is idempotent: no new report row, same outcome.
     pages2 = iter([{"emailer_messages": [
         {"id": "m1", "to_email": "alice@co.com", "status": "opened",
-         "sent_at": "2026-09-05T10:00:00Z", "opens": 1, "replied": True}],
+         "sent_at": _days_ago(2), "opens": 1, "replied": True}],
         "pagination": {"total_pages": 1}}])
     aa.sync_analytics_report(conn, key="secret", days=7,
                              _get=lambda *a, **kw: next(pages2))

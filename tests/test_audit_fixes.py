@@ -23,6 +23,18 @@ import triggers as triggersmod
 from test_apollo_analytics import _sqlite_conn as _aa_conn
 from test_triggers import _mk_conn, _insert_lead, _fake_fetch, _HOME, _PRICING, _careers
 
+def _days_ago(n: int) -> str:
+    """Fixture timestamp n days before now.
+
+    Never hardcode a date in these fixtures: sync_analytics_report filters by a
+    rolling `days` window, so a literal date silently drops out of the window
+    as real time passes and the test starts failing for a reason that has
+    nothing to do with the code.
+    """
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 
 # --- Apollo engagement enrichment ------------------------------------------
 
@@ -49,9 +61,9 @@ def test_sync_enriches_opened_clicked_bounced_from_stats_sweeps(monkeypatch):
     monkeypatch.setattr(aa, "ensure_report_table", lambda c: None)
     plain = [  # what the live endpoint returns: no opened/clicked keys at all
         {"id": "m1", "to_email": "alice@co.com", "status": "completed",
-         "created_at": "2026-09-08T10:00:00Z", "replied": None},
+         "created_at": _days_ago(2), "replied": None},
         {"id": "m2", "to_email": "bob@co.com", "status": "completed",
-         "created_at": "2026-09-08T10:00:00Z", "replied": None},
+         "created_at": _days_ago(2), "replied": None},
     ]
     by_stat = {"opened": [{"id": "m1"}, {"id": "m2"}], "clicked": [{"id": "m1"}],
                "replied": [{"id": "m1", "replied": True}], "bounced": [{"id": "m2"}]}
@@ -77,7 +89,7 @@ def test_sync_reports_a_failed_sweep_instead_of_hiding_it(monkeypatch):
     conn = _aa_conn()
     monkeypatch.setattr(aa, "ensure_report_table", lambda c: None)
     plain = [{"id": "m1", "to_email": "a@co.com", "status": "completed",
-              "created_at": "2026-09-08T10:00:00Z"}]
+              "created_at": _days_ago(2)}]
 
     def _get(path, params, key):
         stats = params.get("emailer_message_stats[]")
@@ -209,14 +221,14 @@ def test_fold_ignores_messages_sent_before_the_lead_existed(monkeypatch):
     conn.execute("INSERT INTO leads (id, session_id, email) VALUES (2, 1, 'new@co.com')")
     # sqlite harness has no created_at column on leads; add one for the test.
     conn.execute("ALTER TABLE leads ADD COLUMN created_at TEXT")
-    conn.execute("UPDATE leads SET created_at = '2026-09-07T10:00:00+00:00'")
+    conn.execute("UPDATE leads SET created_at = ?", (_days_ago(3),))
     conn.commit()
     monkeypatch.setattr(aa, "ensure_report_table", lambda c: None)
     plain = [
         {"id": "m_old", "to_email": "old@co.com", "status": "completed",
-         "created_at": "2026-08-17T10:00:00Z", "replied": True},      # before the lead existed
+         "created_at": _days_ago(30), "replied": True},               # before the lead existed
         {"id": "m_new", "to_email": "new@co.com", "status": "completed",
-         "created_at": "2026-09-08T10:00:00Z"},                       # after
+         "created_at": _days_ago(1)},                                 # after
     ]
     _get, _ = _fake_apollo(plain, {})
     result = aa.sync_analytics_report(conn, key="k", days=60, _get=_get, stats=())
