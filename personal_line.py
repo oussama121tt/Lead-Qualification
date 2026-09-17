@@ -4,14 +4,14 @@ existing Apollo sequences.
 The sequence copy (subject, body, follow-ups) is already written and already
 sent: only the second line of email 1 changes per contact, supplied through the
 Apollo contact custom field "Personal Line". This module produces that line in
-the SAME voice as the lines Wael/Oussama already sent, using the 14 real
-examples below as the style reference.
+the SAME voice as the lines the team already sent, using the real examples
+from the profile [voice] as the style reference.
 
 The house pattern, read off those examples:
   - a concrete observation about what the product actually does, or about the
     founder's own situation, taken from evidence;
-  - followed by the implication that makes an audit matter (whose data it
-    holds, how heavy the permission is, how thin the team is);
+  - followed by the implication that makes the offer matter (see
+    [voice.hooks] in the profile for the per-offer wording);
   - no compliment, no pitch, no advice, no question, no "I noticed";
   - 1-2 sentences, plain conversational English.
 
@@ -29,15 +29,16 @@ from llm_provider import get_llm_provider
 from profile import load_profile
 
 
-# Voice (examples) and sender blurb come from the profile; the house rules
-# below are the sending machine. Known remainder: "code audit" / "an audit"
-# still name the offer in these rules — generalized when a second profile
-# needs different wording.
+# Voice (examples, hook sentences, mention ban) and sender blurb come from
+# the profile (see [voice] and [voice.hooks]); the house rules below are
+# the sending machine.
 def build_system(p=None) -> str:
     p = p or load_profile()
     examples = "\n".join(f"- {e}" for e in p.voice.examples)
     company = p.identity.company
     blurb = p.identity.personal_line_blurb
+    implication = p.voice.hooks.personal_line_implication
+    mention_ban = p.voice.hooks.mention_ban
     return f"""You write ONE personalised opening line for a cold email from {company}, {blurb}. \
 The rest of the email is already written; you \
 supply only the line that follows the greeting.
@@ -49,15 +50,13 @@ House style, learned from lines that have actually been sent:
 Rules, all mandatory:
 - State a concrete, specific fact about what THIS product does, or about THIS founder's own \
 situation, taken only from the evidence supplied. Name the product or the thing it handles.
-- Then give the implication that makes a code audit matter: whose data it holds, how sensitive \
-that data is, how heavy a permission it needs, how much the founder is carrying alone, or what a \
-failure would actually cost. The implication must follow from the fact, not be asserted.
+- {implication}
 - 1 or 2 sentences. Under 45 words. Plain conversational English.
 - NEVER: compliment them, pitch the service, give advice, ask a question, use "I noticed", \
 "I saw", "Love what you're doing", "impressive", "exciting", or any exclamation mark.
 - NEVER invent a fact. If the evidence does not support a specific observation, say so by \
 returning an empty line rather than writing something generic.
-- Do not greet, do not sign off, do not mention {company} or an audit.
+- Do not greet, do not sign off, do not mention {company} or {mention_ban}.
 
 Respond ONLY with JSON: {{"line": "...", "based_on": "exact verbatim quote from the evidence that \
 the observation rests on"}}. Return {{"line": "", "based_on": ""}} when the evidence is too thin."""

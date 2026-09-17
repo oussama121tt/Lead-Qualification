@@ -291,6 +291,18 @@ question_examples = [
   "is the behavior tracking model in testing yet or still in development?",
 ]
 
+# Offer-specific subject-phrase bans (regex alternation fragments), appended
+# to the generic anti-spam patterns in campaign_fields.
+extra_banned_subject_phrases = ["audit for"]
+
+# Offer-specific hook sentences for the generators, moved verbatim from
+# personal_line.py / campaign_fields.py (each prompt words the implication
+# slightly differently — one field per prompt, not one shared sentence).
+[voice.hooks]
+personal_line_implication = "Then give the implication that makes a code audit matter: whose data it holds, how sensitive that data is, how heavy a permission it needs, how much the founder is carrying alone, or what a failure would actually cost. The implication must follow from the fact, not be asserted."
+sequence_implication = "then the implication that makes a code audit matter: whose data it holds, how sensitive it is, how heavy the permission, how much they carry alone, or what a failure would cost. 1-2 sentences, under 45 words."
+mention_ban = "an audit"
+
 [scoring]
 # Scorer prompt material. The OFFERS / segment-choice / segment-offer-map
 # sentences are DERIVED from [offers].short_who and [segments] (keys, order,

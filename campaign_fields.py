@@ -1,9 +1,9 @@
-"""The four values the "AIAUDIT v4 — their words" sequence merges per contact.
+"""The four values the personalised sequence merges per contact.
 
 Built on the evidence of what actually earned replies from this account:
 the March-May 2026 one-off emails (5 replies from 64 people) were personalised
 in EVERY touch and usually ended the first email with a short, specific,
-easy-to-answer question. The AIAUDIT sequences, which personalise one line and
+easy-to-answer question. The templated sequences, which personalise one line and
 then run identical copy for everyone with no ask, got 0 replies from 66 people.
 
 So the sequence needs four per-contact values, not one:
@@ -32,10 +32,9 @@ from personal_line import _BANNED, MAX_WORDS, _evidence_block
 from profile import load_profile
 
 
-# Voice (examples, subjects, questions) and sender blurb come from the
-# profile; the four-field contract below is the sending machine. Known
-# remainder: "code audit" still names the offer in field 2 — generalized
-# when a second profile needs different wording.
+# Voice (examples, subjects, questions, hook sentences) and sender blurb
+# come from the profile (see [voice] and [voice.hooks]); the four-field
+# contract below is the sending machine.
 def build_system(p=None) -> str:
     p = p or load_profile()
     examples = "\n".join(f"- {e}" for e in p.voice.examples)
@@ -43,6 +42,7 @@ def build_system(p=None) -> str:
     questions = "\n".join(f"- {q}" for q in p.voice.question_examples)
     company = p.identity.company
     blurb = p.identity.sequence_blurb
+    implication = p.voice.hooks.sequence_implication
     return f"""You prepare one cold-email sequence for {company}, {blurb}. \
 The sequence copy is already written; you supply \
 four values merged per contact.
@@ -66,9 +66,7 @@ It should read like a note from someone who has been paying attention, drawn fro
 situation.
 
 2. "personal_line" - the opener that follows the greeting. A concrete specific fact about what this \
-product does or what this founder is carrying, then the implication that makes a code audit matter: \
-whose data it holds, how sensitive it is, how heavy the permission, how much they carry alone, or \
-what a failure would cost. 1-2 sentences, under 45 words.
+product does or what this founder is carrying, {implication}
 
 3. "opening_question" - ONE short question that ends the first email. Specific to their build, easy \
 and slightly enjoyable to answer, never about buying anything. Under 25 words, ends with a question \
@@ -89,9 +87,23 @@ Respond ONLY with JSON:
 {{"subject_line": "...", "personal_line": "...", "opening_question": "...", \
 "second_observation": "...", "citations": {{"personal_line": "...", "second_observation": "..."}}}}"""
 
-_SUBJECT_BANNED = re.compile(
-    r"\b(quick question|touching base|following up|checking in|opportunity|partnership|"
-    r"introduction|proposal|audit for|let's chat|catching up)\b|[:!]", re.I)
+# Generic anti-spam subject patterns: apply to any offer, stay in code.
+_SUBJECT_BANNED_BASE = (
+    r"quick question|touching base|following up|checking in|opportunity|partnership|"
+    r"introduction|proposal|let's chat|catching up"
+)
+
+
+def _subject_banned(p=None) -> re.Pattern:
+    """Subject guard: generic patterns plus the profile's
+    [voice] extra_banned_subject_phrases (regex alternation fragments)."""
+    p = p or load_profile()
+    extra = "|".join(e for e in (p.voice.extra_banned_subject_phrases or []) if e)
+    alts = _SUBJECT_BANNED_BASE + ("|" + extra if extra else "")
+    return re.compile(r"\b(" + alts + r")\b|[:!]", re.I)
+
+
+_SUBJECT_BANNED = _subject_banned()  # default-profile snapshot; tests keep working
 
 FIELDS = ("subject_line", "personal_line", "opening_question", "second_observation")
 
@@ -104,6 +116,7 @@ def generate(lead: dict, verdict: dict, site_text: str, web_text: str = "",
     provider = provider or get_llm_provider("email")
     prompt = _evidence_block(lead, verdict, site_text, web_text)
     system = build_system(profile)
+    subject_banned = _subject_banned(profile)
     t0 = time.monotonic()
     data, meta = provider.generate_json(prompt, system=system, max_tokens=1800)
     if cost_cb is not None:
@@ -121,7 +134,7 @@ def generate(lead: dict, verdict: dict, site_text: str, web_text: str = "",
     subject = (data.get("subject_line") or "").strip().strip('"').strip()
     if not subject:
         out["subject_line"], out["status"]["subject_line"] = "", "empty"
-    elif len(subject.split()) > 8 or _SUBJECT_BANNED.search(subject):
+    elif len(subject.split()) > 8 or subject_banned.search(subject):
         out["subject_line"], out["status"]["subject_line"] = "", "rejected:style"
     else:
         out["subject_line"], out["status"]["subject_line"] = subject, "ok"

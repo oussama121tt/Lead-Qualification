@@ -184,6 +184,15 @@ question_examples = [
   "are you answering security questionnaires ad hoc or is there one owner for all of them?",
 ]
 
+# No offer-specific subject bans for Beacon (no evidence of a solicitation
+# pattern worth banning yet — unlike ruyatech's "audit for").
+extra_banned_subject_phrases = []
+
+[voice.hooks]
+personal_line_implication = "Then give the implication that makes a readiness review matter: which enterprise deals are blocked, what the vendor questionnaire asks for, how much founder time the answers consume, or what a failed review costs in lost pipeline. The implication must follow from the fact, not be asserted."
+sequence_implication = "then the implication that makes a readiness review matter: which enterprise deals are blocked, what the vendor questionnaire asks for, how much founder time the answers consume, or what a failed review costs in lost pipeline. 1-2 sentences, under 45 words."
+mention_ban = "a readiness review"
+
 [scoring]
 unclear_note = "Unclear means insufficient evidence, not enterprise or wrong_field."
 axes_prose = """Two independent facts are judged separately. founder_profile: Apollo employment history is first-party evidence about the buyer. A career with no engineering or security roles is sufficient to judge the buyer non_technical; a career of engineering or security leadership is sufficient to judge them technical, even when the website says nothing; semi_technical for product, data or operations backgrounds; unknown only when history is absent. build_evidence: ai_built when the product was built fast with AI tools and no security process is evidenced, hand_built when an engineering team with release process or security hires is evidenced, otherwise unknown. Derive the segment from them: technical with hand_built is deal_blocked_scaleup; technical with unknown build is still deal_blocked_scaleup with confidence 0.5 to 0.7 (the buyer question is settled, only the posture is open), never unclear; ai_built with any buyer is diy_early; non_technical is diy_early. Use unclear only when BOTH founder_profile and build_evidence are unknown. Decide in order: enough evidence, founder_profile, build_evidence, enterprise scale, wrong_field, otherwise unclear."""

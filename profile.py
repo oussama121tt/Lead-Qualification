@@ -90,10 +90,27 @@ class Icp:
 
 
 @dataclass
+class VoiceHooks:
+    """Offer-specific hook sentences for the generators ([voice.hooks]).
+
+    The two prompts word the implication slightly differently, so each has
+    its own verbatim field; mention_ban is the offer noun the line must
+    never name (rendered as "do not mention {company} or {mention_ban}").
+    """
+    personal_line_implication: str = ""
+    sequence_implication: str = ""
+    mention_ban: str = ""
+
+
+@dataclass
 class Voice:
     examples: list[str] = field(default_factory=list)
     subject_examples: list[str] = field(default_factory=list)
     question_examples: list[str] = field(default_factory=list)
+    hooks: VoiceHooks = field(default_factory=VoiceHooks)
+    # Offer-specific subject-phrase bans (regex alternation fragments),
+    # appended to the generic anti-spam patterns in campaign_fields.
+    extra_banned_subject_phrases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -299,10 +316,17 @@ def load_profile(name: str | None = None, path: Path | None = None) -> Profile:
     )
 
     voice_raw = raw.get("voice", {})
+    hooks_raw = voice_raw.get("hooks", {})
     voice = Voice(
         examples=[str(e) for e in voice_raw.get("examples", [])],
         subject_examples=[str(e) for e in voice_raw.get("subject_examples", [])],
         question_examples=[str(e) for e in voice_raw.get("question_examples", [])],
+        hooks=VoiceHooks(
+            personal_line_implication=str(hooks_raw.get("personal_line_implication", "")),
+            sequence_implication=str(hooks_raw.get("sequence_implication", "")),
+            mention_ban=str(hooks_raw.get("mention_ban", "")),
+        ),
+        extra_banned_subject_phrases=[str(e) for e in voice_raw.get("extra_banned_subject_phrases", [])],
     )
 
     seq_raw = raw.get("sequences", {})
