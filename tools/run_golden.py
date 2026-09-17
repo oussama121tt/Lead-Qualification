@@ -1,7 +1,8 @@
-"""Run the offline scoring regression set."""
+"""Run the offline scoring regression set (default: the ruyatech profile)."""
 import argparse
 import inspect
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -9,13 +10,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import profile as profilemod
 import scorer
 
-CASES_PATH = ROOT / "golden" / "cases.jsonl"
-FIXTURES_DIR = ROOT / "golden" / "fixtures"
+
+def _golden_dir(profile_name: str) -> Path:
+    return ROOT / "profiles" / profile_name / "golden"
 
 
-def _load_cases(path=CASES_PATH):
+def _activate_profile(profile_name: str) -> None:
+    os.environ["LEAD_PROFILE"] = profile_name
+    profilemod.clear_cache()
+
+
+def _load_cases(path):
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
@@ -51,18 +59,24 @@ def _checks(case, verdict):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-agreement", type=float, default=0.8)
-    parser.add_argument("--cases", type=Path, default=CASES_PATH)
+    parser.add_argument("--profile", default="ruyatech")
+    parser.add_argument("--cases", type=Path, default=None)
+    parser.add_argument("--fixtures", type=Path, default=None)
     args = parser.parse_args()
-    cases = _load_cases(args.cases)
+    _activate_profile(args.profile)
+    golden_dir = _golden_dir(args.profile)
+    cases = _load_cases(args.cases or golden_dir / "cases.jsonl")
+    fixtures_dir = args.fixtures or golden_dir / "fixtures"
     results = []
     confusion = Counter()
     confidence_correct = []
     confidence_incorrect = []
 
+    print(f"profile: {args.profile}")
     print("id         result  segment                    offer             checks")
     print("-" * 78)
     for case in cases:
-        fixture_path = FIXTURES_DIR / case["fixture"]
+        fixture_path = fixtures_dir / case["fixture"]
         with fixture_path.open(encoding="utf-8") as handle:
             fixture = json.load(handle)
         verdict = _score_case(case, fixture)

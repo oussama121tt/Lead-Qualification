@@ -7,13 +7,14 @@ import scorer
 from app import _categorize_leads
 
 ROOT = Path(__file__).resolve().parents[1]
+GOLDEN = ROOT / "profiles" / "ruyatech" / "golden"
 
 
 def test_every_golden_fixture_loads():
-    cases = [json.loads(line) for line in (ROOT / "golden" / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    cases = [json.loads(line) for line in (GOLDEN / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(cases) >= 15
     for case in cases:
-        fixture = ROOT / "golden" / "fixtures" / case["fixture"]
+        fixture = GOLDEN / "fixtures" / case["fixture"]
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         assert isinstance(payload.get("rows"), list)
         assert isinstance(payload.get("mock_verdict"), dict)
@@ -32,7 +33,7 @@ def test_golden_harness_runs_offline():
 
 def test_golden_harness_fails_for_broken_case(tmp_path):
     cases_path = tmp_path / "broken-cases.jsonl"
-    cases = (ROOT / "golden" / "cases.jsonl").read_text(encoding="utf-8").splitlines()
+    cases = (GOLDEN / "cases.jsonl").read_text(encoding="utf-8").splitlines()
     for index in range(4):
         case = json.loads(cases[index])
         case["expected_segment"] = "wrong_field"

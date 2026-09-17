@@ -1,21 +1,26 @@
 """Live golden set runner (real Groq calls, no mock)"""
-import json, sys, time
+import argparse, json, os, sys, time
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import profile as profilemod
 import scorer
 
-CASES_PATH = ROOT / "golden" / "cases.jsonl"
-FIXTURES_DIR = ROOT / "golden" / "fixtures"
-
 def main():
-    cases = [json.loads(l) for l in open(CASES_PATH, encoding="utf-8") if l.strip()]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--profile", default="ruyatech")
+    args = ap.parse_args()
+    os.environ["LEAD_PROFILE"] = args.profile
+    profilemod.clear_cache()
+    golden_dir = ROOT / "profiles" / args.profile / "golden"
+    cases = [json.loads(l) for l in open(golden_dir / "cases.jsonl", encoding="utf-8") if l.strip()]
     results=[]
     confusion={}
+    print(f"profile: {args.profile}")
     print("id         expected                 got                      conf  review  result")
     print("-"*90)
     for case in cases:
-        fixture = json.load(open(FIXTURES_DIR / case["fixture"], encoding="utf-8"))
+        fixture = json.load(open(golden_dir / "fixtures" / case["fixture"], encoding="utf-8"))
         rows = fixture.get("rows", [])
         sig = fixture.get("technical_signals")
         web = fixture.get("web_search_evidence")
