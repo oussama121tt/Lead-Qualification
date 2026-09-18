@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="shell">
+  <nav class="page-nav" aria-label="Sections">
+    <a href="{{ url_for('home') }}">← Home</a><span class="sep">·</span>
+    <a href="{{ url_for('history') }}">History</a><span class="sep">·</span>
+    <a href="{{ url_for('import_review', session_id=session_id) }}">Review</a>
+  </nav>
+
+  <h1>Clarify Targeting</h1>
+
+  <div class="card">
+    <p class="lead">The compiler needs clarification on a few points before it can build your targeting specification.</p>
+    <p>Select one option for each question below, then click <strong>Continue</strong>.</p>
+  </div>
+
+  <form method="post" action="{{ url_for('clarify_import', session_id=session_id) }}">
+    {% for idx, point in enumerate(ambiguous_points) %}
+    <div class="card criteria-card" style="margin-bottom: 16px;">
+      <div class="criteria-title">{{ point }}</div>
+      <div class="criteria-desc">Select the option that best matches your intent:</div>
+      <div class="options-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px;">
+        {% for opt_idx, opt in enumerate(point.options) %}
+        <label class="criteria-card" onclick="document.getElementById('answer_{{ idx }}_{{ opt_idx }}').checked=true;">
+          <input type="radio" name="answer_{{ idx }}" value="{{ opt.value }}" id="answer_{{ idx }}_{{ opt_idx }}" required>
+          <span class="check">✓</span>
+          <span class="criteria-title">{{ opt.label }}</span>
+          <span class="criteria-desc">{{ opt.desc }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+
+    <div class="d-flex align-items-center gap-3 mt-4 flex-wrap">
+      <button class="btn btn-primary btn-lg" type="submit">Continue</button>
+      <a class="btn btn-outline-secondary btn-lg" href="{{ url_for('import_review', session_id=session_id) }}">Skip clarification</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

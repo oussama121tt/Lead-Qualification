@@ -61,16 +61,11 @@ GROQ_TIMEOUT_SECONDS = 90
 INVALID_VERDICT_CONFIDENCE_CAP = 0.3
 
 
-# Scorer system prompt. The {slots} are profile data (filled by
-# get_system_prompt via plain .replace, so the JSON schema's literal braces
-# below need no escaping): company and offer/segment/stage/budget sentences
-# are derived from the profile tables, the evidence-rule prose blocks are
-# verbatim [scoring]/[sensitive]/[budget] data. Everything else is engine
-# mechanics.
-_SYSTEM_PROMPT_TEMPLATE = """You are a senior B2B lead analyst for {company}. Use only supplied Apollo metadata,
+# FIXED_RULES_PROMPT — immutable rules that NEVER change regardless of target persona.
+# These are the "engine mechanics" that must never be overridden by a user persona.
+_FIXED_RULES_PROMPT = """You are a senior B2B lead analyst for {company}. Use only supplied Apollo metadata,
 official site content, web evidence, and verified deterministic signals.
-{offers_sentence}
-{choice_sentence} {offer_map_sentence} {unclear_note}
+OFFERS: {target_prompt}
 STRONG signals are app_builder_fingerprint, explicit AI authorship, or a verified single-commit
 GitHub repository combined with an app builder. site_builder_fingerprint (Framer/Webflow/Wix/
 Squarespace/Carrd) is metadata only and never changes the segment. on_builder_subdomain=true is
@@ -123,45 +118,147 @@ def get_system_prompt(p=None, scoring_criteria=None) -> str:
     if allowed is not None:
         if not allowed:
             raise ValueError("get_system_prompt: checked criteria select no segment")
-        disallowed = set(p.segment_ids) - set(allowed)
         fp = p.for_segments(allowed)
+        target_prompt = build_target_prompt(p, scoring_criteria)
+        out = _FIXED_RULES_PROMPT.replace("{target_prompt}", target_prompt).replace(
+            "{company}", p.identity.company
+        ).replace(
+            "{extra_rules}", " ".join(p.scoring_extra_rules)
+        ).replace(
+            "{axes_prose}", p.scoring_axes_prose
+        ).replace(
+            "{sensitive_prompt}", p.sensitive.prompt_description
+        ).replace(
+            "{budget_prompt}", p.budget.prompt_description
+        ).replace(
+            "{stage_prompt}", p.stages.prompt_description
+        ).replace(
+            "{segment_enum}", fp.segment_enum()
+        ).replace(
+            "{offer_enum}", fp.offer_enum()
+        ).replace(
+            "{stage_prompt}", p.stages.prompt_description
+        ).replace(
+            "{budget_enum}", " | ".join(p.budget.signals)
+        )
+    else:
+        target_prompt = build_target_prompt(p, scoring_criteria)
+        out = _FIXED_RULES_PROMPT.replace("{target_prompt}", target_prompt).replace(
+            "{company}", p.identity.company
+        ).replace(
+            "{extra_rules}", " ".join(p.scoring_extra_rules)
+        ).replace(
+            "{axes_prose}", p.scoring_axes_prose
+        ).replace(
+            "{sensitive_prompt}", p.sensitive.prompt_description
+        ).replace(
+            "{budget_prompt}", p.budget.prompt_description
+        ).replace(
+            "{stage_prompt}", p.stages.prompt_description
+        ).replace(
+            "{segment_enum}", p.segment_enum()
+        ).replace(
+            "{offer_enum}", p.offer_enum()
+        ).replace(
+            "{budget_enum}", " | ".join(p.budget.signals)
+        )
+    return out
+
+
+def build_target_prompt(profile, scoring_criteria=None) -> str:
+    """
+    Builds the target-specific section of the system prompt from the profile.
+
+    scoring_criteria (checked criteria keys) restricts the prompt to the
+    selected segments: enumerations are rebuilt from the selection only,
+    and verbatim prose blocks naming deselected segments are dropped.
+    None/empty = all segments (default behavior, byte-identical).
+    """
+    allowed = profile.allowed_segments(scoring_criteria) if scoring_criteria else None
+    if allowed is not None:
+        if not allowed:
+            raise ValueError("build_target_prompt: checked criteria select no segment")
+        disallowed = set(profile.segment_ids) - set(allowed)
+        fp = profile.for_segments(allowed)
 
         def _kept(text):
             return text if not any(s in (text or "").lower() for s in disallowed) else ""
 
-        subs = (
-            ("{offers_sentence}", fp.offers_sentence()),
-            ("{choice_sentence}", fp.choice_sentence()),
-            ("{offer_map_sentence}", fp.offer_map_sentence()),
-            ("{unclear_note}", _kept(p.scoring_unclear_note)),
-            ("{extra_rules}", " ".join(r for r in p.scoring_extra_rules if not any(s in r.lower() for s in disallowed))),
-            ("{axes_prose}", _kept(p.scoring_axes_prose)),
-            ("{segment_enum}", fp.segment_enum()),
-            ("{offer_enum}", fp.offer_enum()),
-            ("{sensitive_prompt}", _kept(p.sensitive.prompt_description)),
-            ("{budget_prompt}", _kept(p.budget.prompt_description)),
+        parts = [
+            fp.offers_sentence(),
+            fp.choice_sentence() + " " + fp.offer_map_sentence() + " " + _kept(profile.scoring_unclear_note),
+        ]
+    else:
+        # Unfiltered: produce exact byte-identical output to frozen fixture
+        parts = [
+            profile.offers_sentence(),
+            profile.choice_sentence() + " " + profile.offer_map_sentence() + " " + profile.scoring_unclear_note,
+        ]
+    # Join with single spaces to match frozen fixture (which has inline layout)
+    return " ".join(" ".join(p.split()) for p in parts if p)
+
+
+def get_system_prompt(p=None, scoring_criteria=None) -> str:
+    """Assemble the scorer system prompt from the profile (cached load).
+
+    scoring_criteria (checked criteria keys) restricts the prompt to the
+    selected segments: enumerations are rebuilt from the selection only,
+    and verbatim prose blocks naming deselected segments are dropped.
+    None/empty = all segments (default behavior, byte-identical).
+    """
+    p = p or load_profile()
+    allowed = p.allowed_segments(scoring_criteria) if scoring_criteria else None
+    if allowed is not None:
+        if not allowed:
+            raise ValueError("get_system_prompt: checked criteria select no segment")
+        fp = p.for_segments(allowed)
+        disallowed = set(p.segment_ids) - set(allowed)
+        target_prompt = build_target_prompt(p, scoring_criteria)
+
+        def _kept(text):
+            return text if not any(s in (text or "").lower() for s in disallowed) else ""
+
+        out = _FIXED_RULES_PROMPT.replace("{target_prompt}", target_prompt).replace(
+            "{company}", p.identity.company
+        ).replace(
+            "{extra_rules}", " ".join(r for r in p.scoring_extra_rules if not any(s in r.lower() for s in disallowed))
+        ).replace(
+            "{axes_prose}", "" if any(s in (p.scoring_axes_prose or "").lower() for s in disallowed) else p.scoring_axes_prose
+        ).replace(
+            "{sensitive_prompt}", "" if any(s in (p.sensitive.prompt_description or "").lower() for s in disallowed) else p.sensitive.prompt_description
+        ).replace(
+            "{budget_prompt}", "" if any(s in (p.budget.prompt_description or "").lower() for s in disallowed) else p.budget.prompt_description
+        ).replace(
+            "{stage_prompt}", p.stages.prompt_description
+        ).replace(
+            "{segment_enum}", " | ".join(allowed)
+        ).replace(
+            "{offer_enum}", " | ".join([s.offer for s in p.segments.values() if s.key in allowed] + ["none"])
+        ).replace(
+            "{budget_enum}", " | ".join(p.budget.signals)
         )
     else:
-        subs = (
-            ("{offers_sentence}", p.offers_sentence()),
-            ("{choice_sentence}", p.choice_sentence()),
-            ("{offer_map_sentence}", p.offer_map_sentence()),
-            ("{unclear_note}", p.scoring_unclear_note),
-            ("{extra_rules}", " ".join(p.scoring_extra_rules)),
-            ("{axes_prose}", p.scoring_axes_prose),
-            ("{segment_enum}", p.segment_enum()),
-            ("{offer_enum}", p.offer_enum()),
-            ("{sensitive_prompt}", p.sensitive.prompt_description),
-            ("{budget_prompt}", p.budget.prompt_description),
+        target_prompt = build_target_prompt(p, scoring_criteria)
+        out = _FIXED_RULES_PROMPT.replace("{target_prompt}", target_prompt).replace(
+            "{company}", p.identity.company
+        ).replace(
+            "{extra_rules}", " ".join(p.scoring_extra_rules)
+        ).replace(
+            "{axes_prose}", p.scoring_axes_prose
+        ).replace(
+            "{sensitive_prompt}", p.sensitive.prompt_description
+        ).replace(
+            "{budget_prompt}", p.budget.prompt_description
+        ).replace(
+            "{stage_prompt}", p.stages.prompt_description
+        ).replace(
+            "{segment_enum}", p.segment_enum()
+        ).replace(
+            "{offer_enum}", p.offer_enum()
+        ).replace(
+            "{budget_enum}", " | ".join(p.budget.signals)
         )
-    out = _SYSTEM_PROMPT_TEMPLATE
-    for token, value in (("{company}", p.identity.company), *subs,
-                         ("{stage_prompt}", p.stages.prompt_description),
-                         ("{budget_enum}", " | ".join(p.budget.signals))):
-        out = out.replace(token, value)
-    # A dropped prose block (filtered mode) must not leave trailing spaces.
-    # No-op on the default rendering (no line ends with a space there).
-    return "\n".join(line.rstrip() for line in out.split("\n"))
+    return out
 
 
 # Default-profile snapshot; existing callers and tests keep working.

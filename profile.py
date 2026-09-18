@@ -220,7 +220,7 @@ class Profile:
     def offers_sentence(self) -> str:
         """Scorer OFFERS sentence, derived from the offer atoms."""
         clauses = [f"{o.key} is for {o.short_who}" for o in self.offers.values()]
-        return "OFFERS: " + "; ".join(clauses) + "."
+        return "; ".join(clauses) + "."
 
     def choice_sentence(self) -> str:
         keys = self.segment_ids
@@ -256,6 +256,75 @@ class Profile:
         used_offers = {s.offer for s in segments.values()} & set(self.offers)
         offers = {k: self.offers[k] for k in self.offers if k in used_offers}
         return replace(self, segments=segments, offers=offers)
+
+    def compile_deterministic_persona(self, criteria: list[str], custom_text: str = "") -> dict | None:
+        """
+        Deterministic lens→segment compiler (Étape 2 — court-circuit sans LLM).
+
+        Returns a compiled persona dict if the criteria alone (without free text)
+        can fully determine the target segments. Returns None if:
+        - custom_text is non-empty (user provided free text → needs LLM)
+        - criteria contains lens keys that don't map to any segment deterministically
+        - no valid segments found
+
+        This is the ZERO-LLM fast path: only direct segment keys or known lens
+        mappings are resolved without any LLM call.
+        """
+        # If user provided free text, we must use the LLM compiler
+        if custom_text and custom_text.strip():
+            return None
+
+        if not criteria:
+            return None
+
+        # Deterministic lens→segment mapping for RuyaTech (hardcoded for compatibility)
+        lens_map = {
+            "ai_solo_founder": [("ai_solo_founder", "ai_audit", "Non-technical founder whose product was built with AI and starts breaking under real users")],
+            "technical_founder": [("technical_founder", "general_audit", "Technical team needing architecture or security review")],
+            "solo_or_small": [],  # orthogonal size filter, no direct segment
+            "agency_or_studio": [("small_agency_scaling", "pipeline", "Agency or studio that is scaling")],
+            "no_ai": [],  # orthogonal signal, maps to too_big/wrong_field contextually
+            "wrong_field": [("wrong_field", "none", "Lead clearly outside the target field")],
+        }
+
+        target_segments = []
+        disqualifying_segments = []
+        seen = set()
+
+        for crit in criteria:
+            if crit in lens_map:
+                for seg_key, offer, desc in lens_map[crit]:
+                    if seg_key not in seen and seg_key in self.segments:
+                        seg = self.segments[seg_key]
+                        target_segments.append({
+                            "key": seg_key,
+                            "description": desc,
+                            "offer": seg.offer,
+                        })
+                        seen.add(seg_key)
+                    # Also add disqualifying segments for lenses that imply exclusion
+                    if crit == "no_ai":
+                        # no_ai implies too_big and wrong_field are relevant as disqualifiers
+                        for dq_key in ("too_big", "wrong_field"):
+                            if dq_key in self.segments and dq_key not in seen:
+                                dq_seg = self.segments[dq_key]
+                                disqualifying_segments.append({
+                                    "key": dq_key,
+                                    "description": f"Leads that are {dq_seg.description or dq_key}",
+                                })
+                                seen.add(dq_key)
+
+        if not target_segments and not disqualifying_segments:
+            return None
+
+        return {
+            "target_segments": target_segments,
+            "disqualifying_segments": disqualifying_segments,
+            "raw_checkboxes": criteria,
+            "raw_custom_text": "",
+            "compiled_at": "",  # filled by caller
+            "compiler_model": "deterministic",
+        }
 
     def segment_enum(self) -> str:
         return " | ".join(self.segment_ids)

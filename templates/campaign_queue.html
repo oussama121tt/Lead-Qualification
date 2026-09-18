@@ -37,7 +37,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('campaign_view', campaign_id=camp.id) }}">Campaign #{{ camp.id }}</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a></p>
+    <nav class="page-nav" aria-label="Sections"><a href="{{ url_for('home') }}">← Home</a><span class="sep">·</span><a href="{{ url_for('sourcing_view') }}">Sourcing</a><span class="sep">·</span><a href="{{ url_for('campaign_view', campaign_id=camp.id) }}">Campaign #{{ camp.id }}</a><span class="sep">·</span><a href="{{ url_for('capacity_view') }}">Send capacity</a></nav>
     <h1>Review queue</h1>
 
     <div class="card toolbar">

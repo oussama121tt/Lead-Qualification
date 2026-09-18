@@ -23,7 +23,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('analytics_costs') }}">Cost per outcome</a> · <a href="{{ url_for('analytics_channels') }}">Channels</a> · <a href="{{ url_for('ops_view') }}">Ops</a></p>
+    <nav class="page-nav" aria-label="Sections"><a href="{{ url_for('home') }}">← Home</a><span class="sep">·</span><a href="{{ url_for('sourcing_view') }}">Sourcing</a><span class="sep">·</span><a href="{{ url_for('capacity_view') }}">Send capacity</a><span class="sep">·</span><a href="{{ url_for('analytics_costs') }}">Cost per outcome</a><span class="sep">·</span><a href="{{ url_for('analytics_channels') }}">Channels</a><span class="sep">·</span><a href="{{ url_for('ops_view') }}">Ops</a></nav>
     <h1>Signal → Outcome attribution</h1>
     <p class="muted">Which signals actually predict replies. Lift &gt; 1 = that signal replies at a higher rate than the overall baseline. Populated nightly from the Apollo analytics sync (<code>tools/run_outcomes_sync.py</code>).</p>
 

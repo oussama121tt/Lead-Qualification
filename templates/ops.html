@@ -34,7 +34,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('analytics') }}">Analytics</a> · <a href="{{ url_for('analytics_costs') }}">Costs</a> · <a href="{{ url_for('capacity_view') }}">Send capacity</a> · <a href="{{ url_for('ops_json') }}">JSON</a></p>
+    <nav class="page-nav" aria-label="Sections"><a href="{{ url_for('home') }}">← Home</a><span class="sep">·</span><a href="{{ url_for('sourcing_view') }}">Sourcing</a><span class="sep">·</span><a href="{{ url_for('analytics') }}">Analytics</a><span class="sep">·</span><a href="{{ url_for('analytics_costs') }}">Costs</a><span class="sep">·</span><a href="{{ url_for('capacity_view') }}">Send capacity</a><span class="sep">·</span><a href="{{ url_for('ops_json') }}">JSON</a></nav>
     <div class="toolbar">
       <h1 style="margin:0">Operations</h1>
       <span class="muted">snapshot {{ s.generated_at }} UTC · auto-refresh 30 s · vendor balances cached 60 s</span>

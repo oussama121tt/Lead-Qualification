@@ -38,6 +38,7 @@ import apollo_analytics as apollo_analyticsmod
 from constants import CONFIDENCE_THRESHOLD, NOT_YET_SCORED_STATUSES, OUT_OF_TARGET_SEGMENTS, TARGET_SEGMENTS
 from profile import load_profile
 from scorer import INVALID_VERDICT_CONFIDENCE_CAP
+from target_compiler import compile_persona
 
 logger = logging.getLogger("app")
 
@@ -702,6 +703,78 @@ def start_pipeline_from_review(session_id: int):
 
     flash(f"Pipeline launched with {len(to_process)} lead(s).", "info")
     return redirect(url_for("progress_view", session_id=session_id))
+
+
+@app.route("/import/<int:session_id>/clarify", methods=["GET", "POST"])
+def clarify_import(session_id: int):
+    """Clarification loop for ambiguous persona compilation (Étape 4).
+
+    GET: Shows ambiguous points from the compiled persona as clickable cards.
+    POST: Accepts user's answers, re-compiles persona, loops until no ambiguities.
+    """
+    _, denied = _require_session(session_id)
+    if denied is not None:
+        return denied
+
+    with open_db() as conn:
+        profile = dbmod.get_scoring_profile(conn, session_id)
+        if not profile:
+            flash("No compiled persona found for this session.", "warning")
+            return redirect(url_for("import_review", session_id=session_id))
+
+    if request.method == "GET":
+        ambiguous = profile.get("ambiguous_points", []) if isinstance(profile, dict) else []
+        if not ambiguous:
+            flash("No ambiguities to clarify.", "info")
+            return redirect(url_for("import_review", session_id=session_id))
+
+        # Render clarification cards (single-select per ambiguous point)
+        return render_template(
+            "clarify.html",
+            session_id=session_id,
+            ambiguous_points=ambiguous,
+        )
+
+    # POST: user answered some/all ambiguous points
+    answers = {}
+    for key in request.form:
+        if key.startswith("answer_"):
+            point_idx = int(key.split("_")[1])
+            answers[point_idx] = request.form[key]
+
+    if not answers:
+        flash("No answers provided.", "warning")
+        return redirect(url_for("clarify_import", session_id=session_id))
+
+    # Merge answers into custom text and re-compile
+    with open_db() as conn:
+        profile = dbmod.get_scoring_profile(conn, session_id)
+        if not profile:
+            flash("Session expired.", "error")
+            return redirect(url_for("home"))
+
+        raw_custom = profile.get("raw_custom_text", "") or ""
+        # Append answers to the custom text for re-compilation
+        answer_lines = [f"Clarification {k}: {v}" for k, v in answers.items()]
+        new_custom = (raw_custom + "\n\n" + "\n".join(answer_lines)).strip()
+
+        # Re-compile with updated custom text
+        from profile import load_profile
+        profile_obj = load_profile()
+        criteria = profile.get("raw_checkboxes", []) or []
+        new_profile = compile_persona(criteria, new_custom, session_id)
+
+    # Check if ambiguities remain
+    if new_profile.get("ambiguous_points"):
+        return render_template(
+            "clarify.html",
+            session_id=session_id,
+            ambiguous_points=new_profile["ambiguous_points"],
+        )
+
+    # All clear → redirect to review
+    flash("Targeting specification compiled successfully.", "success")
+    return redirect(url_for("import_review", session_id=session_id))
 
 
 @app.route("/analyze-pending/<int:session_id>", methods=["POST"])

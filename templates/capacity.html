@@ -17,7 +17,7 @@
 </head>
 <body>
   <div class="shell">
-    <p><a href="{{ url_for('home') }}">← Home</a> · <a href="{{ url_for('sourcing_view') }}">Sourcing</a> · <a href="{{ url_for('analytics') }}">Analytics</a> · <a href="{{ url_for('ops_view') }}">Ops</a></p>
+    <nav class="page-nav" aria-label="Sections"><a href="{{ url_for('home') }}">← Home</a><span class="sep">·</span><a href="{{ url_for('sourcing_view') }}">Sourcing</a><span class="sep">·</span><a href="{{ url_for('analytics') }}">Analytics</a><span class="sep">·</span><a href="{{ url_for('ops_view') }}">Ops</a></nav>
     <h1>Send capacity planner</h1>
 
     <div class="card">

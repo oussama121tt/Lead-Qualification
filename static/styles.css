@@ -720,3 +720,27 @@ a.card:hover,
     font-size: 2.2rem;
   }
 }
+
+/* ---- Page breadcrumb nav (dark-theme breadcrumb row) ---- */
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 0 18px;
+  font-size: 0.85rem;
+}
+.page-nav a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 2px 0;
+  border-bottom: 1px solid transparent;
+}
+.page-nav a:hover {
+  color: var(--cyan);
+  border-bottom-color: var(--cyan);
+}
+.page-nav .sep {
+  color: var(--text-muted);
+  user-select: none;
+}
