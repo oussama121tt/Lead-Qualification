@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -224,11 +224,38 @@ class Profile:
 
     def choice_sentence(self) -> str:
         keys = self.segment_ids
+        if len(keys) == 1:
+            return f"Choose exactly one segment: {keys[0]}."
         return "Choose exactly one segment: " + ", ".join(keys[:-1]) + ", or " + keys[-1] + "."
 
     def offer_map_sentence(self) -> str:
         offers = [s.offer for s in self.segments.values()]
+        if len(offers) == 1:
+            return f"Map this segment to {offers[0]}."
         return "Map those segments to " + ", ".join(offers[:-1]) + ", and normally " + offers[-1] + "."
+
+    def allowed_segments(self, criteria: list[str] | None) -> list[str] | None:
+        """Segment ids selected by checked criteria keys, in profile order.
+
+        None (or empty) criteria → None = no filtering (default behavior:
+        the model may propose any segment). A non-empty list that matches
+        no segment (e.g. lenses only) returns [] — callers must refuse to
+        score rather than silently ignore the selection.
+        """
+        if not criteria:
+            return None
+        wanted = set(criteria)
+        return [s for s in self.segment_ids if s in wanted]
+
+    def for_segments(self, allowed: list[str]) -> "Profile":
+        """Filtered view: only the given segments (profile order) and the
+        offers they reference. The existing sentence builders then render
+        exclusively from the selection."""
+        keep = [s for s in self.segment_ids if s in set(allowed)]
+        segments = {k: self.segments[k] for k in keep}
+        used_offers = {s.offer for s in segments.values()} & set(self.offers)
+        offers = {k: self.offers[k] for k in self.offers if k in used_offers}
+        return replace(self, segments=segments, offers=offers)
 
     def segment_enum(self) -> str:
         return " | ".join(self.segment_ids)
@@ -240,9 +267,6 @@ class Profile:
         """Review-queue picker entries, in profile order."""
         return [{"key": c.key, "label": c.label, "desc": c.ui_desc}
                 for c in self.criteria.values()]
-
-    def scorer_criteria_desc(self) -> dict[str, str]:
-        return {c.key: c.prompt_desc for c in self.criteria.values()}
 
     def segment_labels(self) -> dict[str, str]:
         return {s.key: (s.label or s.key) for s in self.segments.values()}

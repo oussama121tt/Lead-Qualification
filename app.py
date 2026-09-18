@@ -652,6 +652,9 @@ def start_pipeline_from_review(session_id: int):
 
     criteria = request.form.getlist("criteria")
     custom_criteria = request.form.get("custom_criteria", "").strip()
+    if not load_profile().allowed_segments(criteria):
+        flash("Cannot launch: the selected criteria match no scoring segment. Select at least one segment criterion.", "warning")
+        return redirect(url_for("import_review", session_id=session_id))
     throttle_seconds = request.form.get("throttle_seconds", type=float, default=12)
     concurrency = request.form.get("concurrency", type=int, default=pipelinemod.DEFAULT_CONCURRENCY)
     selected_ids = request.form.getlist("lead_ids")

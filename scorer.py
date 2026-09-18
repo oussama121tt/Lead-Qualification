@@ -110,27 +110,58 @@ Respond ONLY with JSON using EXACTLY these keys (no others, no renaming):
 }"""
 
 
-def get_system_prompt(p=None) -> str:
-    """Assemble the scorer system prompt from the profile (cached load)."""
+def get_system_prompt(p=None, scoring_criteria=None) -> str:
+    """Assemble the scorer system prompt from the profile (cached load).
+
+    scoring_criteria (checked criteria keys) restricts the prompt to the
+    selected segments: enumerations are rebuilt from the selection only,
+    and verbatim prose blocks naming deselected segments are dropped.
+    None/empty = all segments (default behavior, byte-identical).
+    """
     p = p or load_profile()
+    allowed = p.allowed_segments(scoring_criteria) if scoring_criteria else None
+    if allowed is not None:
+        if not allowed:
+            raise ValueError("get_system_prompt: checked criteria select no segment")
+        disallowed = set(p.segment_ids) - set(allowed)
+        fp = p.for_segments(allowed)
+
+        def _kept(text):
+            return text if not any(s in (text or "").lower() for s in disallowed) else ""
+
+        subs = (
+            ("{offers_sentence}", fp.offers_sentence()),
+            ("{choice_sentence}", fp.choice_sentence()),
+            ("{offer_map_sentence}", fp.offer_map_sentence()),
+            ("{unclear_note}", _kept(p.scoring_unclear_note)),
+            ("{extra_rules}", " ".join(r for r in p.scoring_extra_rules if not any(s in r.lower() for s in disallowed))),
+            ("{axes_prose}", _kept(p.scoring_axes_prose)),
+            ("{segment_enum}", fp.segment_enum()),
+            ("{offer_enum}", fp.offer_enum()),
+            ("{sensitive_prompt}", _kept(p.sensitive.prompt_description)),
+            ("{budget_prompt}", _kept(p.budget.prompt_description)),
+        )
+    else:
+        subs = (
+            ("{offers_sentence}", p.offers_sentence()),
+            ("{choice_sentence}", p.choice_sentence()),
+            ("{offer_map_sentence}", p.offer_map_sentence()),
+            ("{unclear_note}", p.scoring_unclear_note),
+            ("{extra_rules}", " ".join(p.scoring_extra_rules)),
+            ("{axes_prose}", p.scoring_axes_prose),
+            ("{segment_enum}", p.segment_enum()),
+            ("{offer_enum}", p.offer_enum()),
+            ("{sensitive_prompt}", p.sensitive.prompt_description),
+            ("{budget_prompt}", p.budget.prompt_description),
+        )
     out = _SYSTEM_PROMPT_TEMPLATE
-    for token, value in (
-        ("{company}", p.identity.company),
-        ("{offers_sentence}", p.offers_sentence()),
-        ("{choice_sentence}", p.choice_sentence()),
-        ("{offer_map_sentence}", p.offer_map_sentence()),
-        ("{unclear_note}", p.scoring_unclear_note),
-        ("{extra_rules}", " ".join(p.scoring_extra_rules)),
-        ("{axes_prose}", p.scoring_axes_prose),
-        ("{segment_enum}", p.segment_enum()),
-        ("{offer_enum}", p.offer_enum()),
-        ("{stage_prompt}", p.stages.prompt_description),
-        ("{sensitive_prompt}", p.sensitive.prompt_description),
-        ("{budget_prompt}", p.budget.prompt_description),
-        ("{budget_enum}", " | ".join(p.budget.signals)),
-    ):
+    for token, value in (("{company}", p.identity.company), *subs,
+                         ("{stage_prompt}", p.stages.prompt_description),
+                         ("{budget_enum}", " | ".join(p.budget.signals))):
         out = out.replace(token, value)
-    return out
+    # A dropped prose block (filtered mode) must not leave trailing spaces.
+    # No-op on the default rendering (no line ends with a space there).
+    return "\n".join(line.rstrip() for line in out.split("\n"))
 
 
 # Default-profile snapshot; existing callers and tests keep working.
@@ -343,7 +374,7 @@ VALID_FOUNDER_PROFILES = {"non_technical", "semi_technical", "technical", "unkno
 VALID_BUILD_EVIDENCE = {"ai_built", "hand_built", "unknown"}
 
 
-def _validate_verdict(verdict: dict, profile=None) -> dict:
+def _validate_verdict(verdict: dict, profile=None, scoring_criteria=None) -> dict:
     """Validates and fixes the enum fields of the LLM verdict.
 
     Important: when segment or recommended_offer is out of schema, we also
@@ -356,6 +387,9 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
     rules come from the profile ([segments], [offers], [stages],
     [sensitive], [budget], [[derivation.rules]]). Only the axis
     vocabularies stay literal.
+
+    scoring_criteria (checked criteria keys) additionally rejects a verdict
+    on a deselected segment — same degradation as an invalid segment.
     """
     p = profile or load_profile()
     forced_correction = False
@@ -407,6 +441,20 @@ def _validate_verdict(verdict: dict, profile=None) -> dict:
         note = f"segment_derived_from_founder_profile:{derived_from}"
         existing = verdict.get("disqualify_reason")
         verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+
+    # Strict criteria filtering: a verdict on a deselected segment (the model
+    # can hallucinate outside the offered options) degrades exactly like an
+    # invalid segment — unclear, capped confidence, human review. Runs after
+    # derivation so a re-derived deselected segment is caught too.
+    allowed = p.allowed_segments(scoring_criteria) if scoring_criteria else None
+    if allowed is not None and verdict.get("segment") != "unclear" and verdict.get("segment") not in allowed:
+        deselected = verdict.get("segment")
+        verdict["segment"] = "unclear"
+        verdict["needs_human_review"] = True
+        note = f"deselected_segment_fixed_to_unclear:{deselected}"
+        existing = verdict.get("disqualify_reason")
+        verdict["disqualify_reason"] = f"{existing} | {note}" if existing else note
+        forced_correction = True
 
     # "unclear" means insufficient evidence — by definition it needs a human.
     # The prompt says so; enforce it in code so it never depends on the model.
@@ -523,16 +571,17 @@ def _is_json_parse_error(e: Exception) -> bool:
 
 
 def _call_llm(user_content: str, max_output_tokens: int = MAX_OUTPUT_TOKENS,
-              cost_cb=None) -> dict:
+              cost_cb=None, scoring_criteria=None) -> dict:
     """Calls the configured scoring LLM (llm_provider) and parses the JSON
     response. cost_cb, when provided, receives (meta, latency_ms) after every
-    call — including retries — so no LLM spend is ever unlogged (FR-7)."""
+    call — including retries — so no LLM spend is ever unlogged (FR-7).
+    scoring_criteria restricts the system prompt to the selected segments."""
     import time as _time
     provider = get_llm_provider("scoring")
     t0 = _time.monotonic()
     data, meta = provider.generate_json(
         user_content,
-        system=get_system_prompt(),
+        system=get_system_prompt(scoring_criteria=scoring_criteria),
         temperature=0.2,
         max_tokens=max_output_tokens,
     )
@@ -788,13 +837,13 @@ def _verify_hooks_grounding(verdict: dict, source_text: str, lead_metadata: dict
     return verdict
 
 
-def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None, cost_cb=None) -> dict:
+def _retry_after_failure(rows, deterministic_signals, build_user_content, error_str, grounding_source, site_content_missing=False, lead_metadata=None, cost_cb=None, scoring_criteria=None) -> dict:
     """Retries the scoring with reduced content after a JSON parsing failure."""
     try:
         shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS, cost_cb=cost_cb)
+        verdict = _call_llm(build_user_content(shorter_text), max_output_tokens=RETRY_MAX_OUTPUT_TOKENS, cost_cb=cost_cb, scoring_criteria=scoring_criteria)
         verdict = _apply_confidence_guard(verdict)
-        verdict = _validate_verdict(verdict)
+        verdict = _validate_verdict(verdict, scoring_criteria=scoring_criteria)
         verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
@@ -920,17 +969,15 @@ def score_content(
         if site_content_missing:
             parts.append(SITE_MISSING_INSTRUCTION)
 
-        has_criteria = bool(scoring_criteria) or bool(scoring_criteria_custom)
-        if has_criteria:
-            criteria_block = "Scoring criteria selected by the user (give more weight to these criteria):\n"
-            if scoring_criteria:
-                criteria_desc = load_profile().scorer_criteria_desc()
-                for c in scoring_criteria:
-                    desc = criteria_desc.get(c, c)
-                    criteria_block += f"\n- {c}: {desc}"
-            if scoring_criteria_custom:
-                criteria_block += f"\n- Custom criterion: {scoring_criteria_custom}"
-            parts.append(criteria_block)
+        # Checked standard criteria need no block here: they are already the
+        # only options in the system prompt. Only a custom criterion adds a
+        # block — as a mandatory gate, not a suggestion.
+        if scoring_criteria_custom:
+            parts.append(
+                "Mandatory user requirement for this session — treat it as a hard gate, not a suggestion:\n"
+                f"You MUST also check for: {scoring_criteria_custom}. "
+                "If the lead does not match this, that is relevant evidence for your verdict."
+            )
 
         if deterministic_signals:
             signals_json = json.dumps(deterministic_signals, ensure_ascii=False, indent=2)
@@ -943,17 +990,17 @@ def score_content(
         return "\n\n---\n\n".join(parts)
 
     try:
-        verdict = _call_llm(build_user_content(text), cost_cb=cost_cb)
+        verdict = _call_llm(build_user_content(text), cost_cb=cost_cb, scoring_criteria=scoring_criteria)
         verdict = _apply_confidence_guard(verdict)
-        verdict = _validate_verdict(verdict)
+        verdict = _validate_verdict(verdict, scoring_criteria=scoring_criteria)
         verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
         verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
         return _apply_site_missing_guard(verdict, site_content_missing)
     except json.JSONDecodeError as e:
-        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
+        return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb, scoring_criteria)
     except Exception as e:
         if _is_json_parse_error(e):
-            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb)
+            return _retry_after_failure(rows, deterministic_signals, build_user_content, str(e), grounding_source, site_content_missing, lead_metadata, cost_cb, scoring_criteria)
         # A provider-level RateLimited (all keys exhausted after backoff) is
         # NOT a verdict: propagate so the pipeline marks the lead SCORE_FAILED
         # (retryable) instead of storing a fake "unclear / 0.0". This is the
@@ -963,9 +1010,9 @@ def score_content(
         if _is_rate_limit_error(e):
             try:
                 shorter_text = rows_to_text(rows, max_chars=RETRY_MAX_CONTENT_CHARS)
-                verdict = _call_llm(build_user_content(shorter_text), cost_cb=cost_cb)
+                verdict = _call_llm(build_user_content(shorter_text), cost_cb=cost_cb, scoring_criteria=scoring_criteria)
                 verdict = _apply_confidence_guard(verdict)
-                verdict = _validate_verdict(verdict)
+                verdict = _validate_verdict(verdict, scoring_criteria=scoring_criteria)
                 verdict = _verify_evidence_grounding(verdict, evidence_corpus, lead_metadata)
                 verdict = _verify_hooks_grounding(verdict, grounding_source, lead_metadata)
                 return _apply_site_missing_guard(verdict, site_content_missing)
