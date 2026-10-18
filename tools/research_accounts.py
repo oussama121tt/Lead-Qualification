@@ -299,29 +299,119 @@ def apollo_match(accounts: list[dict]) -> dict[str, dict]:
     return out
 
 
+# --------------------------------------------------------------------------- staff
+
+# Ordered: the first matching role family wins, so a "Lead Developer" counts as
+# development, not management.
+ROLE_FAMILIES = [
+    ("development / engineering", r"develop|développ|developer|engineer|ingénieur|ingenieur|programm|full.?stack|front.?end|back.?end|devops|software|\bcto\b|tech(nical)? lead|lead dev|intégrat|integrat|wordpress|drupal|magento|typo3|php|python|javascript|mobile|ios\b|android|architect"),
+    ("data / AI", r"\bdata\b|\bai\b|\bia\b|machine learning|intelligence artificielle|analytics"),
+    ("design / UX", r"design|graphi|\bux\b|\bui\b|artistique|art director|motion|illustr|créati|creative|photograph|vidéo|video"),
+    ("marketing / content", r"market|communication|\bseo\b|\bsea\b|social|content|rédact|redact|copywr|community|brand|media|relations publiques|\bpr\b"),
+    ("project / client", r"project|projet|account|client|consult|strat|product owner|producer|production|traffic"),
+    ("leadership", r"\bceo\b|founder|fondat|directeur|director|partner|associ|owner|gérant|managing|président|president|head of|chief"),
+]
+
+
+def apollo_staff(domain: str) -> dict:
+    """Who works there, by job title, from Apollo's free people search (no
+    credits: names are obfuscated, titles are not). The development headcount
+    is the single best public signal of whether an agency builds in-house."""
+    import requests
+    key = os.environ.get("APOLLO_API_KEY", "")
+    people = []
+    for page in (1, 2):
+        r = requests.post("https://api.apollo.io/api/v1/mixed_people/api_search",
+                          headers={"x-api-key": key, "Content-Type": "application/json"},
+                          json={"q_organization_domains_list": [domain], "per_page": 100, "page": page},
+                          timeout=60)
+        if r.status_code != 200:
+            return {"error": f"HTTP {r.status_code}: {r.text[:160]}"}
+        batch = r.json().get("people") or []
+        people += batch
+        if len(batch) < 100:
+            break
+    staff, counts = [], Counter()
+    for p in people:
+        title = (p.get("title") or "").strip()
+        fam = next((f for f, rx in ROLE_FAMILIES if title and re.search(rx, title, re.I)), "other")
+        counts[fam] += 1
+        staff.append({"first_name": p.get("first_name"), "title": title, "family": fam})
+    staff.sort(key=lambda s: ([f for f, _ in ROLE_FAMILIES] + ["other"]).index(s["family"]))
+    return {"total": len(staff), "by_family": dict(counts), "staff": staff,
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+
+
 # --------------------------------------------------------------------------- linkedin
 
-def linkedin_harvest(url: str) -> dict:
-    import db as dbmod
-    import linkedin_lane
-    from runconfig import load_config
-    cfg = load_config()
-    try:
-        conn = dbmod.get_connection()
-    except Exception:
-        import sqlite3
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-    try:
-        res = linkedin_lane.harvest_founder_profile(url, cfg.linkedin, conn)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    return {"status": res.get("status"), "reason": res.get("reason"),
-            "notes": res.get("notes") or [], "hits": res.get("hits") or [],
-            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+PERSON_FIELDS = ("name", "position", "city", "followers", "connections", "about", "current_company_name",
+                 "experience", "education", "languages", "volunteer_experience", "honors_and_awards")
+COMPANY_FIELDS = ("name", "slogan", "about", "description", "specialties", "industries", "company_size",
+                  "employees_in_linkedin", "founded", "headquarters", "organization_type", "followers", "website")
+
+
+def _li_scrape(url: str) -> dict | None:
+    """One public-profile scrape through the ScrapeGraphAI key ring. Returns the
+    structured object LinkedIn's logged-out page exposes, or None."""
+    import linkedin_lane as L
+    status, raw = L._sgai_scrape(url, L.FORMATS_PROFILE, L.FETCH_PROFILE)
+    if status != 200 or not raw:
+        return None
+    return L._parse_profile(raw)
+
+
+def _handle(url: str) -> str:
+    m = re.search(r"/(?:in|company)/([^/?#]+)", url or "")
+    return (m.group(1) if m else "").lower()
+
+
+def linkedin_person(url: str) -> dict:
+    """The person's public LinkedIn page, kept whole. Experience/education are
+    usually hidden from logged-out views; the Apollo section covers career
+    history. Activity is classified so a reader can tell the person's own
+    posts from their company's posts and from things they merely reacted to."""
+    p = _li_scrape(url)
+    if not p:
+        return {"status": "failed", "reason": "no data returned", "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    me = _handle(url)
+    company = (p.get("current_company") or {})
+    company_id = (company.get("company_id") or "").lower()
+    activity = []
+    for a in p.get("activity") or []:
+        link = a.get("link") or ""
+        inter = a.get("interaction") or ""
+        poster = _handle(link.replace("/posts/", "/in/").split("_")[0]) if "/posts/" in link else ""
+        if poster == me or "shared this" in inter.lower():
+            kind = "own post"
+        elif company_id and poster == company_id:
+            kind = "company post"
+        elif inter:
+            kind = inter
+        else:
+            kind = f"reacted to / reshared ({poster or 'unknown'})"
+        activity.append({"kind": kind, "link": link.split("?")[0], "text": (a.get("title") or "").strip()})
+    return {
+        "status": "ok",
+        "profile": {k: p.get(k) for k in PERSON_FIELDS if p.get(k) not in (None, "", [])},
+        "company_link": (company.get("link") or "").split("?")[0],
+        "activity": activity,
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def linkedin_company(url: str) -> dict:
+    c = _li_scrape(url)
+    if not c:
+        return {"status": "failed", "reason": "no data returned", "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    return {
+        "status": "ok",
+        "company": {k: c.get(k) for k in COMPANY_FIELDS if c.get(k) not in (None, "", [])},
+        "employees_shown": [{"name": e.get("title"), "role": e.get("subtitle"), "link": (e.get("link") or "").split("?")[0]}
+                            for e in (c.get("employees") or [])],
+        "updates": [{"date": u.get("date") or u.get("time"), "likes": u.get("likes_count"),
+                     "text": (u.get("text") or "").strip()} for u in (c.get("updates") or [])],
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
 
 
 # --------------------------------------------------------------------------- render
@@ -340,6 +430,36 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
     L.append("Sources and limits: website text is what the public pages show today; "
              "LinkedIn content is the profile plus the recent activity slice LinkedIn exposes "
              "(not the full history); Apollo data is Apollo's view and can be stale.\n")
+    # Side-by-side facts, no judgement: what each agency SAYS it builds (terms
+    # found on its own pages) next to who it EMPLOYS (Apollo titles).
+    build_terms = re.compile(
+        r"développement|developpement|development|sur mesure|sur-mesure|application|appli\b|logiciel|software|"
+        r"\bapi\b|intégration|integration|e-commerce|ecommerce|magento|shopify|drupal|wordpress|typo3|"
+        r"react|vue\.?js|symfony|laravel|\bpim\b|\berp\b|\bcrm\b|intranet|plateforme|platform|\bsaas\b|"
+        r"intelligence artificielle|\bia\b|\bai\b|automatisation|automation|chatbot", re.I)
+    L.append("## Overview\n")
+    L.append("Facts only. **Build terms** = software-delivery words found on the agency's own pages "
+             "(how many pages mention each). **Dev listed** = people Apollo lists with a development or "
+             "engineering title; Apollo under-covers small agencies, so 0 means none visible, not none.\n")
+    L.append("| # | Agency | Contact | LinkedIn staff | Apollo listed | Dev listed | Design listed | Careers page | Build terms on site |")
+    L.append("|---|---|---|---|---|---|---|---|---|")
+    for a in accounts:
+        dom = (urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
+        st = cache.get("staff", {}).get(dom) or {}
+        fams = st.get("by_family") or {}
+        li = cache["linkedin"].get(a.get("LinkedIn", ""), {}) or {}
+        lc = cache.get("linkedin_company", {}).get(li.get("company_link", ""), {}) or {}
+        li_staff = (lc.get("company") or {}).get("employees_in_linkedin", "—")
+        pages = (cache["website"].get(a["Website"]) or {}).get("pages") or []
+        hits = Counter()
+        for p in pages:
+            for t in {m.group(0).lower() for m in build_terms.finditer(p.get("text") or "")}:
+                hits[t] += 1
+        terms = ", ".join(f"{t} ({n})" for t, n in hits.most_common(7)) or "—"
+        careers = "yes" if any(p["category"].startswith("careers") for p in pages) else "—"
+        L.append(f"| {a['#']} | {a['Agency']} | {a['Contact']} | {li_staff} | {st.get('total', '—')} | "
+                 f"{fams.get('development / engineering', 0)} | {fams.get('design / UX', 0)} | {careers} | {terms} |")
+    L.append("")
     L.append("## Contents\n")
     for a in accounts:
         anchor = re.sub(r"[^a-z0-9]+", "-", f"{a['#']} {a['Agency']} {a['Contact']}".lower()).strip("-")
@@ -391,21 +511,73 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
                     L.append(f"  - {e.get('title') or '?'} @ {e.get('organization') or '?'} ({e.get('start') or '?'} → {end})")
             L.append("")
 
+        dom = (urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
+        st = cache.get("staff", {}).get(dom)
+        L.append("### Who works there (Apollo people search)\n")
+        if not st:
+            L.append("_not fetched_\n")
+        elif st.get("error"):
+            L.append(f"_{st['error']}_\n")
+        else:
+            fams = st.get("by_family") or {}
+            dev = fams.get("development / engineering", 0)
+            L.append(f"**{st['total']} people listed · {dev} in development / engineering**  ")
+            L.append("_" + " · ".join(f"{f}: {n}" for f, n in sorted(fams.items(), key=lambda kv: -kv[1])) + "_\n")
+            for s in st.get("staff") or []:
+                L.append(f"- {s.get('title') or '(no title)'} — {s.get('first_name') or '?'} _[{s['family']}]_")
+            L.append("\n_Apollo's coverage of small agencies is partial: treat these as a floor, not the full team._\n")
+
         L.append("### LinkedIn — person\n")
         if not li:
             L.append("_not fetched yet_\n")
+        elif li.get("status") != "ok" or "profile" not in li:
+            L.append(f"_{li.get('status')}: {li.get('reason') or 'no data'}_\n")
         else:
-            L.append(f"_status: {li.get('status')}{(' — ' + str(li.get('reason'))) if li.get('reason') else ''}_\n")
-            for n in li.get("notes") or []:
-                L.append(f"> {n}")
-            if li.get("notes"):
+            prof = li["profile"]
+            for k in PERSON_FIELDS:
+                v = prof.get(k)
+                if v in (None, "", []):
+                    continue
+                if isinstance(v, (list, dict)):
+                    L.append(f"- **{k.replace('_', ' ')}:**")
+                    for item in (v if isinstance(v, list) else [v]):
+                        if isinstance(item, dict):
+                            bits = [str(item.get(x)).strip() for x in ("title", "subtitle", "company", "duration", "description")
+                                    if item.get(x)]
+                            L.append("  - " + " · ".join(b.replace("\n", " ") for b in bits))
+                        else:
+                            L.append(f"  - {item}")
+                else:
+                    L.append(f"- **{k.replace('_', ' ')}:** {v}")
+            acts = li.get("activity") or []
+            L.append("")
+            L.append(f"**Recent LinkedIn activity ({len(acts)} item(s), the slice LinkedIn shows publicly):**\n")
+            for a in acts:
+                L.append(f"- _{a['kind']}_ — {(a['text'] or '').replace(chr(10), ' ')[:700]}  \n  <{a['link']}>")
+            L.append("")
+
+        lc = cache.get("linkedin_company", {}).get(li.get("company_link", "") if li else "", {})
+        L.append("### LinkedIn — company page\n")
+        if not lc:
+            L.append("_not fetched_\n")
+        elif lc.get("status") != "ok":
+            L.append(f"_{lc.get('status')}: {lc.get('reason')}_\n")
+        else:
+            co = lc["company"]
+            for k in COMPANY_FIELDS:
+                if co.get(k) not in (None, "", []):
+                    L.append(f"- **{k.replace('_', ' ')}:** {str(co[k]).strip()}")
+            visible = [e for e in lc.get("employees_shown") or [] if e.get("name") and e["name"] != "LinkedIn Member"]
+            if visible:
+                L.append("- **Employees LinkedIn shows by name (public sample; see Apollo above for titles):** "
+                         + ", ".join(e["name"] for e in visible))
+            if lc.get("updates"):
                 L.append("")
-            for h in li.get("hits") or []:
-                L.append(f"**{h.get('title', '').strip()}**  ")
-                if h.get("url"):
-                    L.append(f"<{h['url']}>\n")
-                L.append(_clip(h.get("content", ""), 3000))
-                L.append("")
+                L.append(f"**Recent company posts ({len(lc['updates'])}):**\n")
+                for u in lc["updates"]:
+                    meta = " · ".join(str(x) for x in (u.get("date"), f"{u['likes']} likes" if u.get("likes") is not None else None) if x)
+                    L.append(f"- {('_' + meta + '_ — ') if meta else ''}{(u.get('text') or '').replace(chr(10), ' ')[:700]}")
+            L.append("")
 
         L.append("### Website\n")
         if not site:
@@ -472,21 +644,57 @@ def main() -> int:
             print(f"[apollo] matched {sum(1 for a in need if not cache['apollo'].get(a['Contact'], {}).get('error'))}/{len(need)}", flush=True)
             save()
 
+    cache.setdefault("staff", {})
+    domains = sorted({(urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
+                      for a in accounts if a.get("Website")})
+    need_staff = [d for d in domains if d and d not in cache["staff"]]
+    for d in need_staff:
+        try:
+            cache["staff"][d] = apollo_staff(d)
+        except Exception as exc:
+            cache["staff"][d] = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
+        s = cache["staff"][d]
+        print(f"[staff   ] {d:<24} {s.get('total', '?'):>3} people, "
+              f"{(s.get('by_family') or {}).get('development / engineering', 0)} dev", flush=True)
+    if need_staff:
+        save()
+
     if not args.skip_linkedin:
+        import random
+        cache.setdefault("linkedin_company", {})
         for a in accounts:
             url = a.get("LinkedIn", "")
-            if not url or url in cache["linkedin"]:
+            if not url:
                 continue
-            t0 = time.monotonic()
-            try:
-                cache["linkedin"][url] = linkedin_harvest(url)
-            except Exception as exc:
-                cache["linkedin"][url] = {"status": "failed", "reason": str(exc)[:200], "hits": [], "notes": []}
-            li = cache["linkedin"][url]
-            authored = sum(1 for h in li.get("hits") or [] if str(h.get("title", "")).startswith("AUTHORED"))
-            print(f"[linkedin] {a['Contact']:<22} {li.get('status'):<15} {len(li.get('hits') or []):>2} hit(s), "
-                  f"{authored} authored post(s) [{time.monotonic()-t0:.0f}s]", flush=True)
-            save()
+            li = cache["linkedin"].get(url)
+            if not (li and li.get("status") == "ok" and "profile" in li):   # missing, failed or old lane format
+                t0 = time.monotonic()
+                try:
+                    li = linkedin_person(url)
+                except Exception as exc:
+                    li = {"status": "failed", "reason": f"{exc.__class__.__name__}: {str(exc)[:200]}"}
+                cache["linkedin"][url] = li
+                own = sum(1 for x in li.get("activity") or [] if x["kind"] == "own post")
+                print(f"[linkedin] {a['Contact']:<22} {li.get('status'):<7} {len(li.get('activity') or []):>2} activity, "
+                      f"{own} own post(s) [{time.monotonic()-t0:.0f}s]", flush=True)
+                save()
+                time.sleep(random.uniform(10, 25))
+            curl = (li or {}).get("company_link") or ((cache["apollo"].get(a["Contact"]) or {}).get("org") or {}).get("linkedin_url") or ""
+            if curl and curl not in cache["linkedin_company"]:
+                if li is not None and not li.get("company_link"):
+                    li["company_link"] = curl
+                t0 = time.monotonic()
+                try:
+                    cache["linkedin_company"][curl] = linkedin_company(curl)
+                except Exception as exc:
+                    cache["linkedin_company"][curl] = {"status": "failed", "reason": f"{exc.__class__.__name__}: {str(exc)[:200]}"}
+                lc = cache["linkedin_company"][curl]
+                print(f"[company ] {a['Agency']:<22} {lc.get('status'):<7} "
+                      f"{(lc.get('company') or {}).get('employees_in_linkedin', '?')} on LinkedIn, "
+                      f"{len(lc.get('employees_shown') or [])} shown, {len(lc.get('updates') or [])} post(s) "
+                      f"[{time.monotonic()-t0:.0f}s]", flush=True)
+                save()
+                time.sleep(random.uniform(10, 25))
 
     save()
     print("[research] done ->", out.with_suffix(".md"), flush=True)
