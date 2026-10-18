@@ -122,6 +122,7 @@ def fetch_page(url: str, timeout: float = 15.0, per_domain_delay: float = 1.0) -
         return out
 
     out["status"] = resp.status_code
+    out["final_url"] = str(getattr(resp, "url", "") or url)  # after redirects
     if resp.status_code >= 400:
         out["error"] = f"HTTP {resp.status_code}"
         return out
