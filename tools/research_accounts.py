@@ -95,28 +95,107 @@ def read_accounts(path: Path) -> list[dict]:
                 if cell.hyperlink and cell.hyperlink.target:
                     val = cell.hyperlink.target
                 rec[name] = "" if val is None else str(val).strip()
-            if rec.get("Contact") and rec.get("Agency"):
+            if rec.get("Agency"):          # a row without a named contact is still an account
                 rows.append(rec)
     else:
         import csv
         lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
         start = next(i for i, l in enumerate(lines) if l.startswith("#,") or ",Contact," in l)
         for rec in csv.DictReader(lines[start:]):
-            if rec.get("Contact") and rec.get("Agency"):
+            if rec.get("Agency"):
                 rows.append({k: (v or "").strip() for k, v in rec.items() if k})
     for r in rows:
-        w = r.get("Website", "")
-        if w and not w.startswith("http"):
-            r["Website"] = "https://" + w.strip("/")
+        _normalize_account(r)
     return rows
+
+
+_URL_RX = re.compile(r"(https?://)?([a-z0-9-]+\.)+[a-z]{2,}(/[^\s)]*)?", re.I)
+
+
+def _normalize_account(r: dict) -> None:
+    """Make Romandie-style and Luxembourg-style sheets look the same.
+
+    - Role comes from "Role" or "Title"; phone from "Phone" or "Company phone".
+    - Website: the first URL-looking token ("https://cuco.lu (customcoding.lu
+      redirects)" -> https://cuco.lu).
+    - Contact: the first person in the cell. "_name" is set only when it is a
+      usable full name; abbreviated ("Jérôme B. (Owner)") or descriptive cells
+      ("Same leader as Interact: ...") leave "_name" empty and keep a first-name
+      hint, and the Apollo stage resolves the person from the company's staff.
+    """
+    r["Role"] = r.get("Role") or r.get("Title") or ""
+    r["Company phone"] = r.get("Company phone") or r.get("Phone") or ""
+    w = (r.get("Website") or "").strip()
+    m = _URL_RX.search(w)
+    if m:
+        w = m.group(0).rstrip("/.,;")
+        r["Website"] = w if w.lower().startswith("http") else "https://" + w
+    raw = (r.get("Contact") or "").strip()
+    first_person = re.split(r"\n|/|,| and | & ", raw)[0].strip() if raw else ""
+    paren = re.search(r"\(([^)]*)\)", first_person)
+    role_hint = paren.group(1).strip() if paren else ""
+    person = re.sub(r"\([^)]*\)", "", first_person).strip()
+    tokens = person.split()
+    descriptive = ":" in person or len(tokens) > 4 or not tokens
+    abbreviated = bool(tokens) and (len(tokens) < 2 or len(tokens[-1].rstrip(".")) <= 1)
+    r["_name"] = "" if (descriptive or abbreviated) else person
+    r["_first_hint"] = "" if descriptive or not tokens else tokens[0]
+    if descriptive:
+        role_hint = ""     # brackets inside a note ("(contact once)") are not a job title
+    r["_role_hint"] = role_hint or r["Role"]
+    if not r["Role"] and role_hint:
+        r["Role"] = role_hint
+
+
+def person_key(a: dict) -> str:
+    return a.get("_name") or f"#{a.get('#')} {a['Agency']}"
+
+
+def li_url_for(a: dict, cache: dict) -> str:
+    return a.get("LinkedIn") or (cache.get("apollo", {}).get(person_key(a)) or {}).get("linkedin_url") or ""
+
+
+def company_link_for(a: dict, cache: dict) -> str:
+    li = cache.get("linkedin", {}).get(li_url_for(a, cache)) or {}
+    ap = cache.get("apollo", {}).get(person_key(a)) or {}
+    return li.get("company_link") or (ap.get("org") or {}).get("linkedin_url") or ""
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c)).lower()
 
 
 # --------------------------------------------------------------------------- website
 
+BOTWALL = re.compile(r"checking (the )?site connection|robot-suspicion|just a moment\.\.\.|attention required|"
+                     r"verify you are (a )?human|cf-chl|enable javascript and cookies|ddos protection", re.I)
+
+
+def _stealth_fetch(url: str) -> dict | None:
+    """Third resort for bot-protected sites: ScrapeGraphAI stealth browser."""
+    try:
+        import linkedin_lane as L
+        status, raw = L._sgai_scrape(url, [{"type": "markdown"}, {"type": "links"}],
+                                     {"mode": "auto", "stealth": True, "wait": 6000})
+    except Exception:
+        return None
+    res = (raw or {}).get("results") or {}
+    md = (res.get("markdown") or {}).get("data")
+    md = md[0] if isinstance(md, list) and md else md
+    links = (res.get("links") or {}).get("data") or []
+    if status == 200 and isinstance(md, str) and len(md.strip()) > 300 and not BOTWALL.search(md[:2000]):
+        return {"ok": True, "text": md, "links": list(links), "via": "stealth", "status": 200}
+    return None
+
+
 def _fetch(url: str) -> dict:
-    """Free fetch; Firecrawl fallback for failures and JS shells."""
+    """Free fetch; Firecrawl for failures and JS shells; stealth browser for
+    bot-check walls that both of those get stuck on."""
     page = site_fetcher.fetch_page(url, timeout=15.0, per_domain_delay=1.0)
-    if page.get("ok") and len((page.get("text") or "").strip()) > 300 and not page.get("js_heavy"):
+    text = (page.get("text") or "").strip()
+    walled = bool(BOTWALL.search(text[:2000]))
+    if page.get("ok") and len(text) > 300 and not page.get("js_heavy") and not walled:
         page["via"] = "free"
         return page
     try:
@@ -124,10 +203,15 @@ def _fetch(url: str) -> dict:
         r = scraper._firecrawl_scrape(url, formats=["markdown", "links"], only_main_content=True, timeout=15000)
         md = getattr(r, "markdown", None) or (r.get("markdown") if isinstance(r, dict) else "") or ""
         links = getattr(r, "links", None) or (r.get("links") if isinstance(r, dict) else []) or []
-        if md.strip():
+        if md.strip() and not BOTWALL.search(md[:2000]) and len(md.strip()) > 300:
             return {"ok": True, "text": md, "links": list(links), "via": "firecrawl", "status": 200}
+        walled = walled or bool(BOTWALL.search(md[:2000]))
     except Exception as exc:  # keep whatever the free fetch got
         page["firecrawl_error"] = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+    if walled or not page.get("ok") or len(text) <= 300:
+        st = _stealth_fetch(url)
+        if st:
+            return st
     page["via"] = "free(partial)" if page.get("ok") else "failed"
     return page
 
@@ -246,32 +330,68 @@ def crawl_site(url: str) -> dict:
 
 # --------------------------------------------------------------------------- apollo
 
-def apollo_match(accounts: list[dict]) -> dict[str, dict]:
+def _resolve_from_staff(a: dict, staff: dict) -> tuple[dict | None, str]:
+    """Pick the Apollo person for an account whose sheet contact is abbreviated
+    or missing: first-name match among the company's staff (leaders first),
+    else the most senior leader listed. Returns (staff entry, how)."""
+    people = [p for p in (staff or {}).get("staff") or [] if p.get("id")]
+    if not people:
+        return None, "no staff listed in Apollo"
+    lead_rx = re.compile(r"\bceo\b|founder|fondat|owner|managing|gérant|directeur général|general manager|"
+                         r"président|president|partner|associé|director", re.I)
+    hint = _fold(a.get("_first_hint") or "")
+    if hint:
+        same = [p for p in people if _fold(p.get("first_name") or "") == hint]
+        same.sort(key=lambda p: 0 if lead_rx.search(p.get("title") or "") else 1)
+        if same:
+            return same[0], f"first name '{a.get('_first_hint')}' matched in Apollo staff"
+    rank = [r"\bceo\b|chief executive|administrateur délégué", r"founder|fondat|owner",
+            r"managing (partner|director)|general manager|gérant", r"partner|associé|director|président"]
+    for rx in rank:
+        hit = [p for p in people if re.search(rx, p.get("title") or "", re.I)]
+        if hit:
+            return hit[0], "most senior leader in Apollo staff (sheet contact was missing or descriptive)"
+    return None, "no leader found in Apollo staff"
+
+
+def apollo_match(accounts: list[dict], staff_cache: dict | None = None) -> dict[str, dict]:
+    """people/bulk_match, 1 credit per matched person. Full names match on
+    name + domain; abbreviated or missing contacts are resolved to an Apollo
+    person id from the free staff search first, then matched by id."""
     import requests
     key = os.environ.get("APOLLO_API_KEY", "")
     out: dict[str, dict] = {}
-    details = []
+    jobs = []   # (person_key, detail, how)
     for a in accounts:
-        first, _, last = a["Contact"].partition(" ")
-        dom = (urlparse(a.get("Website", "")).hostname or "").removeprefix("www.")
-        details.append({"first_name": first, "last_name": last, "domain": dom,
-                        "organization_name": a["Agency"]})
-    for i in range(0, len(details), 10):
-        chunk = details[i:i + 10]
+        k = person_key(a)
+        dom = (urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
+        if a.get("_name"):
+            first, _, last = a["_name"].partition(" ")
+            jobs.append((k, {"first_name": first, "last_name": last, "domain": dom,
+                             "organization_name": a["Agency"]}, "sheet name"))
+            continue
+        hit, how = _resolve_from_staff(a, (staff_cache or {}).get(dom) or {})
+        if hit is None:
+            out[k] = {"error": f"contact not identified: {how}"}
+            continue
+        jobs.append((k, {"id": hit["id"]}, how))
+    for i in range(0, len(jobs), 10):
+        chunk = jobs[i:i + 10]
         r = requests.post("https://api.apollo.io/api/v1/people/bulk_match",
                           headers={"x-api-key": key, "Content-Type": "application/json"},
-                          json={"details": chunk, "reveal_personal_emails": False}, timeout=60)
+                          json={"details": [d for _, d, _ in chunk], "reveal_personal_emails": False}, timeout=60)
         if r.status_code != 200:
-            for d in chunk:
-                out[f"{d['first_name']} {d['last_name']}"] = {"error": f"HTTP {r.status_code}: {r.text[:160]}"}
+            for k, _, _ in chunk:
+                out[k] = {"error": f"HTTP {r.status_code}: {r.text[:160]}"}
             continue
-        for d, m in zip(chunk, r.json().get("matches") or []):
-            name = f"{d['first_name']} {d['last_name']}"
+        for (name, _, how), m in zip(chunk, r.json().get("matches") or []):
             if not m:
                 out[name] = {"error": "no Apollo match"}
                 continue
             org = m.get("organization") or {}
             out[name] = {
+                "resolved_name": " ".join(filter(None, [m.get("first_name"), m.get("last_name")])),
+                "resolved_how": how,
                 "headline": m.get("headline"),
                 "title": m.get("title"),
                 "location": ", ".join(filter(None, [m.get("city"), m.get("country")])),
@@ -336,7 +456,7 @@ def apollo_staff(domain: str) -> dict:
         title = (p.get("title") or "").strip()
         fam = next((f for f, rx in ROLE_FAMILIES if title and re.search(rx, title, re.I)), "other")
         counts[fam] += 1
-        staff.append({"first_name": p.get("first_name"), "title": title, "family": fam})
+        staff.append({"id": p.get("id"), "first_name": p.get("first_name"), "title": title, "family": fam})
     staff.sort(key=lambda s: ([f for f, _ in ROLE_FAMILIES] + ["other"]).index(s["family"]))
     return {"total": len(staff), "by_family": dict(counts), "staff": staff,
             "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -421,9 +541,21 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rstrip() + f"\n\n…[truncated, {len(s) - n} more chars]"
 
 
-def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
+CORE_COLUMNS = {"#", "Contact", "Role", "Title", "Agency", "City", "Website", "LinkedIn", "Phone", "Company phone",
+                "Wave", "Tier"}
+TRACKER_RX = re.compile(r"status|^notes$|sent|accepted|day 0|checked|\(auto\)|fallback|due", re.I)
+
+
+def _sheet_notes(a: dict) -> list[tuple[str, str]]:
+    """Every research column the user already filled in, in sheet order, except
+    identity columns and outreach-tracking columns."""
+    return [(k, v) for k, v in a.items()
+            if not k.startswith("_") and k not in CORE_COLUMNS and not TRACKER_RX.search(k) and str(v).strip()]
+
+
+def render(accounts: list[dict], cache: dict, out_md: Path, title: str = "Research dossier") -> None:
     L = []
-    L.append("# Romandie agencies — research dossier\n")
+    L.append(f"# {title}\n")
     L.append(f"Generated {time.strftime('%Y-%m-%d %H:%M')}. Raw evidence only, no judgement: "
              "for each contact, Apollo facts, the person's LinkedIn profile and recent posts, "
              "then the company website organised by page type. Rate it afterwards.\n")
@@ -447,8 +579,7 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
         dom = (urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
         st = cache.get("staff", {}).get(dom) or {}
         fams = st.get("by_family") or {}
-        li = cache["linkedin"].get(a.get("LinkedIn", ""), {}) or {}
-        lc = cache.get("linkedin_company", {}).get(li.get("company_link", ""), {}) or {}
+        lc = cache.get("linkedin_company", {}).get(company_link_for(a, cache), {}) or {}
         li_staff = (lc.get("company") or {}).get("employees_in_linkedin", "—")
         pages = (cache["website"].get(a["Website"]) or {}).get("pages") or []
         hits = Counter()
@@ -457,32 +588,45 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
                 hits[t] += 1
         terms = ", ".join(f"{t} ({n})" for t, n in hits.most_common(7)) or "—"
         careers = "yes" if any(p["category"].startswith("careers") for p in pages) else "—"
-        L.append(f"| {a['#']} | {a['Agency']} | {a['Contact']} | {li_staff} | {st.get('total', '—')} | "
+        who = (cache["apollo"].get(person_key(a)) or {}).get("resolved_name") or a.get("_name") or a.get("Contact") or "—"
+        tier = f" ({a['Tier']})" if a.get("Tier") else ""
+        L.append(f"| {a['#']}{tier} | {a['Agency']} | {who} | {li_staff} | {st.get('total', '—')} | "
                  f"{fams.get('development / engineering', 0)} | {fams.get('design / UX', 0)} | {careers} | {terms} |")
     L.append("")
     L.append("## Contents\n")
     for a in accounts:
-        anchor = re.sub(r"[^a-z0-9]+", "-", f"{a['#']} {a['Agency']} {a['Contact']}".lower()).strip("-")
-        L.append(f"- [{a['#']}. {a['Agency']} — {a['Contact']}](#{anchor})")
+        who = (cache["apollo"].get(person_key(a)) or {}).get("resolved_name") or a.get("_name") or "contact not named"
+        anchor = re.sub(r"[^a-z0-9]+", "-", f"{a['#']} {a['Agency']} {who}".lower()).strip("-")
+        L.append(f"- [{a['#']}. {a['Agency']} — {who}](#{anchor})")
     L.append("")
 
     for a in accounts:
-        name = a["Contact"]
         site = cache["website"].get(a["Website"], {})
-        ap = cache["apollo"].get(name, {})
-        li = cache["linkedin"].get(a.get("LinkedIn", ""), {})
+        ap = cache["apollo"].get(person_key(a), {})
+        li_link = li_url_for(a, cache)
+        li = cache["linkedin"].get(li_link, {}) if li_link else {}
+        who = ap.get("resolved_name") or a.get("_name") or "contact not named"
         L.append("---\n")
-        L.append(f"## {a['#']}. {a['Agency']} — {name}\n")
-        L.append(f"- **Role:** {a.get('Role', '')}")
+        L.append(f"## {a['#']}. {a['Agency']} — {who}\n")
+        if a.get("Contact") and a.get("Contact") != who:
+            L.append(f"- **Contact cell in your sheet:** {a['Contact'].replace(chr(10), ' / ')}")
+        if ap.get("resolved_how") and ap.get("resolved_how") != "sheet name":
+            L.append(f"- **How the person was identified:** {ap['resolved_how']}")
+        L.append(f"- **Role:** {a.get('Role') or ap.get('title') or ''}")
         L.append(f"- **City:** {a.get('City', '')}")
         L.append(f"- **Website:** {a.get('Website', '')}")
-        L.append(f"- **LinkedIn:** {a.get('LinkedIn', '')}")
-        L.append(f"- **Phone:** {a.get('Company phone', '')}")
-        L.append(f"- **Wave:** {a.get('Wave', '')}")
-        if a.get("Hook (first line)"):
-            L.append(f"- **Your existing hook note:** {a['Hook (first line)']}")
-        if a.get("Flag"):
-            L.append(f"- **Your flag:** {a['Flag']}")
+        L.append(f"- **LinkedIn:** {li_link or '—'}{' _(found via Apollo)_' if li_link and not a.get('LinkedIn') else ''}")
+        if a.get("Company phone"):
+            L.append(f"- **Phone:** {a['Company phone']}")
+        for k in ("Wave", "Tier"):
+            if a.get(k):
+                L.append(f"- **{k}:** {a[k]}")
+        notes = _sheet_notes(a)
+        if notes:
+            L.append("")
+            L.append("**Your sheet notes (your earlier research, kept as written):**\n")
+            for k, v in notes:
+                L.append(f"- **{k}:** {str(v).replace(chr(10), ' ')}")
         L.append("")
 
         L.append("### Apollo facts\n")
@@ -552,11 +696,11 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
             acts = li.get("activity") or []
             L.append("")
             L.append(f"**Recent LinkedIn activity ({len(acts)} item(s), the slice LinkedIn shows publicly):**\n")
-            for a in acts:
-                L.append(f"- _{a['kind']}_ — {(a['text'] or '').replace(chr(10), ' ')[:700]}  \n  <{a['link']}>")
+            for act in acts:   # not `a`: that is the account being rendered
+                L.append(f"- _{act['kind']}_ — {(act['text'] or '').replace(chr(10), ' ')[:700]}  \n  <{act['link']}>")
             L.append("")
 
-        lc = cache.get("linkedin_company", {}).get(li.get("company_link", "") if li else "", {})
+        lc = cache.get("linkedin_company", {}).get(company_link_for(a, cache), {})
         L.append("### LinkedIn — company page\n")
         if not lc:
             L.append("_not fetched_\n")
@@ -588,7 +732,21 @@ def render(accounts: list[dict], cache: dict, out_md: Path) -> None:
                 txt = (p.get("text") or "").strip()
                 L.append(_clip(txt, PAGE_CAP) if txt else "_no readable text_")
                 L.append("")
-    out_md.write_text("\n".join(L), encoding="utf-8")
+    text = "\n".join(L)
+    out_md.write_text(text, encoding="utf-8")
+    # Same content, one file per account, for tools that cannot take the whole
+    # dossier at once (Claude web uploads, quick reading).
+    folder = out_md.with_suffix("")
+    folder.mkdir(exist_ok=True)
+    head, *sections = re.split(r"\n---\n\n(?=## \d+\. )", text)
+    (folder / "00_OVERVIEW.md").write_text(head.split("## Contents")[0], encoding="utf-8")
+    for s in sections:
+        m = re.match(r"## (\d+)\. (.+?) — (.+)", s)
+        if not m:
+            continue
+        fn = (f"{int(m.group(1)):02d}_{re.sub(r'[^A-Za-z0-9]+', '_', m.group(2)).strip('_')[:40]}_"
+              f"{re.sub(r'[^A-Za-z0-9]+', '_', m.group(3)).strip('_')[:30]}.md")
+        (folder / fn).write_text(s, encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- main
@@ -601,7 +759,9 @@ def main() -> int:
     ap.add_argument("--skip-apollo", action="store_true")
     ap.add_argument("--render-only", action="store_true")
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--title", default="", help="dossier title (default: from the input file name)")
     args = ap.parse_args()
+    title = args.title or (Path(args.input).stem.replace("_", " ") + " — research dossier")
 
     accounts = read_accounts(Path(args.input))
     out = Path(args.out)
@@ -612,9 +772,10 @@ def main() -> int:
 
     def save():
         cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
-        render(accounts, cache, out.with_suffix(".md"))
+        render(accounts, cache, out.with_suffix(".md"), title=title)
 
-    print(f"[research] {len(accounts)} contact(s), {len({a['Website'] for a in accounts})} unique site(s)", flush=True)
+    print(f"[research] {len(accounts)} account(s), {len({a['Website'] for a in accounts})} unique site(s), "
+          f"{sum(1 for a in accounts if a.get('_name'))} with a full contact name", flush=True)
     if args.render_only:
         save()
         print("[research] rendered", out.with_suffix(".md"))
@@ -637,13 +798,6 @@ def main() -> int:
                     print(f"[website] {u} FAILED {exc}", flush=True)
         save()
 
-    if not args.skip_apollo:
-        need = [a for a in accounts if a["Contact"] not in cache["apollo"]]
-        if need:
-            cache["apollo"].update(apollo_match(need))
-            print(f"[apollo] matched {sum(1 for a in need if not cache['apollo'].get(a['Contact'], {}).get('error'))}/{len(need)}", flush=True)
-            save()
-
     cache.setdefault("staff", {})
     domains = sorted({(urlparse(a.get("Website", "")).hostname or "").lower().removeprefix("www.")
                       for a in accounts if a.get("Website")})
@@ -659,15 +813,28 @@ def main() -> int:
     if need_staff:
         save()
 
+    # Apollo after staff: abbreviated or missing contacts are resolved from the
+    # staff list (free) and then matched by id (1 credit each).
+    if not args.skip_apollo:
+        need = [a for a in accounts if person_key(a) not in cache["apollo"]]
+        if need:
+            cache["apollo"].update(apollo_match(need, cache["staff"]))
+            ok = [a for a in need if not cache["apollo"].get(person_key(a), {}).get("error")]
+            print(f"[apollo] matched {len(ok)}/{len(need)}", flush=True)
+            for a in need:
+                r = cache["apollo"].get(person_key(a), {})
+                if r.get("error") or r.get("resolved_how", "sheet name") != "sheet name":
+                    print(f"         {a['Agency'][:28]:<28} -> {r.get('resolved_name') or r.get('error')}"
+                          f"{(' (' + r['resolved_how'] + ')') if r.get('resolved_how') and r['resolved_how'] != 'sheet name' else ''}", flush=True)
+            save()
+
     if not args.skip_linkedin:
         import random
         cache.setdefault("linkedin_company", {})
         for a in accounts:
-            url = a.get("LinkedIn", "")
-            if not url:
-                continue
-            li = cache["linkedin"].get(url)
-            if not (li and li.get("status") == "ok" and "profile" in li):   # missing, failed or old lane format
+            url = li_url_for(a, cache)
+            li = cache["linkedin"].get(url) if url else None
+            if url and not (li and li.get("status") == "ok" and "profile" in li):   # missing, failed or old lane format
                 t0 = time.monotonic()
                 try:
                     li = linkedin_person(url)
@@ -675,14 +842,13 @@ def main() -> int:
                     li = {"status": "failed", "reason": f"{exc.__class__.__name__}: {str(exc)[:200]}"}
                 cache["linkedin"][url] = li
                 own = sum(1 for x in li.get("activity") or [] if x["kind"] == "own post")
-                print(f"[linkedin] {a['Contact']:<22} {li.get('status'):<7} {len(li.get('activity') or []):>2} activity, "
+                print(f"[linkedin] {(a.get('_name') or person_key(a))[:22]:<22} {li.get('status'):<7} "
+                      f"{len(li.get('activity') or []):>2} activity, "
                       f"{own} own post(s) [{time.monotonic()-t0:.0f}s]", flush=True)
                 save()
                 time.sleep(random.uniform(10, 25))
-            curl = (li or {}).get("company_link") or ((cache["apollo"].get(a["Contact"]) or {}).get("org") or {}).get("linkedin_url") or ""
+            curl = company_link_for(a, cache)
             if curl and curl not in cache["linkedin_company"]:
-                if li is not None and not li.get("company_link"):
-                    li["company_link"] = curl
                 t0 = time.monotonic()
                 try:
                     cache["linkedin_company"][curl] = linkedin_company(curl)
