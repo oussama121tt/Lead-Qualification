@@ -771,6 +771,14 @@ def main() -> int:
     cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
     for k in ("website", "apollo", "linkedin"):
         cache.setdefault(k, {})
+    # Website cache keys must match the normalised account URL exactly. Older
+    # caches stored "https://x.ch/" while accounts now normalise to
+    # "https://x.ch"; re-key so a trailing slash can never orphan a crawl (it
+    # did: every Romandie website section rendered as "not fetched").
+    cache["website"] = {k.rstrip("/"): v for k, v in cache["website"].items()}
+    missing = [a["Agency"] for a in accounts if a.get("Website") and a["Website"] not in cache["website"]]
+    if args.render_only and missing:
+        print(f"[research] WARNING: {len(missing)} account(s) have no cached website: {missing[:5]}", flush=True)
 
     def save():
         cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
