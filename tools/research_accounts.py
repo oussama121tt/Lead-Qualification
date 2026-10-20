@@ -738,6 +738,8 @@ def render(accounts: list[dict], cache: dict, out_md: Path, title: str = "Resear
     # dossier at once (Claude web uploads, quick reading).
     folder = out_md.with_suffix("")
     folder.mkdir(exist_ok=True)
+    for old in folder.glob("*.md"):   # names change once contacts resolve; never leave stale copies
+        old.unlink()
     head, *sections = re.split(r"\n---\n\n(?=## \d+\. )", text)
     (folder / "00_OVERVIEW.md").write_text(head.split("## Contents")[0], encoding="utf-8")
     for s in sections:
